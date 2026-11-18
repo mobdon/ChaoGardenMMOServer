@@ -1,0 +1,14 @@
+{
+  "name": "chao-garden-mmo-server-reference",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Retained Node reference implementation of the Rust Chao gameplay server",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test tests/reference/*.test.js"
+  },
+  "dependencies": {
+    "ws": "^8.23.0"
+  }
+}

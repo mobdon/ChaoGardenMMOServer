@@ -1,0 +1,27 @@
+[package]
+name = "chao-game-server"
+version = "0.1.0"
+edition = "2024"
+description = "Authoritative Chao Garden prototype gameplay server"
+publish = false
+
+[dependencies]
+axum = { version = "0.8.9", features = ["ws"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+tiny-garden-games = { path = "crates/tiny-garden-games" }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tempfile = "3"
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+lto = "thin"
+strip = true

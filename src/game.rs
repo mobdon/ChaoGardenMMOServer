@@ -1,0 +1,1580 @@
+//! Deterministic, server-owned gameplay. Incoming messages carry intent only.
+use crate::activities::{self, ActivityCatalog, ActivityRecord, KarateBout};
+use crate::phone::{self, TinyRecord, TinyRun};
+use crate::watch::{self, WatchState};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use uuid::Uuid;
+
+pub const MAIN_STATS: [&str; 5] = ["swim", "fly", "run", "power", "stamina"];
+pub const ALL_STATS: [&str; 7] = [
+    "swim",
+    "fly",
+    "run",
+    "power",
+    "stamina",
+    "luck",
+    "intelligence",
+];
+pub const TERRAIN_ZONES: [&str; 4] = ["hub", "garden", "hero", "dark"];
+pub const RACE_CHECKPOINTS: [(f64, f64); 5] =
+    [(0., 12.), (-12., 0.), (0., -12.), (12., 0.), (0., 12.)];
+const MECH_FIRE_RANGE: f64 = 9.;
+const MECH_FIRE_DAMAGE: f64 = 60.;
+const MECH_FIRE_COOLDOWN: f64 = 350.;
+const MECH_BOOST_HEIGHT: f64 = 3.;
+const MECH_BOOST_SPEED: f64 = 1.8;
+const MECH_BOOST_DRAIN: f64 = 40.;
+const MECH_BOOST_RECOVERY: f64 = 25.;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Stat {
+    pub grade: u16,
+    pub level: u16,
+    pub points: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Input {
+    pub dx: f64,
+    pub dz: f64,
+    pub jump: bool,
+    pub boost: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Gear {
+    pub footwear: Option<String>,
+    pub hands: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Race {
+    pub started_at: f64,
+    pub next_checkpoint: usize,
+    pub course_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Player {
+    pub id: String,
+    pub token_hash: String,
+    pub name: String,
+    pub admin: bool,
+    pub stats: BTreeMap<String, Stat>,
+    pub rings: u32,
+    pub alignment: f64,
+    pub form: String,
+    pub owned_cosmetics: Vec<String>,
+    pub equipped: Option<String>,
+    pub vehicle: Option<String>,
+    pub gear: Gear,
+    pub race_records: BTreeMap<String, ActivityRecord>,
+    pub karate_records: BTreeMap<String, ActivityRecord>,
+    pub karate: Option<KarateBout>,
+    pub activity_result: Option<Value>,
+    pub tiny_records: BTreeMap<String, TinyRecord>,
+    pub tiny_game: Option<TinyRun>,
+    pub tiny_result: Option<Value>,
+    pub watch: Option<WatchState>,
+    pub boosting: bool,
+    pub boost_energy: f64,
+    pub happiness: f64,
+    pub energy: f64,
+    pub hunger: f64,
+    pub hp: f64,
+    pub max_hp: f64,
+    pub missions_completed: u32,
+    pub races_completed: u32,
+    pub best_race_ms: Option<f64>,
+    pub x: f64,
+    pub z: f64,
+    pub y: f64,
+    pub ground_y: f64,
+    pub jump_offset: f64,
+    pub vy: f64,
+    pub facing: f64,
+    pub zone: String,
+    pub connections: usize,
+    pub input: Input,
+    pub last_input_at: f64,
+    pub cooldowns: BTreeMap<String, f64>,
+    pub race: Option<Race>,
+}
+
+impl Player {
+    pub(crate) fn cooldown(&mut self, name: &str, now: f64, duration: f64) -> bool {
+        if self.cooldowns.get(name).is_some_and(|until| *until > now) {
+            return false;
+        }
+        self.cooldowns.insert(name.into(), now + duration);
+        true
+    }
+    fn update_form(&mut self) {
+        if self.form != "chaos" {
+            self.form = if self.alignment >= 60. {
+                "hero"
+            } else if self.alignment <= -60. {
+                "dark"
+            } else {
+                "normal"
+            }
+            .into();
+        }
+    }
+    pub(crate) fn gain(&mut self, name: &str, levels: u16) {
+        if let Some(stat) = self.stats.get_mut(name) {
+            stat.level = (stat.level + levels).min(99);
+            stat.points = (stat.points + u32::from(levels) * 25).min(9999);
+            if MAIN_STATS.contains(&name) && !self.admin {
+                stat.grade = (1 + stat.level / 20).min(5);
+            }
+        }
+    }
+    pub fn evolution(&self) -> Value {
+        let checks = [
+            ("missions", f64::from(self.missions_completed), 3.),
+            ("races", f64::from(self.races_completed), 1.),
+            ("run", f64::from(self.stats["run"].level), 10.),
+            ("swim", f64::from(self.stats["swim"].level), 10.),
+            ("power", f64::from(self.stats["power"].level), 10.),
+            ("happiness", self.happiness, 80.),
+        ];
+        let requirements: BTreeMap<_, _> = checks
+            .iter()
+            .map(|(key, current, required)| {
+                (*key, json!({"current": current, "required": required}))
+            })
+            .collect();
+        json!({"ready": checks.iter().all(|(_, current, required)| current >= required), "requirements": requirements})
+    }
+    pub fn public(&self) -> Value {
+        json!({
+            "id": self.id, "name": self.name, "x": self.x, "y": self.y, "z": self.z,
+            "groundY": self.ground_y, "jumpOffset": self.jump_offset, "facing": self.facing,
+            "zone": self.zone, "alignment": self.alignment, "form": self.form, "admin": self.admin,
+            "stats": self.stats, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
+            "raceRecords": self.race_records, "karateRecords": self.karate_records,
+            "tinyRecords": self.tiny_records,
+            "watch":self.watch.as_ref().map(|watch|watch.public(self.connections>0)),"connected":self.connections>0,
+            "mech": if self.vehicle.as_deref() == Some("dark-chao-walker") { json!({"boosting": self.boosting, "boostEnergy": self.boost_energy.round(), "grounded": self.jump_offset <= 0. && self.vy <= 0.}) } else { Value::Null },
+            "rings": self.rings, "hp": self.hp, "maxHp": self.max_hp, "happiness": self.happiness,
+            "energy": self.energy.round(), "hunger": self.hunger.round(),
+            "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed,
+            "bestRaceMs": self.best_race_ms, "evolution": self.evolution(),
+        })
+    }
+    pub fn profile(&self) -> Value {
+        let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
+            "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
+            "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
+            "raceRecords": self.race_records, "karateRecords": self.karate_records,
+            "tinyRecords": self.tiny_records,
+            "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
+            "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed, "bestRaceMs": self.best_race_ms});
+        phone::project_profile(self, &mut profile);
+        profile
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Terrain {
+    pub min_x: f64,
+    pub min_z: f64,
+    pub step: f64,
+    pub width: usize,
+    pub depth: usize,
+    pub heights: Vec<Option<f64>>,
+}
+impl Terrain {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.min_x.is_finite()
+            || !self.min_z.is_finite()
+            || !self.step.is_finite()
+            || self.step <= 0.
+            || self.width == 0
+            || self.depth == 0
+            || self.width > 4096
+            || self.depth > 4096
+            || self.heights.len() != self.width * self.depth
+            || !self.heights.iter().any(Option::is_some)
+            || self
+                .heights
+                .iter()
+                .flatten()
+                .any(|height| !height.is_finite())
+        {
+            return Err("Invalid authoritative terrain".into());
+        }
+        Ok(())
+    }
+    pub fn sample(&self, x: f64, z: f64) -> Option<f64> {
+        let gx = (x - self.min_x) / self.step;
+        let gz = (z - self.min_z) / self.step;
+        if !gx.is_finite()
+            || !gz.is_finite()
+            || gx < 0.
+            || gz < 0.
+            || gx > (self.width - 1) as f64
+            || gz > (self.depth - 1) as f64
+        {
+            return None;
+        }
+        let at = |column: usize, row: usize| self.heights[row * self.width + column];
+        let nearest = at(gx.round() as usize, gz.round() as usize)?;
+        let x0 = gx.floor() as usize;
+        let z0 = gz.floor() as usize;
+        let x1 = (x0 + 1).min(self.width - 1);
+        let z1 = (z0 + 1).min(self.depth - 1);
+        let corners = [at(x0, z0), at(x1, z0), at(x0, z1), at(x1, z1)];
+        if corners.iter().any(Option::is_none) {
+            return Some(nearest);
+        }
+        let c = corners.map(Option::unwrap);
+        if c.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            - c.iter().copied().fold(f64::INFINITY, f64::min)
+            > 0.75
+        {
+            return Some(nearest);
+        }
+        let tx = gx - x0 as f64;
+        let tz = gz - z0 as f64;
+        Some((c[0] * (1. - tx) + c[1] * tx) * (1. - tz) + (c[2] * (1. - tx) + c[3] * tx) * tz)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Ring {
+    pub id: String,
+    pub x: f64,
+    pub z: f64,
+    pub zone: String,
+    pub available_at: f64,
+}
+#[derive(Clone, Debug)]
+pub struct Enemy {
+    pub id: String,
+    pub x: f64,
+    pub z: f64,
+    pub hp: f64,
+    pub max_hp: f64,
+    pub last_attack_at: f64,
+}
+#[derive(Clone, Debug)]
+pub struct Mission {
+    pub id: String,
+    pub completed: bool,
+    pub members: BTreeSet<String>,
+    pub rewarded: BTreeSet<String>,
+    pub enemies: Vec<Enemy>,
+    pub rings: Vec<Ring>,
+}
+#[derive(Clone, Debug)]
+pub struct Event {
+    pub target: Option<String>,
+    pub message: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ShopItem {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub price: u32,
+    pub r#type: &'static str,
+}
+pub const SHOP_CATALOG: [ShopItem; 4] = [
+    ShopItem {
+        id: "garden-fruit",
+        name: "Garden Fruit",
+        description: "Restore 25 energy and fullness; gain 10 happiness.",
+        price: 5,
+        r#type: "fruit",
+    },
+    ShopItem {
+        id: "run-drive",
+        name: "Run Drive",
+        description: "Raise Run by 2 levels.",
+        price: 12,
+        r#type: "drive",
+    },
+    ShopItem {
+        id: "power-drive",
+        name: "Power Drive",
+        description: "Raise Power by 2 levels.",
+        price: 12,
+        r#type: "drive",
+    },
+    ShopItem {
+        id: "eggshell-cap",
+        name: "Eggshell Cap",
+        description: "Own and equip a little eggshell hat.",
+        price: 25,
+        r#type: "cosmetic",
+    },
+];
+
+pub struct Game {
+    pub activities: ActivityCatalog,
+    pub time: f64,
+    pub allow_owner_bootstrap: bool,
+    pub terrains: BTreeMap<String, Terrain>,
+    pub players: BTreeMap<String, Player>,
+    pub tokens: BTreeMap<String, String>,
+    pub events: Vec<Event>,
+    pub dirty: bool,
+    pub tiny_save_retry_at: f64,
+    pub mission: Option<Mission>,
+    pub rings: Vec<Ring>,
+}
+
+pub fn hash_token(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
+fn clean_name(value: Option<&str>) -> String {
+    let value: String = value
+        .unwrap_or("Chao")
+        .chars()
+        .filter(|c| !c.is_control() && *c != '<' && *c != '>')
+        .collect();
+    let value: String = value.trim().chars().take(20).collect();
+    if value.is_empty() {
+        "Chao".into()
+    } else {
+        value
+    }
+}
+fn number(value: &Value, default: f64, min: f64, max: f64) -> f64 {
+    value
+        .as_f64()
+        .filter(|x| x.is_finite())
+        .unwrap_or(default)
+        .clamp(min, max)
+}
+fn dist(x: f64, z: f64, x2: f64, z2: f64) -> f64 {
+    (x - x2).hypot(z - z2)
+}
+
+impl Game {
+    pub fn new(
+        profiles: Vec<Value>,
+        terrains: BTreeMap<String, Terrain>,
+        allow_owner_bootstrap: bool,
+        now: f64,
+    ) -> Result<Self, String> {
+        for (zone, terrain) in &terrains {
+            if !TERRAIN_ZONES.contains(&zone.as_str()) {
+                return Err(format!("Unsupported terrain zone: {zone}"));
+            }
+            terrain
+                .validate()
+                .map_err(|error| format!("{error} for {zone}"))?;
+        }
+        let mut game = Self {
+            activities: ActivityCatalog::default(),
+            time: now,
+            allow_owner_bootstrap,
+            terrains,
+            players: BTreeMap::new(),
+            tokens: BTreeMap::new(),
+            events: vec![],
+            dirty: false,
+            tiny_save_retry_at: 0.,
+            mission: None,
+            rings: vec![],
+        };
+        for (i, (x, z)) in [(-6., 6.), (6., 6.), (-6., -6.), (6., -6.), (0., -9.)]
+            .into_iter()
+            .enumerate()
+        {
+            let (x, z, _) = game.safe_position("garden", x, z)?;
+            game.rings.push(Ring {
+                id: format!("garden-ring-{i}"),
+                x,
+                z,
+                zone: "garden".into(),
+                available_at: 0.,
+            });
+        }
+        for profile in profiles {
+            if profile["id"].as_str().is_none() || profile["tokenHash"].as_str().is_none() {
+                continue;
+            }
+            let player = game.make_player(&profile)?;
+            game.tokens
+                .insert(player.token_hash.clone(), player.id.clone());
+            game.players.insert(player.id.clone(), player);
+        }
+        Ok(game)
+    }
+
+    fn make_player(&self, data: &Value) -> Result<Player, String> {
+        let admin = data["admin"].as_bool().unwrap_or(false);
+        let stats = ALL_STATS
+            .into_iter()
+            .map(|name| {
+                let grade_max = if MAIN_STATS.contains(&name) { 5. } else { 255. };
+                let stat = if admin {
+                    Stat {
+                        grade: grade_max as u16,
+                        level: 99,
+                        points: 9999,
+                    }
+                } else {
+                    Stat {
+                        grade: number(&data["stats"][name]["grade"], 1., 0., grade_max).floor()
+                            as u16,
+                        level: number(&data["stats"][name]["level"], 1., 0., 99.).floor() as u16,
+                        points: number(&data["stats"][name]["points"], 0., 0., 9999.).floor()
+                            as u32,
+                    }
+                };
+                (name.into(), stat)
+            })
+            .collect();
+        let owned_cosmetics = if data["ownedCosmetics"]
+            .as_array()
+            .is_some_and(|list| list.iter().any(|item| item == "eggshell"))
+        {
+            vec!["eggshell".into()]
+        } else {
+            vec![]
+        };
+        let equipped = if !owned_cosmetics.is_empty() && data["equipped"] == "eggshell" {
+            Some("eggshell".into())
+        } else {
+            None
+        };
+        let mut player = Player {
+            id: data["id"].as_str().unwrap_or_default().into(),
+            token_hash: data["tokenHash"].as_str().unwrap_or_default().into(),
+            name: clean_name(data["name"].as_str()),
+            admin,
+            stats,
+            rings: number(&data["rings"], 20., 0., 999999.).floor() as u32,
+            alignment: number(&data["alignment"], 0., -100., 100.),
+            form: if data["form"] == "chaos" {
+                "chaos"
+            } else {
+                "normal"
+            }
+            .into(),
+            owned_cosmetics,
+            equipped,
+            vehicle: if admin && data["vehicle"] == "dark-chao-walker" {
+                Some("dark-chao-walker".into())
+            } else {
+                None
+            },
+            boosting: false,
+            boost_energy: 100.,
+            gear: Gear {
+                footwear: if admin && data["gear"]["footwear"] == "shadow-air-shoes" {
+                    Some("shadow-air-shoes".into())
+                } else {
+                    None
+                },
+                hands: if admin && data["gear"]["hands"] == "knuckles-hammer-gloves" {
+                    Some("knuckles-hammer-gloves".into())
+                } else {
+                    None
+                },
+            },
+            race_records: activities::restore_records(&data["raceRecords"]),
+            karate_records: activities::restore_records(&data["karateRecords"]),
+            karate: None,
+            activity_result: None,
+            tiny_records: phone::restore_records(&data["tinyRecords"]),
+            tiny_game: None,
+            tiny_result: None,
+            watch: None,
+            happiness: number(&data["happiness"], 65., 0., 100.),
+            energy: 100.,
+            hunger: 100.,
+            hp: if admin { 250. } else { 100. },
+            max_hp: if admin { 250. } else { 100. },
+            missions_completed: number(&data["missionsCompleted"], 0., 0., 99999.).floor() as u32,
+            races_completed: number(&data["racesCompleted"], 0., 0., 99999.).floor() as u32,
+            best_race_ms: data["bestRaceMs"]
+                .as_f64()
+                .filter(|x| x.is_finite() && *x > 0.),
+            x: 0.,
+            z: 6.,
+            y: 0.,
+            ground_y: 0.,
+            jump_offset: 0.,
+            vy: 0.,
+            facing: 0.,
+            zone: "hub".into(),
+            connections: 0,
+            input: Input::default(),
+            last_input_at: 0.,
+            cooldowns: BTreeMap::new(),
+            race: None,
+        };
+        self.teleport(&mut player, "hub", 0., 6.)?;
+        player.update_form();
+        watch::restore(self, &mut player, &data["resident"]);
+        Ok(player)
+    }
+
+    pub fn create_session(&mut self, input: &Value) -> Result<Value, String> {
+        if let Some(token) = input["token"].as_str().filter(|token| token.len() <= 256)
+            && let Some(player) = self.player_for_token(token)
+        {
+            return Ok(json!({"token": token, "player": player.public()}));
+        }
+        if input["resumeOnly"] == true {
+            return Err("Saved Chao was not found.".into());
+        }
+        let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let player = self.make_player(&json!({"id": Uuid::new_v4().to_string(), "tokenHash": hash_token(&token), "name": input["name"], "admin": self.allow_owner_bootstrap && self.players.is_empty()}))?;
+        let response = json!({"token": token, "player": player.public()});
+        self.tokens
+            .insert(player.token_hash.clone(), player.id.clone());
+        self.players.insert(player.id.clone(), player);
+        self.dirty = true;
+        Ok(response)
+    }
+    pub fn player_for_token(&self, token: &str) -> Option<&Player> {
+        if token.len() > 256 {
+            return None;
+        }
+        self.tokens
+            .get(&hash_token(token))
+            .and_then(|id| self.players.get(id))
+    }
+    pub fn connect(&mut self, id: &str) -> bool {
+        if let Some(player) = self.players.get_mut(id) {
+            player.connections += 1;
+            player.input = Input::default();
+            true
+        } else {
+            false
+        }
+    }
+    pub fn disconnect(&mut self, id: &str) {
+        if let Some(mut player) = self.players.remove(id) {
+            player.connections = player.connections.saturating_sub(1);
+            if player.connections == 0 && player.watch.is_none() {
+                let _ = self.teleport(&mut player, "hub", 0., 6.);
+                if !player.tiny_game.as_ref().is_some_and(TinyRun::saving) {
+                    player.tiny_game = None;
+                }
+            }
+            self.players.insert(id.into(), player);
+        }
+    }
+    pub fn set_input(&mut self, id: &str, input: &Value) {
+        if let Some(player) = self.players.get_mut(id).filter(|p| p.connections > 0) {
+            if player.tiny_game.is_some() || player.watch.is_some() {
+                return;
+            }
+            let mut dx = number(&input["dx"], 0., -1., 1.);
+            let mut dz = number(&input["dz"], 0., -1., 1.);
+            let length = dx.hypot(dz);
+            if length > 1. {
+                dx /= length;
+                dz /= length;
+            }
+            player.input = Input {
+                dx,
+                dz,
+                jump: input["jump"] == true,
+                boost: input["boost"] == true,
+            };
+            player.last_input_at = self.time;
+        }
+    }
+    pub fn request_save(&mut self, id: &str) -> bool {
+        let Some(player) = self.players.get_mut(id).filter(|p| p.connections > 0) else {
+            return false;
+        };
+        if !player.cooldown("save", self.time, 300.) {
+            return false;
+        }
+        self.dirty = true;
+        true
+    }
+    pub fn tiny_input(&mut self, id: &str, message: &Value) {
+        let Some(mut player) = self.players.remove(id) else {
+            return;
+        };
+        if player.connections > 0 {
+            phone::input(self, &mut player, message);
+        }
+        self.players.insert(id.to_owned(), player);
+    }
+    pub fn notice(&mut self, id: &str, text: impl Into<String>, kind: &str) {
+        self.events.push(Event {
+            target: Some(id.into()),
+            message: json!({"type": "notice", "text": text.into(), "kind": kind}),
+        });
+    }
+    pub fn sample_ground(&self, zone: &str, x: f64, z: f64) -> Option<f64> {
+        if zone == "karate" {
+            return Some(0.75);
+        }
+        self.terrains
+            .get(zone)
+            .map_or(Some(0.), |terrain| terrain.sample(x, z))
+    }
+    pub fn player_terrain(&self, player: &Player) -> Option<&Terrain> {
+        if let Some(course) = activities::native_course(self, player) {
+            self.activities
+                .terrains
+                .get(course.world_id.as_deref().unwrap_or(&course.id))
+        } else {
+            self.terrains.get(&player.zone)
+        }
+    }
+    pub fn player_ground(&self, player: &Player, x: f64, z: f64) -> Option<f64> {
+        if player.zone == "karate" {
+            return Some(0.75);
+        }
+        self.player_terrain(player)
+            .map_or(Some(0.), |terrain| terrain.sample(x, z))
+    }
+    pub fn safe_position(&self, zone: &str, x: f64, z: f64) -> Result<(f64, f64, f64), String> {
+        let x = x.clamp(-22., 22.);
+        let z = z.clamp(-22., 22.);
+        if let Some(y) = self.sample_ground(zone, x, z) {
+            return Ok((x, z, y));
+        }
+        let terrain = self.terrains.get(zone).ok_or("No terrain")?;
+        let mut nearest = None;
+        let mut best = f64::INFINITY;
+        for row in 0..terrain.depth {
+            for column in 0..terrain.width {
+                let Some(y) = terrain.heights[row * terrain.width + column] else {
+                    continue;
+                };
+                let px = terrain.min_x + column as f64 * terrain.step;
+                let pz = terrain.min_z + row as f64 * terrain.step;
+                if px.abs() > 22. || pz.abs() > 22. {
+                    continue;
+                }
+                let score = (px - x).powi(2) + (pz - z).powi(2);
+                if score < best {
+                    best = score;
+                    nearest = Some((px, pz, y));
+                }
+            }
+        }
+        nearest.ok_or_else(|| format!("No safe spawn within world bounds for {zone}"))
+    }
+    pub fn teleport(&self, player: &mut Player, zone: &str, x: f64, z: f64) -> Result<(), String> {
+        let (x, z, y) = self.safe_position(zone, x, z)?;
+        player.zone = zone.into();
+        player.x = x;
+        player.z = z;
+        player.y = y;
+        player.ground_y = y;
+        player.jump_offset = 0.;
+        player.vy = 0.;
+        player.input = Input::default();
+        player.boosting = false;
+        if zone != "race" {
+            player.race = None;
+        }
+        if zone != "karate" {
+            player.karate = None;
+        }
+        Ok(())
+    }
+    pub fn near_interaction(&self, player: &Player, name: &str) -> bool {
+        let (zone, x, z, radius) = match name {
+            "trainer" => ("hub", 7., 2., 2.),
+            "shop" => ("hub", -4., 8., 2.),
+            "fruit" => ("garden", -7., -5., 2.),
+            "swim" => ("garden", -8., 0., 3.),
+            _ => return false,
+        };
+        if player.zone != zone {
+            return false;
+        }
+        self.sample_ground(zone, x, z).is_some_and(|y| {
+            ((player.x - x).powi(2) + (player.z - z).powi(2) + (player.y - y).powi(2)).sqrt()
+                <= radius
+        })
+    }
+
+    pub fn action(&mut self, id: &str, message: &Value) {
+        let Some(mut player) = self.players.remove(id) else {
+            return;
+        };
+        if player.connections > 0
+            && message["action"].as_str().is_some()
+            && player.cooldown("message", self.time, 80.)
+        {
+            self.action_inner(&mut player, message);
+        }
+        self.players.insert(id.into(), player);
+        if self
+            .mission
+            .as_ref()
+            .is_some_and(|m| !m.completed && m.enemies.iter().all(|e| e.hp <= 0.))
+        {
+            self.finish_mission();
+        }
+    }
+    fn action_inner(&mut self, p: &mut Player, message: &Value) {
+        let action = message["action"].as_str().unwrap_or_default();
+        let id = p.id.clone();
+        if action.starts_with("watch-") {
+            watch::action(self, p, message);
+            return;
+        }
+        if p.watch.is_some() {
+            self.notice(
+                &id,
+                "Stop watching your Chao before starting another activity.",
+                "error",
+            );
+            return;
+        }
+        if action.starts_with("tiny-") {
+            phone::action(self, p, message);
+            return;
+        }
+        if p.tiny_game.is_some() {
+            self.notice(
+                &id,
+                "Stop your Tiny Garden game before returning to other activities.",
+                "error",
+            );
+            return;
+        }
+        if action.starts_with("karate-") {
+            activities::karate_action(self, p, message);
+            return;
+        }
+        if action == "race-enter" {
+            activities::enter_race(self, p, message);
+            return;
+        }
+        if action == "race-leave" {
+            let _ = self.teleport(p, "hub", 0., 6.);
+            return;
+        }
+        if action == "attack" && p.zone == "karate" {
+            activities::karate_action(self, p, &json!({"action":"karate-attack","move":"punch"}));
+            return;
+        }
+        match action {
+            "attack" => {
+                if p.vehicle.as_deref() == Some("dark-chao-walker") {
+                    self.mech_fire(p);
+                } else {
+                    self.attack(p);
+                }
+                return;
+            }
+            "mech-fire" => {
+                self.mech_fire(p);
+                return;
+            }
+            "admin-dark-chaos" => {
+                if !p.admin {
+                    self.notice(
+                        &id,
+                        "Only the owner admin can choose this form directly.",
+                        "error",
+                    );
+                    return;
+                }
+                p.form = "chaos".into();
+                p.alignment = -100.;
+                self.dirty = true;
+                self.notice(
+                    &id,
+                    "Your owner Chao is now a Dark Chaos Chao. Perfect stats preserved.",
+                    "success",
+                );
+                return;
+            }
+            "mount-dark-walker" => {
+                if p.race.as_ref().is_some_and(|r| r.course_id.is_some()) {
+                    self.notice(
+                        &p.id,
+                        "Leave your native Chao race before mounting a vehicle.",
+                        "error",
+                    );
+                    return;
+                }
+                if p.zone == "karate" {
+                    self.notice(&id, "Leave Chao Karate before mounting a vehicle.", "error");
+                    return;
+                }
+                if !p.admin {
+                    self.notice(
+                        &id,
+                        "Only the owner admin can pilot the Dark Chao Walker.",
+                        "error",
+                    );
+                    return;
+                }
+                p.vehicle = Some("dark-chao-walker".into());
+                self.dirty = true;
+                self.notice(&id, "You are piloting the Dark Chao Walker.", "success");
+                return;
+            }
+            "dismount-vehicle" => {
+                p.vehicle = None;
+                p.boosting = false;
+                self.dirty = true;
+                self.notice(&id, "You stepped out of your vehicle.", "info");
+                return;
+            }
+            "equip-owner-gear" | "unequip-owner-gear" => {
+                if !p.admin {
+                    self.notice(&id, "Only the owner admin can equip these extras.", "error");
+                    return;
+                }
+                if action == "equip-owner-gear" {
+                    match message["item"].as_str() {
+                        Some("shadow-air-shoes") => {
+                            p.gear.footwear = Some("shadow-air-shoes".into())
+                        }
+                        Some("knuckles-hammer-gloves") => {
+                            p.gear.hands = Some("knuckles-hammer-gloves".into())
+                        }
+                        _ => {
+                            self.notice(&id, "Unknown gear item.", "error");
+                            return;
+                        }
+                    }
+                } else {
+                    match message["slot"].as_str() {
+                        Some("footwear") => p.gear.footwear = None,
+                        Some("hands") => p.gear.hands = None,
+                        _ => {
+                            self.notice(&id, "Unknown gear slot.", "error");
+                            return;
+                        }
+                    }
+                }
+                self.dirty = true;
+                self.notice(&id, "Your gear has been updated.", "success");
+                return;
+            }
+            "rename" => {
+                p.name = clean_name(message["name"].as_str());
+                self.dirty = true;
+                self.notice(&id, format!("Your name is now {}.", p.name), "info");
+                return;
+            }
+            "hub" | "garden" => {
+                let _ = self.teleport(p, action, 0., 6.);
+                p.hp = p.max_hp;
+                self.notice(
+                    &id,
+                    if action == "hub" {
+                        "Welcome back to the main hub."
+                    } else {
+                        "You entered the Neutral Garden."
+                    },
+                    "info",
+                );
+                return;
+            }
+            "hero" | "dark" => {
+                if !(if action == "hero" {
+                    p.alignment >= 60.
+                } else {
+                    p.alignment <= -60.
+                }) {
+                    self.notice(&id, format!("{} Garden needs {} alignment. Make garden choices to change your alignment.", if action == "hero" { "Hero" } else { "Dark" }, if action == "hero" { "+60" } else { "−60" }), "error");
+                    return;
+                }
+                let _ = self.teleport(p, action, 0., 6.);
+                self.notice(
+                    &id,
+                    format!(
+                        "You entered the {} Garden.",
+                        if action == "hero" { "Hero" } else { "Dark" }
+                    ),
+                    "info",
+                );
+                return;
+            }
+            "mission" => {
+                self.enter_mission(p);
+                return;
+            }
+            "race" => {
+                if p.race.is_some() {
+                    self.notice(
+                        &id,
+                        "Your race is already running. Follow the checkpoint order.",
+                        "info",
+                    );
+                    return;
+                }
+                let _ = self.teleport(p, "race", 0., 12.);
+                p.race = Some(Race {
+                    started_at: self.time,
+                    next_checkpoint: 1,
+                    course_id: None,
+                });
+                self.notice(
+                    &id,
+                    "Race started! Follow the glowing checkpoints in order.",
+                    "success",
+                );
+                return;
+            }
+            "evolve" => {
+                if p.form == "chaos" {
+                    self.notice(&id, "You have already become a Chaos Chao.", "info");
+                    return;
+                }
+                if p.evolution()["ready"] != true {
+                    self.notice(&id, "Chaos evolution: finish 3 missions and 1 race, reach Run/Swim/Power level 10, and happiness 80.", "error");
+                    return;
+                }
+                p.form = "chaos".into();
+                self.dirty = true;
+                self.notice(
+                    &id,
+                    "Your adventures have awakened a Chaos Chao!",
+                    "success",
+                );
+                return;
+            }
+            _ => {}
+        }
+        if !["hub", "garden", "hero", "dark"].contains(&p.zone.as_str()) {
+            self.notice(
+                &id,
+                "Return to the hub or a garden for this activity.",
+                "error",
+            );
+            return;
+        }
+        if action == "buy" {
+            self.buy(p, message["item"].as_str());
+            return;
+        }
+        if action == "align-good" || action == "align-dark" {
+            if !p.cooldown("alignment", self.time, 1500.) {
+                self.notice(&id, "Give your last choice a moment.", "info");
+                return;
+            }
+            p.alignment =
+                (p.alignment + if action == "align-good" { 15. } else { -15. }).clamp(-100., 100.);
+            p.happiness = (p.happiness + 2.).min(100.);
+            p.update_form();
+            self.dirty = true;
+            self.notice(
+                &id,
+                if action == "align-good" {
+                    "You helped another Chao. Hero alignment +15."
+                } else {
+                    "You played a mischievous prank. Dark alignment +15."
+                },
+                "info",
+            );
+            return;
+        }
+        if action == "feed" {
+            if !self.near_interaction(p, "fruit") {
+                self.notice(&id, "Visit the Neutral Garden fruit grove, or buy Garden Fruit from Amy in the hub.", "info");
+                return;
+            }
+            if !p.cooldown("feed", self.time, 1200.) {
+                return;
+            }
+            if p.rings < 3 {
+                self.notice(
+                    &id,
+                    "Fruit costs 3 rings. Explore to collect more.",
+                    "error",
+                );
+                return;
+            }
+            p.rings -= 3;
+            p.energy = (p.energy + 35.).min(100.);
+            p.hunger = (p.hunger + 30.).min(100.);
+            p.happiness = (p.happiness + 8.).min(100.);
+            p.gain("stamina", 1);
+            self.dirty = true;
+            self.notice(
+                &id,
+                "Yum! Fruit restored energy and raised Stamina.",
+                "success",
+            );
+            return;
+        }
+        if let Some(stat) = action
+            .strip_prefix("train-")
+            .filter(|stat| MAIN_STATS.contains(stat))
+        {
+            if !self.near_interaction(p, if stat == "swim" { "swim" } else { "trainer" }) {
+                self.notice(
+                    &id,
+                    if stat == "swim" {
+                        "Visit the Neutral Garden pond to practice swimming."
+                    } else {
+                        "Visit Knuckles in the hub for skill training."
+                    },
+                    "info",
+                );
+                return;
+            }
+            if !p.cooldown("train", self.time, 900.) {
+                return;
+            }
+            if p.energy < 10. {
+                self.notice(&id, "You need energy. Eat some fruit first.", "error");
+                return;
+            }
+            p.energy -= 10.;
+            p.happiness = (p.happiness + 2.).min(100.);
+            p.gain(stat, 2);
+            self.dirty = true;
+            let title = format!("{}{}", stat[..1].to_uppercase(), &stat[1..]);
+            self.notice(
+                &id,
+                format!("{title} training complete: +2 levels."),
+                "success",
+            );
+        }
+    }
+    fn buy(&mut self, p: &mut Player, item_id: Option<&str>) {
+        if !self.near_interaction(p, "shop") {
+            self.notice(
+                &p.id,
+                "Visit Amy in the main hub to buy from the Chao shop.",
+                "info",
+            );
+            return;
+        }
+        let Some(item) = SHOP_CATALOG.iter().find(|item| Some(item.id) == item_id) else {
+            self.notice(&p.id, "That item is not in the Chao shop.", "error");
+            return;
+        };
+        if item.id == "eggshell-cap" && p.owned_cosmetics.iter().any(|id| id == "eggshell") {
+            self.notice(&p.id, "You already own the Eggshell Cap.", "info");
+            return;
+        }
+        if p.rings < item.price {
+            self.notice(
+                &p.id,
+                format!(
+                    "{} costs {} rings. Collect a few more first.",
+                    item.name, item.price
+                ),
+                "error",
+            );
+            return;
+        }
+        p.rings -= item.price;
+        match item.id {
+            "garden-fruit" => {
+                p.energy = (p.energy + 25.).min(100.);
+                p.hunger = (p.hunger + 25.).min(100.);
+                p.happiness = (p.happiness + 10.).min(100.);
+            }
+            "run-drive" => p.gain("run", 2),
+            "power-drive" => p.gain("power", 2),
+            "eggshell-cap" => {
+                p.owned_cosmetics.push("eggshell".into());
+                p.equipped = Some("eggshell".into());
+            }
+            _ => {}
+        }
+        self.dirty = true;
+        self.notice(
+            &p.id,
+            format!("Purchased {} for {} rings!", item.name, item.price),
+            "success",
+        );
+    }
+    fn enter_mission(&mut self, p: &mut Player) {
+        if p.zone == "mission" {
+            self.notice(
+                &p.id,
+                "You are already in the arena. Defeat all five robots.",
+                "info",
+            );
+            return;
+        }
+        let occupied = self
+            .players
+            .values()
+            .any(|other| other.connections > 0 && other.zone == "mission");
+        if self.mission.is_none() || !occupied {
+            let id = Uuid::new_v4().to_string();
+            self.mission = Some(Mission {
+                enemies: [(-10., -7.), (-4., -11.), (4., -11.), (10., -7.), (0., -3.)]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (x, z))| Enemy {
+                        id: format!("{id}-robot-{i}"),
+                        x,
+                        z,
+                        hp: 100.,
+                        max_hp: 100.,
+                        last_attack_at: f64::NEG_INFINITY,
+                    })
+                    .collect(),
+                rings: [(-10., 6.), (-5., 1.), (0., -4.), (5., 1.), (10., 6.)]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (x, z))| Ring {
+                        id: format!("{id}-ring-{i}"),
+                        x,
+                        z,
+                        zone: "mission".into(),
+                        available_at: 0.,
+                    })
+                    .collect(),
+                id,
+                completed: false,
+                members: BTreeSet::new(),
+                rewarded: BTreeSet::new(),
+            });
+        }
+        let mission = self.mission.as_mut().unwrap();
+        if mission.completed {
+            self.notice(
+                &p.id,
+                "This arena is cleared. Everyone must return to a garden before a new mission.",
+                "info",
+            );
+            return;
+        }
+        mission.members.insert(p.id.clone());
+        let _ = self.teleport(p, "mission", 0., 15.);
+        p.hp = p.max_hp;
+        self.notice(
+            &p.id,
+            "Mission: defeat 5 robots! Move close and attack. Clear reward: 50 rings.",
+            "success",
+        );
+    }
+    fn attack(&mut self, p: &mut Player) {
+        if p.zone != "mission" || self.mission.as_ref().is_none_or(|m| m.completed) {
+            self.notice(&p.id, "Attack robots inside the mission arena.", "info");
+            return;
+        }
+        if !p.cooldown("attack", self.time, 550.) {
+            return;
+        }
+        self.events.push(Event { target: None, message: json!({"type": "event", "kind": "attack", "playerId": p.id, "x": p.x, "z": p.z, "zone": p.zone}) });
+        let mission = self.mission.as_mut().unwrap();
+        let nearest = mission
+            .enemies
+            .iter_mut()
+            .filter(|enemy| {
+                enemy.hp > 0.
+                    && ((p.x - enemy.x).powi(2) + (p.z - enemy.z).powi(2) + p.y.powi(2)).sqrt()
+                        <= 0.8
+            })
+            .min_by(|a, b| dist(p.x, p.z, a.x, a.z).total_cmp(&dist(p.x, p.z, b.x, b.z)));
+        let Some(enemy) = nearest else {
+            self.notice(&p.id, "Get close to a robot to hit it.", "info");
+            return;
+        };
+        enemy.hp = (enemy.hp
+            - if p.admin {
+                100.
+            } else {
+                35. + f64::from(p.stats["power"].level) * 0.3
+            })
+        .max(0.);
+        if enemy.hp == 0. {
+            p.rings += 5;
+            p.gain("power", 1);
+            self.dirty = true;
+            self.notice(&p.id, "Robot defeated! +5 rings.", "success");
+        }
+    }
+    fn mech_fire(&mut self, p: &mut Player) {
+        if !p.admin || p.vehicle.as_deref() != Some("dark-chao-walker") {
+            self.notice(
+                &p.id,
+                "Mount your authorized Dark Chao Walker to fire.",
+                "error",
+            );
+            return;
+        }
+        if !p.cooldown("mech-fire", self.time, MECH_FIRE_COOLDOWN) {
+            return;
+        }
+        let dx = p.facing.sin();
+        let dz = p.facing.cos();
+        let (x, y, z) = (p.x + dx * 0.35, p.y + 0.65, p.z + dz * 0.35);
+        let target = self
+            .mission
+            .as_mut()
+            .filter(|m| p.zone == "mission" && !m.completed)
+            .and_then(|mission| {
+                mission
+                    .enemies
+                    .iter_mut()
+                    .filter(|enemy| {
+                        let ex = enemy.x - p.x;
+                        let ez = enemy.z - p.z;
+                        let flat = ex.hypot(ez);
+                        enemy.hp > 0.
+                            && (ex.powi(2) + ez.powi(2) + (0.35 - y).powi(2)).sqrt()
+                                <= MECH_FIRE_RANGE
+                            && (flat < 0.001
+                                || (ex * dx + ez * dz) / flat >= std::f64::consts::FRAC_1_SQRT_2)
+                    })
+                    .min_by(|a, b| dist(p.x, p.z, a.x, a.z).total_cmp(&dist(p.x, p.z, b.x, b.z)))
+            });
+        let (target_id, hit_x, hit_y, hit_z, killed) = if let Some(enemy) = target {
+            enemy.hp = (enemy.hp - MECH_FIRE_DAMAGE).max(0.);
+            (
+                Some(enemy.id.clone()),
+                enemy.x,
+                0.35,
+                enemy.z,
+                enemy.hp == 0.,
+            )
+        } else {
+            (
+                None,
+                x + dx * MECH_FIRE_RANGE,
+                y,
+                z + dz * MECH_FIRE_RANGE,
+                false,
+            )
+        };
+        self.events.push(Event { target: None, message: json!({"type":"event", "kind":"mech-shot", "playerId":p.id, "zone":p.zone,
+            "x":x, "y":y, "z":z, "hitX":hit_x, "hitY":hit_y, "hitZ":hit_z, "hit":target_id.is_some(), "targetId":target_id}) });
+        if killed {
+            p.rings += 5;
+            p.gain("power", 1);
+            self.dirty = true;
+            self.notice(&p.id, "Robot defeated! +5 rings.", "success");
+        }
+    }
+    pub fn finish_mission(&mut self) {
+        let Some(mission) = self.mission.as_mut().filter(|m| !m.completed) else {
+            return;
+        };
+        mission.completed = true;
+        let mut recipients = vec![];
+        for id in &mission.members {
+            let Some(p) = self
+                .players
+                .get_mut(id)
+                .filter(|p| p.connections > 0 && p.zone == "mission")
+            else {
+                continue;
+            };
+            if !mission.rewarded.insert(id.clone()) {
+                continue;
+            }
+            p.rings += 50;
+            p.missions_completed += 1;
+            p.happiness = (p.happiness + 10.).min(100.);
+            for stat in MAIN_STATS {
+                p.gain(stat, 2);
+            }
+            recipients.push(id.clone());
+        }
+        for id in recipients {
+            self.notice(
+                &id,
+                "Mission cleared! +50 rings and +2 to all five skill levels.",
+                "success",
+            );
+        }
+        self.dirty = true;
+    }
+
+    pub fn tick(&mut self, dt: f64) {
+        if !dt.is_finite() || dt <= 0. {
+            return;
+        }
+        let dt = dt.min(0.1);
+        self.time += dt * 1000.;
+        let ids: Vec<_> = self.players.keys().cloned().collect();
+        for id in ids {
+            let mut p = self.players.remove(&id).unwrap();
+            if p.connections == 0 && p.watch.is_none() {
+                self.players.insert(id, p);
+                continue;
+            }
+            if p.tiny_game.is_some() {
+                phone::tick(self, &mut p, dt);
+                self.players.insert(id, p);
+                continue;
+            }
+            if self.time - p.last_input_at > 350. {
+                p.input = Input::default();
+            }
+            watch::tick(self, &mut p);
+            let water = p.zone == "garden" && dist(p.x, p.z, -8., 0.) < 5.;
+            let mut speed = (1.4 + f64::from(p.stats["run"].level) * 0.006)
+                * if water {
+                    0.65 + f64::from(p.stats["swim"].level) * 0.003
+                } else {
+                    1.
+                };
+            if p.race
+                .as_ref()
+                .is_some_and(|r| r.course_id.is_some() && self.time < r.started_at)
+            {
+                speed = 0.;
+            }
+            let mut ground = match self.player_ground(&p, p.x, p.z) {
+                Some(height) => height,
+                None => {
+                    let recovery = if let Some(course) = activities::native_course(self, &p) {
+                        course
+                            .spawn
+                            .as_ref()
+                            .and_then(|spawn| {
+                                self.player_ground(&p, spawn.x, spawn.z)
+                                    .map(|y| (spawn.x, spawn.z, y))
+                            })
+                            .ok_or_else(|| "No native race spawn".to_string())
+                    } else {
+                        self.safe_position(&p.zone, p.x, p.z)
+                    };
+                    let Ok((x, z, y)) = recovery else {
+                        self.players.insert(id, p);
+                        continue;
+                    };
+                    p.x = x;
+                    p.z = z;
+                    p.jump_offset = 0.;
+                    p.vy = 0.;
+                    y
+                }
+            };
+            let mounted = p.admin && p.vehicle.as_deref() == Some("dark-chao-walker");
+            if p.input.jump && p.jump_offset <= 0. && p.vy <= 0. {
+                p.vy = if mounted { 3.2 } else { 2.4 };
+            }
+            p.input.jump = false;
+            p.boosting = mounted && p.input.boost && p.boost_energy > 0.;
+            let predicted_y = if p.boosting {
+                p.boost_energy = (p.boost_energy - MECH_BOOST_DRAIN * dt).max(0.);
+                p.vy = MECH_BOOST_SPEED;
+                let height = (ground + p.jump_offset + p.vy * dt).min(ground + MECH_BOOST_HEIGHT);
+                if height >= ground + MECH_BOOST_HEIGHT {
+                    p.vy = 0.;
+                }
+                height
+            } else {
+                let height = ground + p.jump_offset + p.vy * dt - 0.5 * 12. * dt * dt;
+                p.vy -= 12. * dt;
+                height
+            };
+            let bounds = activities::native_course(self, &p)
+                .map(|c| c.bounds.clone())
+                .unwrap_or_else(|| {
+                    if p.zone == "karate" {
+                        activities::Bounds {
+                            min_x: -1.35,
+                            max_x: 1.35,
+                            min_z: 0.4,
+                            max_z: 3.1,
+                        }
+                    } else {
+                        activities::Bounds::default()
+                    }
+                });
+            let next_x = (p.x + p.input.dx * speed * dt).clamp(bounds.min_x, bounds.max_x);
+            let next_z = (p.z + p.input.dz * speed * dt).clamp(bounds.min_z, bounds.max_z);
+            let (start_x, start_z, start_ground) = (p.x, p.z, ground);
+            let subdivisions = self.player_terrain(&p).map_or(1, |t| {
+                (dist(next_x, next_z, start_x, start_z) / 0.2_f64.min(t.step * 0.4))
+                    .ceil()
+                    .max(1.) as usize
+            });
+            for part in 1..=subdivisions {
+                let x = start_x + (next_x - start_x) * part as f64 / subdivisions as f64;
+                let z = start_z + (next_z - start_z) * part as f64 / subdivisions as f64;
+                let Some(candidate) = self.player_ground(&p, x, z) else {
+                    break;
+                };
+                if candidate - start_ground > 0.15 && predicted_y < candidate {
+                    break;
+                }
+                p.x = x;
+                p.z = z;
+                ground = candidate;
+            }
+            if p.input.dx != 0. || p.input.dz != 0. {
+                p.facing = p.input.dx.atan2(p.input.dz);
+            }
+            p.ground_y = ground;
+            p.y = ground.max(if p.boosting {
+                predicted_y.min(ground + MECH_BOOST_HEIGHT)
+            } else {
+                predicted_y
+            });
+            p.jump_offset = p.y - ground;
+            if p.jump_offset == 0. {
+                p.vy = 0.;
+                if !p.input.boost {
+                    p.boost_energy = (p.boost_energy + MECH_BOOST_RECOVERY * dt).min(100.);
+                }
+            }
+            if p.watch.is_none() {
+                p.energy = (p.energy + dt * 1.1).min(100.);
+            }
+            if p.watch.is_none() {
+                self.pickup_rings(&mut p);
+                activities::tick_karate(self, &mut p, dt);
+                self.tick_race(&mut p);
+            }
+            self.players.insert(id, p);
+        }
+        self.tick_enemies(dt);
+    }
+    fn pickup_rings(&mut self, p: &mut Player) {
+        let nodes = if p.zone == "mission" {
+            self.mission
+                .as_ref()
+                .map(|m| m.rings.clone())
+                .unwrap_or_default()
+        } else {
+            self.rings.clone()
+        };
+        for (i, ring) in nodes.iter().enumerate() {
+            if ring.zone != p.zone
+                || ring.available_at > self.time
+                || dist(p.x, p.z, ring.x, ring.z) > 0.55
+            {
+                continue;
+            }
+            if self
+                .sample_ground(&ring.zone, ring.x, ring.z)
+                .is_none_or(|height| (p.y - height).abs() > 2.5)
+            {
+                continue;
+            }
+            if p.zone == "mission" {
+                self.mission.as_mut().unwrap().rings[i].available_at = f64::INFINITY;
+            } else {
+                self.rings[i].available_at = self.time + 20000.;
+            }
+            p.rings += 1;
+            self.dirty = true;
+            self.events.push(Event { target: Some(p.id.clone()), message: json!({"type": "event", "kind": "ring", "ringId": ring.id, "x": ring.x, "z": ring.z}) });
+        }
+    }
+    fn tick_enemies(&mut self, dt: f64) {
+        let Some(mut mission) = self.mission.take() else {
+            return;
+        };
+        if mission.completed {
+            self.mission = Some(mission);
+            return;
+        }
+        for enemy in mission.enemies.iter_mut().filter(|enemy| enemy.hp > 0.) {
+            let target_id = self
+                .players
+                .values()
+                .filter(|p| p.connections > 0 && p.zone == "mission")
+                .min_by(|a, b| {
+                    dist(enemy.x, enemy.z, a.x, a.z).total_cmp(&dist(enemy.x, enemy.z, b.x, b.z))
+                })
+                .map(|p| p.id.clone());
+            let Some(id) = target_id else {
+                break;
+            };
+            let mut target = self.players.remove(&id).unwrap();
+            let length = dist(enemy.x, enemy.z, target.x, target.z);
+            if length > 0.55 {
+                enemy.x = (enemy.x + (target.x - enemy.x) / length * dt * 0.8).clamp(-20., 20.);
+                enemy.z = (enemy.z + (target.z - enemy.z) / length * dt * 0.8).clamp(-20., 20.);
+            } else if self.time - enemy.last_attack_at > 1300. && target.y < 0.4 {
+                enemy.last_attack_at = self.time;
+                target.hp = (target.hp - 8.).max(0.);
+                if target.hp == 0. {
+                    let _ = self.teleport(&mut target, "hub", 0., 6.);
+                    target.hp = target.max_hp;
+                    self.notice(
+                        &id,
+                        "The robots overwhelmed you. You recovered safely in the main hub.",
+                        "error",
+                    );
+                }
+            }
+            self.players.insert(id, target);
+        }
+        self.mission = Some(mission);
+    }
+    fn tick_race(&mut self, p: &mut Player) {
+        if p.race.as_ref().is_some_and(|race| race.course_id.is_some()) {
+            activities::tick_native_race(self, p);
+            return;
+        }
+        if p.zone != "race" {
+            return;
+        }
+        let Some(race) = p.race.as_mut() else {
+            return;
+        };
+        let (x, z) = RACE_CHECKPOINTS[race.next_checkpoint];
+        if dist(p.x, p.z, x, z) > 0.8 {
+            return;
+        }
+        race.next_checkpoint += 1;
+        if race.next_checkpoint < RACE_CHECKPOINTS.len() {
+            self.notice(
+                &p.id,
+                format!("Checkpoint {}/4!", race.next_checkpoint - 1),
+                "info",
+            );
+            return;
+        }
+        let elapsed = (self.time - race.started_at).round();
+        p.races_completed += 1;
+        p.rings += 25;
+        p.best_race_ms = Some(p.best_race_ms.map_or(elapsed, |best| best.min(elapsed)));
+        p.gain("run", 3);
+        p.happiness = (p.happiness + 10.).min(100.);
+        let _ = self.teleport(p, "hub", 0., 6.);
+        self.dirty = true;
+        self.notice(
+            &p.id,
+            format!("Race finished in {:.1}s! +25 rings.", elapsed / 1000.),
+            "success",
+        );
+    }
+    pub fn snapshot(&self, self_id: &str) -> Value {
+        let rings: Vec<_> = self
+            .rings
+            .iter()
+            .chain(self.mission.iter().flat_map(|m| m.rings.iter()))
+            .filter(|ring| ring.available_at <= self.time)
+            .map(|ring| json!({"id": ring.id, "x": ring.x, "z": ring.z, "zone": ring.zone}))
+            .collect();
+        let enemies: Vec<_> = self.mission.iter().flat_map(|m| m.enemies.iter()).filter(|enemy| enemy.hp > 0.)
+            .map(|enemy| json!({"id": enemy.id, "x": enemy.x, "z": enemy.z, "hp": enemy.hp, "maxHp": enemy.max_hp, "zone": "mission"})).collect();
+        let race = self
+            .players
+            .get(self_id)
+            .and_then(|p| activities::public_race(self, p));
+        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.connections > 0 || p.watch.is_some()).map(Player::public).collect::<Vec<_>>(),
+            "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
+            "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
+            "karate": self.players.get(self_id).and_then(|p|p.karate.as_ref().map(KarateBout::public)),
+            "activityResult": self.players.get(self_id).and_then(|p|p.activity_result.as_ref()),
+            "tinyGame":self.players.get(self_id).and_then(|p|p.tiny_game.as_ref().map(TinyRun::public)),
+            "tinyResult":self.players.get(self_id).and_then(|p|p.tiny_result.as_ref())})
+    }
+    pub fn export_profiles(&self) -> Vec<Value> {
+        self.players.values().map(Player::profile).collect()
+    }
+    pub fn drain_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
+    }
+    pub fn online_connections(&self) -> usize {
+        self.players.values().map(|p| p.connections).sum()
+    }
+}

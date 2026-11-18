@@ -1,0 +1,8 @@
+target/
+/node_modules/
+/data/
+/.local/
+*.log
+.env
+.env.*
+!.env.example

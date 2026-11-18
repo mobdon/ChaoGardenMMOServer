@@ -63,12 +63,17 @@ data/
   profiles.json
   game-inventory.json             # optional client-generated inventory
   terrain/{hub,garden,hero,dark}.json
-  imports/                        # allowlisted .glb, .png, and .mp3 files
+  activities/{races,karate}.json   # optional locally extracted source catalogs
+  activities/terrain/{worldId}.json
+  imports/                        # fixed .glb, .png, .mp3 and Shadow motion JSON aliases
+  imports/activities/              # four exact native activity model aliases
 ```
 
 Profiles store SHA-256 token hashes, progression, alignment, cosmetic ownership,
 and validated vehicle selection. Node reference profiles are compatible with the
-Rust server. Coordinates and connection state reset to a safe hub spawn on load.
+Rust server. Direct-control profiles reset to a safe hub spawn on load. An
+explicitly opted-in resident restores once at a safe eligible garden position
+with a fresh routine session; service downtime creates no simulated activity.
 Profile writes use an atomic temporary-file replacement. Keep backups of the
 data directory before upgrading an existing installation.
 
@@ -86,17 +91,43 @@ redistributed Sonic assets.
 
 - `GET /api/status`: health, online connections, asset inventory, terrain state.
 - `POST /api/session`: JSON `name` and/or an existing `token`; returns a session.
+  `resumeOnly:true` rejects an unknown/missing token with 404 and creates no
+  profile, so a title-screen save slot cannot silently become another Chao.
+- `GET /api/activities`: detailed original catalog/provenance; compact
+  descriptors and current activity state also appear in snapshots.
+- The Rust Tiny Garden game protocol, five game IDs, session-bound inputs and
+  atomic earned rewards are documented in [PHONE.md](PHONE.md).
+- Tiny Watch, shared garden residency while disconnected, deliberate care,
+  durable opt-in, and direct-control return are documented in [WATCH.md](WATCH.md).
 - `GET /ws?token=...`: authenticated WebSocket; receives snapshots at 10 Hz.
 - Simulation runs at 20 Hz. Movement messages carry `dx`, `dz`, and `jump` intent.
 - Actions carry `type: "action"` and an action name. Client coordinates, currency,
   stats, roles, damage, and reward claims are ignored.
+- `save` explicitly flushes authoritative profiles and returns a direct
+  `{"type":"event","kind":"saved","playerId":"...","serverTime":...}`
+  only after a successful save. Disk errors return an error notice without a
+  success acknowledgement. The browser can wait for this event before returning
+  to its title screen. Save requests cannot upload profile state.
 
 Gameplay covers hub/gardens and alignment gates, training, fixed-price shopping,
 rings, ordered races, cooperative robot missions, and Chaos evolution. The
+native-roster Karate tournament loop and validated-course race authority are
+documented in [ACTIVITIES.md](ACTIVITIES.md). All 62 extracted original race
+configurations remain disabled until genuine routes and obstacles are verified.
+The
 owner's `mount-dark-walker` action sets `vehicle` to `"dark-chao-walker"`;
-`dismount-vehicle` clears it. The mount currently preserves ordinary movement
-and combat rules. Vehicle selection authorizes presentation; native mech
-physics and weapons are not implemented.
+`dismount-vehicle` clears it. While mounted, `mech-fire` (or `attack`) fires a
+server-owned cannon, and held `boost: true` input activates bounded jet thrust.
+These are adapted prototype rules; the native mech's physics and full technique
+set have not been ported. See [MECH_MOVES.md](MECH_MOVES.md) for exact controls,
+authority limits, source motion coverage, and remaining techniques.
+
+Owner gear uses independent persistent `gear.footwear` and `gear.hands` slots.
+`equip-owner-gear` accepts `item: "shadow-air-shoes"` or
+`item: "knuckles-hammer-gloves"`; `unequip-owner-gear` accepts `slot: "footwear"`
+or `slot: "hands"`. These extras attach native visual models and do not grant
+stat boosts, Light Dash, or iron-container breaking mechanics. Roles, items, and
+slots are validated by the authority.
 
 Requests require an allowed browser origin. Loopback HTTP(S) origins are accepted
 for loopback development. WebSocket payloads are limited to 2 KiB and 80 messages
