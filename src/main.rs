@@ -44,8 +44,27 @@ async fn shutdown_signal() {
     tokio::select! { _ = controlling_launcher => {}, _ = operating_system => {} }
 }
 
+/// One-shot release step: load state, apply any pending data normalisation
+/// (schema/shape changes on the JSON stores), and exit. The deployment
+/// pipeline runs this before machines roll so a failed migration never
+/// reaches the new image (see scripts/migrate.sh).
+fn run_release_migration() -> io::Result<()> {
+    let config = Config::from_env().map_err(io::Error::other)?;
+    let state = AppState::load(config)?;
+    state.release_migration()?;
+    println!("Release migration complete: {}", state.config.data_dir.display());
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    // `chao-game-server migrate` is the controlled release step; anything else
+    // serves the game.
+    if let Some(command) = std::env::args().nth(1)
+        && command == "migrate"
+    {
+        return run_release_migration();
+    }
     let config = Config::from_env().map_err(io::Error::other)?;
     let state = AppState::load(config)?;
     let listener = tokio::net::TcpListener::bind(state.config.address).await?;

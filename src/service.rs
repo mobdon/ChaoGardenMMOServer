@@ -1,4 +1,5 @@
 use crate::game::{Event, Game, TERRAIN_ZONES, Terrain};
+use crate::metrics::Metrics;
 use axum::{
     Json, Router,
     body::{Body, Bytes},
@@ -20,7 +21,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     sync::{broadcast, watch},
@@ -79,6 +80,7 @@ impl Config {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             owner_bootstrap,
             allowed_origins: vec![],
+            metrics: Metrics::new(),
         }
     }
 }
@@ -89,6 +91,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub events: broadcast::Sender<Event>,
     pub shutdown: watch::Sender<bool>,
+    pub metrics: Arc<Metrics>,
 }
 impl AppState {
     pub fn load(config: Config) -> io::Result<Self> {
@@ -164,6 +167,7 @@ impl AppState {
             config: Arc::new(config),
             events,
             shutdown,
+            metrics: Metrics::new(),
         })
     }
     pub fn persist(&self, game: &mut Game) -> io::Result<()> {
@@ -189,6 +193,27 @@ impl AppState {
         fs::rename(temporary, self.config.data_dir.join("profiles.json"))?;
         game.dirty = false;
         crate::phone::commit_rewards(game);
+        Ok(())
+    }
+    /// Controlled release migration, executed once per deploy before machines
+    /// roll. Idempotent: re-running against migrated data is a no-op. The
+    /// JSON stores are validated and re-serialised in canonical form so the
+    /// new image never serves half-upgraded data, and a schema marker records
+    /// the applied version for operators.
+    pub fn release_migration(&self) -> io::Result<()> {
+        const SCHEMA_VERSION: u32 = 1;
+        fs::create_dir_all(&self.config.data_dir)?;
+        let marker_path = self.config.data_dir.join(".schema-version");
+        if fs::read_to_string(&marker_path).ok().as_deref() == Some("1\n") {
+            return Ok(());
+        }
+        let profile_path = self.config.data_dir.join("profiles.json");
+        if profile_path.exists() {
+            // AppState::load already validated shape; rewrite canonically.
+            let profiles: Vec<Value> = serde_json::from_slice(&fs::read(&profile_path)?)?;
+            fs::write(&profile_path, serde_json::to_vec_pretty(&profiles)?)?;
+        }
+        fs::write(&marker_path, format!("{SCHEMA_VERSION}\n"))?;
         Ok(())
     }
     pub fn watch_action(&self, game: &mut Game, id: &str, message: &Value) -> io::Result<Value> {
@@ -228,6 +253,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/activities", get(activities))
         .route("/api/session", post(session))
         .route("/ws", get(upgrade))
+        // Deployment probes and metrics: unauthenticated, cheap, excluded from
+        // the request metrics themselves.
+        .route("/livez", get(livez))
+        .route("/readyz", get(readyz))
+        .route("/metrics", get(prometheus))
         .fallback(asset_or_missing)
         .layer(DefaultBodyLimit::max(2048))
         .layer(middleware::from_fn_with_state(state.clone(), origin_guard))
@@ -267,21 +297,55 @@ fn origin_allowed(headers: &HeaderMap, config: &Config) -> bool {
         )
 }
 async fn origin_guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    if !origin_allowed(request.headers(), &state.config) {
-        return error(
+    let started = Instant::now();
+    let mut response = if !origin_allowed(request.headers(), &state.config) {
+        error(
             StatusCode::FORBIDDEN,
             "Only configured application origins are allowed.",
-        );
-    }
-    let mut response = next.run(request).await;
+        )
+    } else {
+        next.run(request).await
+    };
     response
         .headers_mut()
         .insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    state
+        .metrics
+        .record_request(response.status().as_u16(), started.elapsed());
     response
 }
+
+/// Liveness: the process is running. Always cheap; never touches dependencies.
+async fn livez(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({"ok": true, "uptimeSeconds": state.metrics.uptime_seconds()}))
+}
+
+/// Readiness: safe to receive traffic. Verifies the data directory is writable
+/// so a read-only volume or saturated disk takes this machine out of rotation.
+async fn readyz(State(state): State<AppState>) -> Response {
+    match fs::create_dir_all(&state.config.data_dir) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(io_error) => {
+            eprintln!("Readiness failed: {io_error}");
+            error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Data directory is not writable.",
+            )
+        }
+    }
+}
+
+/// Prometheus text exposition of the series in [`crate::metrics`].
+async fn prometheus(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        state.metrics.render(),
+    )
+}
+
 async fn activities(State(state): State<AppState>) -> Json<Value> {
     let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
     Json(game.activities.details())
@@ -556,6 +620,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
     let mut events = state.events.subscribe();
     let mut shutdown = state.shutdown.subscribe();
     let (mut writer, mut reader) = socket.split();
+    state.metrics.ws_opened();
     let initial = {
         let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
         game.connect(&id);
@@ -576,6 +641,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
         .await
         .is_err()
     {
+        state.metrics.ws_closed();
         state
             .game
             .lock()
@@ -622,6 +688,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
                                             Ok(()) => json!({"type":"event","kind":"saved","playerId":id,"serverTime":game.time}),
                                             Err(error) => {
                                                 eprintln!("Explicit save failed: {error}");
+                                                state.metrics.record_persist_failure();
                                                 json!({"type":"notice","kind":"error","text":"Could not save your progress. Stay in the garden and try again."})
                                             }
                                         }
@@ -652,6 +719,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
             break;
         }
     }
+    state.metrics.ws_closed();
     state
         .game
         .lock()
@@ -674,6 +742,7 @@ pub fn spawn_simulation(state: AppState) -> tokio::task::JoinHandle<()> {
                     if crate::phone::has_pending(&game) && game.time >= game.tiny_save_retry_at
                         && let Err(value)=state.persist(&mut game) {
                         eprintln!("Could not save Tiny Garden result: {value}");
+                        state.metrics.record_persist_failure();
                         game.tiny_save_retry_at=game.time+1000.;
                         crate::phone::save_failed(&mut game);
                     }

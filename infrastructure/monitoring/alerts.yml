@@ -1,0 +1,87 @@
+# Alert rules consumed by Grafana/Prometheus (Mimir) against the /metrics
+# series exported by the API, plus Fly machine and Postgres provider metrics.
+# Budget-appropriate: a single Grafana Cloud free-tier stack.
+groups:
+  - name: chao-api-slo
+    rules:
+      - alert: HighErrorRate
+        expr: sum(rate(chao_http_errors_total[5m])) / sum(rate(chao_http_requests_total[5m])) > 0.02
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "API 5xx rate above 2% for 5m ({{ $labels.instance }})"
+          runbook: docs/runbooks/service-degradation.md
+
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(chao_http_request_duration_seconds_bucket[5m])) by (le)) > 0.5
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "p95 latency above 500ms"
+          runbook: docs/runbooks/service-degradation.md
+
+      - alert: WebSocketSurge
+        expr: chao_ws_connections > 500
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: "More than 500 concurrent WebSocket connections; check machine sizing"
+          runbook: docs/runbooks/service-degradation.md
+
+      - alert: WebSocketConnectionLoss
+        expr: sum(increase(chao_ws_connects_total[5m])) > 200 and sum(rate(chao_http_errors_total[5m])) > 0
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Connection churn with errors; likely flapping or network issue"
+          runbook: docs/runbooks/service-degradation.md
+
+  - name: chao-api-data
+    rules:
+      - alert: PersistenceFailures
+        expr: increase(chao_persist_failures_total[15m]) > 3
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "Repeated save failures — disk or DB saturation"
+          runbook: docs/runbooks/database-restore.md
+
+      - alert: EventQueueDrops
+        expr: increase(chao_event_drops_total[15m]) > 100
+        labels: {severity: ticket}
+        annotations:
+          summary: "Broadcast queue dropping events (Redis/pubsub pressure)"
+          runbook: docs/runbooks/redis-loss.md
+
+      - alert: DatabaseConnectionsSaturated
+        expr: pg_stat_activity_count / pg_settings_max_connections > 0.8
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "Postgres connections above 80% of max_connections"
+          runbook: docs/runbooks/database-restore.md
+
+      - alert: DatabaseDiskFill
+        expr: pg_disk_used_bytes / pg_disk_total_bytes > 0.85
+        labels: {severity: page}
+        annotations:
+          summary: "Postgres volume above 85% used"
+          runbook: docs/runbooks/database-restore.md
+
+  - name: chao-api-economy
+    rules:
+      - alert: EconomyRingRewardSpike
+        expr: sum(increase(chao_economy_ring_rewards_total[15m])) by () > 500
+        labels: {severity: page}
+        annotations:
+          summary: "Ring reward rate anomaly — possible exploit"
+          runbook: docs/runbooks/token-compromise.md
+
+      - alert: EconomySaveRateSpike
+        expr: sum(increase(chao_save_requests_total[15m])) by () > 1000
+        labels: {severity: ticket}
+        annotations:
+          summary: "Save rate anomaly — possible automation abuse"
+          runbook: docs/runbooks/token-compromise.md
