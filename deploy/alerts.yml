@@ -1,0 +1,48 @@
+groups:
+  - name: chao-capacity
+    rules:
+      - alert: ChaoAuthorityUnavailable
+        expr: up{job="chao"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: Single Chao authority is unavailable
+      - alert: ChaoTickBudgetExceeded
+        expr: histogram_quantile(0.95, sum by (le) (rate(chao_tick_duration_seconds_bucket[5m]))) > 0.05
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: Simulation p95 exceeds the proposed 50 ms tick budget
+      - alert: ChaoSaveFailures
+        expr: increase(chao_persist_failures_total[5m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: Inspect persistence immediately; preserve pending receipts
+      - alert: ChaoTickCadenceLost
+        expr: rate(chao_tick_duration_seconds_count[2m]) < 19
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: Simulation is missing its 20 Hz cadence; inspect snapshot contention
+      - alert: ChaoTickLockWait
+        expr: histogram_quantile(0.95, sum by (le) (rate(chao_tick_lock_wait_seconds_bucket[5m]))) > 0.025
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: Authority lock contention consumes the simulation budget
+      - alert: ChaoSlowClients
+        expr: increase(chao_slow_clients_total[5m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: Outbound send deadlines are disconnecting peers
+      - alert: ChaoEventLag
+        expr: increase(chao_event_lag_total[5m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: Event queue lag requires reconnect and receipt recovery
+      - alert: ChaoSaveLatency
+        expr: histogram_quantile(0.95, sum by (le) (rate(chao_save_duration_seconds_bucket[5m]))) > 0.05
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: Synchronous profile commits exceed the tick budget

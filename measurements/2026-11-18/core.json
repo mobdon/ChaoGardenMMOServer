@@ -1,0 +1,186 @@
+{
+  "kind": "core microbenchmark; synthetic flat terrain; no network, disk, native assets or active competitions",
+  "results": [
+    {
+      "connected": 100,
+      "residentMs": {
+        "count": 400,
+        "max": 0.0,
+        "p50": 0.0,
+        "p95": 0.0
+      },
+      "residents": 0,
+      "rooms": 4,
+      "snapshotBuildSerializeMs": {
+        "count": 200,
+        "max": 0.9775,
+        "p50": 0.6707,
+        "p95": 0.7215
+      },
+      "snapshotBytesByRoom": {
+        "dark": 28589,
+        "garden": 28842,
+        "hero": 28564,
+        "hub": 28488
+      },
+      "tickMs": {
+        "count": 400,
+        "max": 0.13640000000000002,
+        "p50": 0.0639,
+        "p95": 0.0771
+      },
+      "unfilteredBaselineSnapshotBytes": 111810
+    },
+    {
+      "connected": 100,
+      "residentMs": {
+        "count": 400,
+        "max": 0.0052,
+        "p50": 0.0022,
+        "p95": 0.0031999999999999997
+      },
+      "residents": 100,
+      "rooms": 4,
+      "snapshotBuildSerializeMs": {
+        "count": 200,
+        "max": 2.3654,
+        "p50": 1.5897000000000001,
+        "p95": 1.9002
+      },
+      "snapshotBytesByRoom": {
+        "dark": 76015,
+        "garden": 77816,
+        "hero": 76219,
+        "hub": 28488
+      },
+      "tickMs": {
+        "count": 400,
+        "max": 0.1932,
+        "p50": 0.10840000000000001,
+        "p95": 0.1199
+      },
+      "unfilteredBaselineSnapshotBytes": 255865
+    },
+    {
+      "connected": 250,
+      "residentMs": {
+        "count": 400,
+        "max": 0.0,
+        "p50": 0.0,
+        "p95": 0.0
+      },
+      "residents": 0,
+      "rooms": 4,
+      "snapshotBuildSerializeMs": {
+        "count": 200,
+        "max": 2.1847,
+        "p50": 0.9824,
+        "p95": 1.6168
+      },
+      "snapshotBytesByRoom": {
+        "dark": 69622,
+        "garden": 70946,
+        "hero": 69560,
+        "hub": 70478
+      },
+      "tickMs": {
+        "count": 400,
+        "max": 0.3028,
+        "p50": 0.1628,
+        "p95": 0.1835
+      },
+      "unfilteredBaselineSnapshotBytes": 277933
+    },
+    {
+      "connected": 250,
+      "residentMs": {
+        "count": 400,
+        "max": 0.018099999999999998,
+        "p50": 0.0056,
+        "p95": 0.0070999999999999995
+      },
+      "residents": 250,
+      "rooms": 4,
+      "snapshotBuildSerializeMs": {
+        "count": 200,
+        "max": 5.0793,
+        "p50": 2.4867,
+        "p95": 4.2577
+      },
+      "snapshotBytesByRoom": {
+        "dark": 189372,
+        "garden": 192149,
+        "hero": 189466,
+        "hub": 70478
+      },
+      "tickMs": {
+        "count": 400,
+        "max": 0.6005,
+        "p50": 0.27849999999999997,
+        "p95": 0.32899999999999996
+      },
+      "unfilteredBaselineSnapshotBytes": 638792
+    },
+    {
+      "connected": 500,
+      "residentMs": {
+        "count": 400,
+        "max": 0.0,
+        "p50": 0.0,
+        "p95": 0.0
+      },
+      "residents": 0,
+      "rooms": 4,
+      "snapshotBuildSerializeMs": {
+        "count": 200,
+        "max": 3.6559,
+        "p50": 1.913,
+        "p95": 3.1672
+      },
+      "snapshotBytesByRoom": {
+        "dark": 139489,
+        "garden": 139642,
+        "hero": 139364,
+        "hub": 138988
+      },
+      "tickMs": {
+        "count": 400,
+        "max": 0.5992000000000001,
+        "p50": 0.32670000000000005,
+        "p95": 0.3774
+      },
+      "unfilteredBaselineSnapshotBytes": 554810
+    },
+    {
+      "connected": 500,
+      "residentMs": {
+        "count": 400,
+        "max": 0.0236,
+        "p50": 0.011300000000000001,
+        "p95": 0.0135
+      },
+      "residents": 500,
+      "rooms": 4,
+      "snapshotBuildSerializeMs": {
+        "count": 200,
+        "max": 10.745899999999999,
+        "p50": 6.0604,
+        "p95": 9.6753
+      },
+      "snapshotBytesByRoom": {
+        "dark": 379445,
+        "garden": 381066,
+        "hero": 380480,
+        "hub": 138988
+      },
+      "tickMs": {
+        "count": 400,
+        "max": 1.1018,
+        "p50": 0.5677,
+        "p95": 0.6652
+      },
+      "unfilteredBaselineSnapshotBytes": 1277306
+    }
+  ],
+  "schemaVersion": 1
+}

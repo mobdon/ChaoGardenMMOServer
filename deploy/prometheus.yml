@@ -1,0 +1,10 @@
+# Run Prometheus on the same host. Its own UI must remain loopback/private.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+rule_files:
+  - alerts.yml
+scrape_configs:
+  - job_name: chao
+    static_configs:
+      - targets: ['127.0.0.1:3001']

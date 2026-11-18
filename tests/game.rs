@@ -673,5 +673,8 @@ fn disconnect_cancels_race_and_returns_to_separate_hub() {
     g.disconnect(&id);
     assert_eq!(g.players[&id].zone, "hub");
     assert!(g.players[&id].race.is_none());
-    assert_eq!(g.snapshot(&id)["players"].as_array().unwrap().len(), 0);
+    let snapshot = g.snapshot(&id);
+    assert_eq!(snapshot["players"].as_array().unwrap().len(), 1);
+    assert_eq!(snapshot["players"][0]["id"], id);
+    assert_eq!(snapshot["players"][0]["connected"], false);
 }

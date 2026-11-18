@@ -62,6 +62,11 @@ Configuration:
 | `CHAO_OWNER_BOOTSTRAP` | disabled | `1` or `true` grants the first profile owner powers; loopback only |
 | `CHAO_ALLOWED_ORIGINS` | empty | Comma-separated HTTP(S) browser origins |
 | `CHAO_SHUTDOWN_STDIN` | disabled | `1` accepts a `shutdown` line (or launcher EOF) on stdin for a clean save and exit |
+| `CHAO_MAX_CONNECTIONS` | `600` | Simultaneous sockets, including duplicate credentials; admission bound, not a measured capacity claim |
+| `CHAO_MAX_PROFILES` | `10000` | New profile admission bound; existing profiles can still resume |
+| `CHAO_EVENT_CAPACITY` | `512` | Bounded broadcast entries; lagging peers disconnect and recover current durable state |
+| `CHAO_SEND_TIMEOUT_MS` | `1000` | Deadline for every socket send, including its initial snapshot |
+| `CHAO_MAX_SNAPSHOT_BYTES` | `1048576` | Maximum encoded snapshot; oversized peers disconnect; write buffer has 64 KiB extra headroom |
 
 Owner bootstrap must be explicitly enabled for a new private development data
 directory. Existing owner profiles retain their server-stored role with bootstrap
@@ -170,3 +175,26 @@ Rust tests exercise deterministic gameplay, persistence, HTTP validation, asset
 serving, and real two-peer WebSocket communication in isolated temporary data
 directories. The Node tests use synthetic asset bytes and separate temporary
 directories as well, so neither suite claims or changes the live owner profile.
+
+## Capacity and private deployment review
+
+Snapshots and public effects are filtered by authoritative zone, native race
+course and independent Karate bout. Self state remains present; a disconnected
+resident remains visible only in its garden. This does not create additional
+instances, per-room admission limits, a party handoff or multiple authorities.
+Inputs replace one canonical latest input; no unbounded input or outbound
+snapshot queue is created. Reliable event lag disconnects rather than silently
+discarding acknowledgments. Socket sends never hold the game mutex.
+
+`/metrics` exposes bounded process counters and histograms for tick/lock wait,
+resident AI, snapshots/bytes, reconnects, send pressure and atomic save latency.
+Keep metrics, status, assets and admin routes private. `/readyz` exercises a
+temporary write/fsync/unlink; it does not verify production account readiness.
+
+See [the measured capacity report](docs/CAPACITY.md) and
+[operations/deployment review](docs/CAPACITY-OPERATIONS.md). The `deploy/` draft
+is loopback only and has not been installed. Existing `apps/api`, Terraform,
+Fly/release/migration and k6 scaffolding are separate work; their presence is
+not proof of this Rust service's production readiness. Run one authority per
+JSON data directory. Synchronous full-file saves still serialize simulation and
+actions under its mutex; Tiny reward receipts and credits still commit together.

@@ -633,6 +633,27 @@ async fn garden_resident_remains_visible_after_owner_disconnect_and_rejoins_once
         .await
         .unwrap();
     let active = snapshot_until(&mut resident, |s| player(s, id)["watch"].is_object()).await;
+    // A hub observer cannot see the garden resident until entering that room.
+    snapshot_until(&mut observer, |s| {
+        s["players"].as_array().unwrap().len() == 1
+    })
+    .await;
+    observer
+        .send(Message::Text(
+            json!({"type":"action","action":"garden"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    snapshot_until(&mut observer, |s| {
+        s["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == id)
+    })
+    .await;
     let run = player(&active, id)["watch"]["id"].clone();
     let disk: Value =
         serde_json::from_slice(&fs::read(server._directory.path().join("profiles.json")).unwrap())
