@@ -351,6 +351,7 @@ pub fn asset_filename(path: &str) -> Option<String> {
     let filename = path.strip_prefix("/api/assets/")?;
     let glbs = [
         "chao",
+        "chao-locomotion",
         "hub",
         "garden",
         "hero-garden",
