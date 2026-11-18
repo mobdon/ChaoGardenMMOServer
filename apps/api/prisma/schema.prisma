@@ -45,6 +45,22 @@ model User {
   notifications  Notification[]
   auditLogs      AuditLog[]
 
+  /// Social/privacy extensions (see Social extensions section).
+  friendCode            String?         @unique
+  discoverable          Boolean         @default(true)
+  visitPermission       VisitPermission @default(FRIENDS)
+  presenceVisible       Boolean         @default(true)
+  notifyFriendRequests  Boolean         @default(true)
+  notifyVisits          Boolean         @default(true)
+  notifyCompetitions    Boolean         @default(true)
+
+  blocksBlocked   SocialBlock[] @relation("Blocker")
+  blocksBlockedBy SocialBlock[] @relation("Blocked")
+  reportsFiled    Report[]      @relation("Reporter")
+  reportsReceived Report[]      @relation("ReportTarget")
+  reactionsSent   Reaction[]    @relation("ReactionSender")
+  reactionsGot    Reaction[]    @relation("ReactionTarget")
+
   @@index([guest])
 }
 
@@ -222,6 +238,7 @@ model Creature {
   garden Garden? @relation(fields: [gardenUid], references: [id], onDelete: SetNull)
 
   entries CompetitionEntry[]
+  reactions Reaction[]
 
   @@index([ownerUid])
   @@index([gardenUid])
@@ -381,4 +398,66 @@ model SimulationCheckpoint {
 
   @@unique([gardenUid, tick])
   @@index([gardenUid, tick])
+}
+
+// ---------------------------------------------------------------------------
+// Social extensions: privacy, discovery, blocks, reports, reactions
+// ---------------------------------------------------------------------------
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum VisitPermission {
+  FRIENDS
+  OPEN
+  CLOSED
+}
+
+model SocialBlock {
+  id         String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  blockerUid String   @db.Uuid
+  blockedUid String   @db.Uuid
+  createdAt  DateTime @default(now())
+
+  blocker Profile @relation("Blocker", fields: [blockerUid], references: [userId], onDelete: Cascade)
+  blocked Profile @relation("Blocked", fields: [blockedUid], references: [userId], onDelete: Cascade)
+
+  /// Blocking is idempotent; either direction hides the pair from each other.
+  @@unique([blockerUid, blockedUid])
+  @@index([blockedUid])
+}
+
+model Report {
+  id          String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  reporterUid String   @db.Uuid
+  targetUid   String   @db.Uuid
+  category    String // "harassment" | "inappropriate_content" | "cheating" | "other"
+  reason      String?
+  createdAt   DateTime @default(now())
+
+  reporter Profile @relation("Reporter", fields: [reporterUid], references: [userId], onDelete: Cascade)
+  target   Profile @relation("ReportTarget", fields: [targetUid], references: [userId], onDelete: Cascade)
+
+  @@index([reporterUid, createdAt])
+  @@index([targetUid, createdAt])
+}
+
+model Reaction {
+  id          String    @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  senderUid   String    @db.Uuid
+  targetUid   String    @db.Uuid
+  /// One of the server-approved preset keys (e.g. "wave"); no freeform text.
+  reactionKey String
+  creatureUid String?   @db.Uuid
+  createdAt   DateTime  @default(now())
+  readAt      DateTime?
+
+  sender   Profile   @relation("ReactionSender", fields: [senderUid], references: [userId], onDelete: Cascade)
+  target   Profile   @relation("ReactionTarget", fields: [targetUid], references: [userId], onDelete: Cascade)
+  creature Creature? @relation(fields: [creatureUid], references: [id], onDelete: SetNull)
+
+  @@index([targetUid, createdAt])
 }
