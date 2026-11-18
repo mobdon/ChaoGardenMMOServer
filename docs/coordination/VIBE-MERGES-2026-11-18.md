@@ -52,7 +52,18 @@ The existing canonical Chao, credentials, rings, gear, resident opt-in and Tiny
 receipts remain under the running frozen Rust authority. This checkout uses
 disposable test data; it does not replace the live executable.
 
-## Remaining acceptance gates
+## Recorded GitHub results
+
+- PR #8 merged as `a1bc2cec560b1714e2a39d7d42de60870c1c2eee` after
+  head `874874c5f213dbe18874439beec5b27d3e3a11b0` passed all four jobs in
+  GitHub Actions run 44389478261: server, Tiny core, Tiny games and Node reference.
+- PR #9 merged as `6677ce436884202ef24a3b053b501b998df45a93` after
+  head `5bb509976d12d7df1103e2c56000acde90b2feff` passed run 44390226123.
+- PRs #5/#6/#10/#12 were closed without merging and their source branches
+  retained. PR #11 contains only this operating/documentation closure and its
+  final exact head requires a green workflow before merge.
+
+## Outstanding acceptance
 
 The prior review findings are retained in
 [VIBE-REVIEW-2026-11-18.md](VIBE-REVIEW-2026-11-18.md) and
