@@ -7,6 +7,24 @@ before starting. The Vibe-generated release documents arrived in server commit
 `b525d8b` through PR #1; they are planning drafts, not implementation evidence.
 No Vibe website board or external chat has been updated by creating these files.
 
+## Animated footwear integration — locally verified
+
+Client `codex/footwear-motion-fix` commit
+`d298d4f2276512e18af58a71dcfd00c02bc04c3f` fixes frozen visible shoes using
+animated006/013 sockets and overlay targets, embeds the chest emerald on the
+torso surface and adds original-atlas adapted heel jets. See
+[FOOTWEAR-FIX.md](FOOTWEAR-FIX.md) for the client paths and exact evidence.
+14 client tests, build, three-form native rig proof,14 disposable real Rust
+service checks and a198-frame actual UI clip passed. Existing live backend and
+canonical Watch/save were preserved. No new server protocol/runtime is included.
+
+The separate native movement commit86f41f9 remains unmerged. Its invalid-height
+fallback is fixed; duplicate-time history resets and legacy water fallback
+mismatch remain. Future merge must retain actual006/013 footwear targets and
+the attachment/effect lifecycle checks. This documentation is recorded on the
+local server coordination branch; it does not publish or deploy the retained
+independent local locomotion-route source commit5265601.
+
 ## Incoming Vibe source — review blocked
 
 **UNACCEPTED — Rust requirement reaffirmed by the user.** Game systems, shared
