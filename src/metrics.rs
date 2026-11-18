@@ -3,8 +3,8 @@
 //! full `metrics` facade, and these are exactly the series the alerts in
 //! `infrastructure/monitoring/alerts.yml` consume.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Latency bucket upper bounds in seconds for `chao_http_request_duration`.
@@ -46,8 +46,7 @@ impl Metrics {
     }
 
     pub fn record_request(&self, status: u16, latency: Duration) {
-        self.requests_total
-            .fetch_add(1, Ordering::Relaxed);
+        self.requests_total.fetch_add(1, Ordering::Relaxed);
         if status >= 500 {
             self.errors_total.fetch_add(1, Ordering::Relaxed);
         }
@@ -90,10 +89,9 @@ impl Metrics {
     pub fn render(&self) -> String {
         let mut out = String::with_capacity(2048);
         let mut counter = |name: &str, help: &str, value: u64| {
-            out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} counter\n{name} {value}\n"));
-        };
-        let mut gauge = |name: &str, help: &str, value: u64| {
-            out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}\n"));
+            out.push_str(&format!(
+                "# HELP {name} {help}\n# TYPE {name} counter\n{name} {value}\n"
+            ));
         };
         counter(
             "chao_http_requests_total",
@@ -110,11 +108,6 @@ impl Metrics {
             "Total WebSocket upgrades accepted.",
             Self::count(&self.ws_connects_total),
         );
-        gauge(
-            "chao_ws_connections",
-            "Currently open WebSocket connections.",
-            Self::gauge(&self.ws_connections),
-        );
         counter(
             "chao_persist_failures_total",
             "Failed profile persistence attempts (disk or DB saturation signal).",
@@ -124,6 +117,16 @@ impl Metrics {
             "chao_event_drops_total",
             "Events dropped when the broadcast queue was full (Redis/pubsub proxy).",
             Self::count(&self.event_drops_total),
+        );
+        let mut gauge = |name: &str, help: &str, value: u64| {
+            out.push_str(&format!(
+                "# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}\n"
+            ));
+        };
+        gauge(
+            "chao_ws_connections",
+            "Currently open WebSocket connections.",
+            Self::gauge(&self.ws_connections),
         );
         out.push_str("# HELP chao_http_request_duration_seconds HTTP request latency.\n# TYPE chao_http_request_duration_seconds histogram\n");
         let mut cumulative = 0u64;
