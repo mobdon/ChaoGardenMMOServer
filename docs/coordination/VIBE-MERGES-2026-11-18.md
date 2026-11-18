@@ -19,6 +19,8 @@ by this cleanup. Original branches remain available; none are deleted.
 | #10 widgets | `edcc1ade80891251d80f43d2387d413a5f5d7e15` | Closed without merging. No promised native widget implementation; wrong repository and snapshot shape. Android Tiny Garden widget work stays in client PR #3, under its own build/device/contract gates. |
 | #11 operations | `6572e94a04002db396a4b4cfd5687dac4f8a51c4` | Keep only verified operating guidance: canonical JSON save boundary, private quiesced backups/restore checks and explicit rollout/migration limits. Drop unsupported claims about database backups, automatic rollback, preserved unknown fields and implemented live features. |
 | #12 presence/visits | `0fa82723e59eda99617c2810f0e476c50689af0d` | Closed without merging. Adds competing unconnected NestJS services and no real Rust round trip. Shared gardens already use Rust snapshots; private garden visits remain a Rust feature/ownership-contract task. |
+| #19 social/competitions | `943399b31bcd75363a0fe5eba070937b47f900b3` | Closed without merging. All 10 paths extend unaccepted Prisma/TypeScript repositories/contracts. Schema fields on User disagree with Profile queries/migration; SQL uses VisitPermission before creating it; changed competition contracts have unchanged callers. Preserve friends/privacy/visits as Rust implementation directions. |
+| #20 presence/visits | `3ca0af957f2fa51360fc133a878f9e0e1f00f7cb` | Closed without merging. Includes #19 plus NestJS/Socket.IO/Redis/Expo paths, 23 files total. Invalid parameterized getter, unbound command handlers, missing actual room joins/Redis subscriber and in-memory replacement state do not establish canonical Rust integration. |
 
 Original PRs #8/#9/#10 carried 83/97/107 stacked paths rather than only their own
 30/14/12 changes. Seven inherited conflicts affected README, API/package
@@ -59,9 +61,13 @@ disposable test data; it does not replace the live executable.
   GitHub Actions run 44389478261: server, Tiny core, Tiny games and Node reference.
 - PR #9 merged as `6677ce436884202ef24a3b053b501b998df45a93` after
   head `5bb509976d12d7df1103e2c56000acde90b2feff` passed run 44390226123.
-- PRs #5/#6/#10/#12 were closed without merging and their source branches
-  retained. PR #11 contains only this operating/documentation closure and its
-  final exact head requires a green workflow before merge.
+- PR #11 merged as `72019e1461f19a5d3317dd45a96c88e1c35aaaf7` after
+  exact head `adac0e43e5e98366a48bb8cf8c5c470f9ee67540` passed all four jobs
+  in run 44391140234.
+- PRs #5/#6/#10/#12/#19/#20 were closed without merging and their source
+  branches retained. #19/#20 arrived during the pass and were reviewed against
+  main `72019e1`. The final open inventory contains independent Rust PRs 14–18;
+  those remain separate integration work and were not merged by this cleanup.
 
 ## Outstanding acceptance
 

@@ -11,9 +11,10 @@ No Vibe website board or external chat has been updated by creating these files.
 
 The user authorized useful-only PR integration. [The November 18 integration
 record](VIBE-MERGES-2026-11-18.md) records exact incoming heads and useful-only
-decisions. PRs #5/#6/#10/#12 are closed; useful Rust build/CI PR #8 and corrected
-architecture PR #9 merged after green CI. Verified operating-document repair
-is delivered through PR #11. No client/Rust feature PR is accepted
+decisions. PRs #5/#6/#10/#12/#19/#20 are closed without merging; useful Rust
+build/CI PR #8, corrected architecture PR #9 and operating-document repair #11
+merged after green CI. The latest pass leaves only independent Rust PRs 14–18
+open. No client/Rust feature PR is accepted
 implicitly, and no runtime or save migration follows from these source merges.
 
 ## Incoming Vibe source — review blocked
