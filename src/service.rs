@@ -21,7 +21,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     sync::{broadcast, watch},
@@ -80,7 +80,6 @@ impl Config {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             owner_bootstrap,
             allowed_origins: vec![],
-            metrics: Metrics::new(),
         }
     }
 }
