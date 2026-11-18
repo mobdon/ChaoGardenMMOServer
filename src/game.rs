@@ -59,6 +59,8 @@ pub struct Race {
 
 #[derive(Clone, Debug)]
 pub struct Player {
+    /// Preserve future/unmodeled save metadata through care's additive migration.
+    pub(crate) profile_extra: Value,
     pub id: String,
     pub token_hash: String,
     pub name: String,
@@ -178,7 +180,29 @@ impl Player {
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed, "bestRaceMs": self.best_race_ms});
         phone::project_profile(self, &mut profile);
-        profile
+        let mut preserved = self.profile_extra.clone();
+        merge_profile(&mut preserved, profile);
+        preserved
+    }
+}
+
+// Canonical known values win; unmodeled object fields survive a round trip.
+fn merge_profile(preserved: &mut Value, canonical: Value) {
+    match (preserved, canonical) {
+        (Value::Object(existing), Value::Object(current)) => {
+            for (key, value) in current {
+                // Strict/normalized ledgers are complete canonical replacements.
+                // Merging an empty inventory would resurrect consumed stacks.
+                if ["care", "tinyRecords", "raceRecords", "karateRecords"].contains(&key.as_str()) {
+                    existing.insert(key, value);
+                } else if let Some(previous) = existing.get_mut(&key) {
+                    merge_profile(previous, value);
+                } else {
+                    existing.insert(key, value);
+                }
+            }
+        }
+        (previous, current) => *previous = current,
     }
 }
 
@@ -431,6 +455,7 @@ impl Game {
             None
         };
         let mut player = Player {
+            profile_extra: data.clone(),
             id: data["id"].as_str().unwrap_or_default().into(),
             token_hash: data["tokenHash"].as_str().unwrap_or_default().into(),
             name: clean_name(data["name"].as_str()),

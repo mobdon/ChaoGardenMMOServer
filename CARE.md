@@ -197,6 +197,10 @@ can be expanded or replaced.
 
 Legacy profiles without care state initialize an empty inventory and history.
 They retain existing stats, rings, alignment, forms, equipment and privileges.
+Unknown save object fields are retained with canonical known values taking
+precedence. Strict care and result ledgers are replaced as complete documents
+so consuming a loaded stack cannot resurrect the old saved quantity. The Node
+reference refuses versioned Rust care profiles before opening a writer.
 New canonical needs must persist rather than resetting on load. Present but
 invalid versioned care data must not silently become an empty inventory.
 
@@ -245,8 +249,15 @@ Validation recorded November 18, 2026:
 
 - `cargo test --locked --all-targets`: full server regression suite, including
   strict intents, all seven signed channels, save rollback, restart, activity
-  conflicts and real duplicate-socket transport tests.
+  conflicts and real duplicate-socket transport tests: 114 passed, with the
+  two local-source tests separately opted in below.
 - `cargo clippy --locked --all-targets -- -D warnings` and `cargo fmt --check`.
+- `cargo test --locked --manifest-path crates/tiny-garden-games/Cargo.toml`:
+  all 22 independently packaged minigame tests passed.
+- `cargo test --locked --manifest-path crates/tiny-garden-core/Cargo.toml`:
+  21 passed; the unrelated ROM-only reference test remained ignored.
+- `node --test tests/reference/*.test.js`: 51 passed, including rejection
+  of Rust care saves before the retained reference opens a writer.
 - With both local care environment variables configured,
   `cargo test --locked --test care_native -- --ignored`: two opt-in tests
   passed against the pinned installed executable. They validate signed
@@ -259,3 +270,10 @@ private snapshots, a durable WebSocket dispatch, activity guards and combat
 drop hooks. The Tiny Garden implementation chat received this contract.
 Clients using old consumable actions require the coordinated UI update before
 deployment. This PR does not restart the preview or migrate live saves in place.
+
+This worktree starts at the verified Rust base
+`a8188a3030eb176ec4c3b7156f93410da5bb6f09`. During implementation, upstream
+`main` advanced to `325db09` with documented unaccepted generated changes and
+unrelated build blockers. The evidence above applies to this isolated care
+branch; upstream merge/rebase and the accounts/lease adapter remain integration
+gates. No competing TypeScript authority is adopted.

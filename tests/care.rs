@@ -604,3 +604,86 @@ fn disabled_native_catalog_keeps_owned_items_and_marks_native_shop_offers_disabl
         assert_eq!(offer["enabled"], offer["itemId"] == "garden-fruit");
     }
 }
+
+#[test]
+fn unknown_profile_metadata_survives_failure_purchase_consumption_and_two_reloads() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = Uuid::new_v4().to_string();
+    let future = json!({"version":42,"opaque":["retained",{"enabled":true}],"nullable":null});
+    let run_metadata = json!({"futureRule":"opaque","samples":[5,8,13]});
+    let gear_metadata = json!({"format":7,"calibration":[1.5,-2.0]});
+    let legacy = json!({"id":id,"tokenHash":hash_token("metadata-fixture"),"name":"Future fields",
+        "rings":100,"happiness":50,"futureNamespace":future,
+        "stats":{"run":{"grade":3,"level":8,"points":99,"futureMetadata":run_metadata}},
+        "gear":{"footwear":"unrecognized-future-boot","futureMetadata":gear_metadata}});
+    let original = serde_json::to_vec_pretty(&json!([legacy])).unwrap();
+    fs::write(dir.path().join("profiles.json"), &original).unwrap();
+    let buy = purchase(0);
+    let eat = consume(1);
+    let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+    {
+        let mut game = state.game.lock().unwrap();
+        game.connect(&id);
+        at_shop(&mut game, &id);
+        let before = game.players[&id].profile();
+        fs::create_dir(dir.path().join("profiles.json.tmp")).unwrap();
+        assert!(state.care_action(&mut game, &id, &buy).is_err());
+        assert_eq!(game.players[&id].profile(), before);
+        assert_eq!(
+            fs::read(dir.path().join("profiles.json")).unwrap(),
+            original
+        );
+        fs::remove_dir(dir.path().join("profiles.json.tmp")).unwrap();
+        assert_eq!(
+            state.care_action(&mut game, &id, &buy).unwrap()["accepted"],
+            true
+        );
+    }
+    let bought: Value =
+        serde_json::from_slice(&fs::read(dir.path().join("profiles.json")).unwrap()).unwrap();
+    assert_eq!(bought[0]["futureNamespace"], future);
+    assert_eq!(bought[0]["stats"]["run"]["futureMetadata"], run_metadata);
+    assert_eq!(bought[0]["gear"]["futureMetadata"], gear_metadata);
+    // Canonical equipment validation wins over preserved unrecognized values.
+    assert!(bought[0]["gear"]["footwear"].is_null());
+    assert_eq!(bought[0]["care"]["inventory"]["garden-fruit"], 1);
+    let restored = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+    {
+        let mut game = restored.game.lock().unwrap();
+        game.connect(&id);
+        assert_eq!(game.players[&id].care.inventory["garden-fruit"], 1);
+        let result = restored.care_action(&mut game, &id, &eat).unwrap();
+        assert_eq!(result["accepted"], true);
+        assert_eq!(result["replayed"], false);
+        assert!(game.players[&id].care.inventory.is_empty());
+        assert_eq!(game.players[&id].care.receipts.len(), 2);
+        assert_eq!(game.players[&id].stats["stamina"].points, 25);
+    }
+    let after_consume = fs::read(dir.path().join("profiles.json")).unwrap();
+    let consumed: Value = serde_json::from_slice(&after_consume).unwrap();
+    assert_eq!(consumed[0]["care"]["inventory"], json!({}));
+    let final_state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+    let mut game = final_state.game.lock().unwrap();
+    assert!(game.players[&id].care.inventory.is_empty());
+    assert_eq!(game.players[&id].care.receipts.len(), 2);
+    assert_eq!(game.players[&id].care.revision, 2);
+    assert_eq!(game.players[&id].rings, 97);
+    assert_eq!(game.players[&id].stats["stamina"].points, 25);
+    let retained = game.players[&id].profile();
+    assert_eq!(retained["futureNamespace"], future);
+    assert_eq!(retained["stats"]["run"]["futureMetadata"], run_metadata);
+    assert_eq!(retained["gear"]["futureMetadata"], gear_metadata);
+    assert!(retained["gear"]["footwear"].is_null());
+    for message in [&buy, &eat] {
+        let replay = final_state.care_action(&mut game, &id, message).unwrap();
+        assert_eq!(replay["accepted"], true);
+        assert_eq!(replay["replayed"], true);
+    }
+    assert!(game.players[&id].care.inventory.is_empty());
+    assert_eq!(game.players[&id].care.receipts.len(), 2);
+    assert_eq!(game.players[&id].stats["stamina"].points, 25);
+    assert_eq!(
+        fs::read(dir.path().join("profiles.json")).unwrap(),
+        after_consume
+    );
+}
