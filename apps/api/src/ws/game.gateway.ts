@@ -1,95 +1,97 @@
 /**
- * Gameplay WebSocket gateway. Socket connections must present a valid access
- * token in the handshake (`socket.auth.token`); messages carrying ownership
- * are validated against the actor attached by `JwtAuthGuard`.
+ * Presence and garden realtime gateway. Socket.IO namespace `/game`.
+ *
+ * Every client message is a command that goes through the shared pipeline in
+ * RealtimeCommandService: authentication, validation, rate limiting,
+ * authorization, persistence, then sequence-stamped fan-out. The gateway never
+ * relays client-authored stats, currency, or freeform payloads.
  */
 import { Logger } from '@nestjs/common';
-import {
-  ConnectedSocket,
-  MessageBody,
-  OnGatewayConnection,
-  OnGatewayDisconnect,
-  SubscribeMessage,
-  WebSocketGateway,
-  WebSocketServer,
-  WsException,
-} from '@nestjs/websockets';
-import { UseGuards } from '@nestjs/common';
+import { OnGatewayConnection, OnGatewayDisconnect, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { ACTOR_KEY, extractBearer } from '../auth/guards/jwt-auth.guard';
-import type { AuthenticatedActor } from '../auth/auth.service';
-import { AuthErrorCode } from '@chaogarden/contracts';
-import { AuthException } from '../auth/errors';
-
-interface HandshakeClient extends Socket {
-  handshake: Socket['handshake'] & { auth?: { token?: string } };
-}
-
-function actorOf(client: HandshakeClient): AuthenticatedActor {
-  const stored = (client.data as Record<string, unknown> | undefined)?.[ACTOR_KEY] as
-    | AuthenticatedActor
-    | undefined;
-  if (!stored) {
-    throw new AuthException(AuthErrorCode.Unauthenticated, 'Socket not authenticated');
-  }
-  return stored;
-}
-
-/**
- * Ownership helper: creatures are addressed by id and the server confirms the
- * creature belongs to the actor's user before mutating anything.
- */
-export function assertOwned(creatureOwnerId: string, actor: AuthenticatedActor): void {
-  if (creatureOwnerId !== actor.userId) {
-    throw new AuthException(AuthErrorCode.Forbidden, 'Not your creature');
-  }
-}
+import type { SyncResponse } from '@chaogarden/contracts';
+import { PresenceService } from './presence.service';
+import { RealtimeEventService } from './realtime-event.service';
+import { RealtimeSnapshotService } from './realtime-snapshot.service';
+import { RealtimeCommandService } from './realtime-command.service';
 
 @WebSocketGateway({ namespace: '/game', transports: ['websocket'] })
-@UseGuards(JwtAuthGuard)
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(GameGateway.name);
   @WebSocketServer() server!: Server;
 
-  constructor() {}
+  constructor(
+    private readonly presence: PresenceService,
+    private readonly events: RealtimeEventService,
+    private readonly snapshots: RealtimeSnapshotService,
+    private readonly commands: RealtimeCommandService,
+  ) {}
 
-  async handleConnection(client: HandshakeClient): Promise<void> {
-    // The global JwtAuthGuard runs for the connection; verify manually here so
-    // we can close unauthorized sockets immediately.
-    const token = client.handshake.auth?.token ?? extractBearer(client.handshake.headers?.authorization);
-    if (!token) {
-      client.emit('auth-error', { code: AuthErrorCode.Unauthenticated });
-      client.disconnect(true);
+  async handleConnection(socket: Socket): Promise<void> {
+    const actor = (socket.data as Record<string, unknown>)?.['actor'] as
+      | { accountId: string; handle: string }
+      | undefined;
+    if (!actor) {
+      socket.emit('realtime_error', { code: 'UNAUTHENTICATED' });
+      socket.disconnect(true);
       return;
     }
-    // Full verification is delegated to the guard pipeline; this hook only
-    // mirrors the outcome for logging (never logging the token itself).
-    this.logger.log(`socket connected user=${client.id}`);
+    this.presence.trackSocket(socket.id, actor);
+    this.presence.touchHeartbeat(socket.id);
+    socket.emit('presence_ack', { at: Date.now() });
   }
 
-  handleDisconnect(client: HandshakeClient): void {
-    this.logger.log(`socket disconnected user=${client.id}`);
+  async handleDisconnect(socket: Socket): Promise<void> {
+    const actor = this.presence.actorOf(socket.id);
+    const rooms = this.presence.forgetSocket(socket.id);
+    for (const room of rooms) {
+      await this.events.publish(room, 'visitor_leave', { visitorId: actor?.accountId ?? socket.id }, (r, e, b) =>
+        this.server?.to(r).emit(e, b),
+      );
+    }
   }
 
-  @SubscribeMessage('ping')
-  onPing(@ConnectedSocket() client: HandshakeClient): { ok: true; user: string } {
-    const actor = actorOf(client);
-    return { ok: true, user: actor.userId };
+  /**
+   * Single entry point for all client commands. Errors are converted to typed
+   * realtime errors on the socket, then rethrown so callers/tests observe the
+   * rejection. Raw payloads and stack traces never reach the client.
+   */
+  async handleCommand(socket: Socket, raw: unknown): Promise<void> {
+    try {
+      await this.commands.handle(socket, this.server, raw, (room, event, body) =>
+        this.server?.to(room).emit(event, body),
+      );
+    } catch (err) {
+      this.logger.warn(`command rejected socket=${socket.id}`);
+      socket.emit('realtime_error', { code: this.codeOf(err) });
+      throw err;
+    }
   }
 
-  @SubscribeMessage('care')
-  onCare(@MessageBody() body: { creatureOwnerId: string }, @ConnectedSocket() client: HandshakeClient) {
-    const actor = actorOf(client);
-    assertOwned(body.creatureOwnerId, actor);
-    // Gameplay logic is handled by the Rust authority; this is the auth boundary.
-    return { ok: true };
+  /**
+   * Reconnect recovery. Replays buffered events when possible, otherwise
+   * instructs the client to refetch a snapshot.
+   */
+  recoverSync(socket: Socket, roomId: string, afterSeq: number): SyncResponse {
+    const replay = this.events.replay(roomId, afterSeq);
+    const current = this.events.lastSeq(roomId);
+    if (replay) {
+      return {
+        recovered: true,
+        seq: current,
+        events: replay.map((record) => ({ ...record, gardenId: roomId })) as never,
+        snapshot: null,
+      };
+    }
+    const actor = (socket.data as Record<string, unknown>)?.['actor'] as { accountId: string } | undefined;
+    const unread = this.presence.unreadCount(actor?.accountId ?? '');
+    const snapshot = this.snapshots.build(roomId, unread, current);
+    return { recovered: false, seq: current, events: [], snapshot };
   }
 
-  onWsError(err: unknown): void {
-    // Never log raw tokens or bodies.
-    this.logger.warn(`ws error code=${err instanceof AuthException ? err.code : 'UNKNOWN'}`);
-    if (err instanceof AuthException) throw new WsException({ code: err.code, message: err.message });
-    throw new WsException({ code: 'UNKNOWN', message: 'Socket error' });
+  private codeOf(err: unknown): string {
+    const message = err instanceof Error ? err.message : '';
+    const code = message.split(':')[0];
+    return code || 'UNKNOWN';
   }
 }
