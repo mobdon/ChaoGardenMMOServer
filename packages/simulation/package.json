@@ -7,15 +7,10 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json --noEmit",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
     "test": "vitest run",
-    "clean": "rm -rf coverage .turbo"
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@chaogarden/config": "workspace:*",
-    "eslint": "^9.9.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }

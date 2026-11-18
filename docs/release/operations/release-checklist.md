@@ -1,7 +1,9 @@
 # Release Checklist — Chao Garden MMO (Full App + Widget)
 
-Run per release. Evidence links (test run IDs, screenshots, logs) go in the
-release ticket. Reference implementations: `.github/workflows/check.yml` CI,
+Draft for review, not a record of shipped capabilities or completed sign-offs.
+Use [the coordination board](../../coordination/BOARD.md) for current status.
+Evidence links (test run IDs, screenshots, logs) go in the release ticket.
+Reference implementations: `.github/workflows/check.yml` CI,
 `cargo test --locked`, `npm test`.
 
 ## 0. Preconditions
@@ -59,7 +61,9 @@ release ticket. Reference implementations: `.github/workflows/check.yml` CI,
       threshold (`compliance/widget-disclosure.md`).
 - [ ] Offline airplane-mode: cached state + notice, no errors.
 - [ ] Empty state after deletion/setup on both platforms.
-- [ ] Widget does not open network sockets; app-group data path only.
+- [ ] Planned Android refresh and quick-care use the agreed authenticated
+      service contract, respect OS background limits and label stale/offline
+      state. Verify on an installed widget; the browser preview is not proof.
 - [ ] Widget screenshots captured for stores.
 
 ## 6. Offline behavior

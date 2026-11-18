@@ -1,8 +1,16 @@
 {
-  "extends": "@chaogarden/config/tsconfig/base.json",
   "compilerOptions": {
-    "noEmit": true,
-    "exactOptionalPropertyTypes": false
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false,
+    "skipLibCheck": true,
+    "noEmit": true
   },
   "include": ["src", "test"]
 }

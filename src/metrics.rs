@@ -3,8 +3,8 @@
 //! full `metrics` facade, and these are exactly the series the alerts in
 //! `infrastructure/monitoring/alerts.yml` consume.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Latency bucket upper bounds in seconds for `chao_http_request_duration`.
@@ -46,8 +46,7 @@ impl Metrics {
     }
 
     pub fn record_request(&self, status: u16, latency: Duration) {
-        self.requests_total
-            .fetch_add(1, Ordering::Relaxed);
+        self.requests_total.fetch_add(1, Ordering::Relaxed);
         if status >= 500 {
             self.errors_total.fetch_add(1, Ordering::Relaxed);
         }
@@ -89,38 +88,48 @@ impl Metrics {
     /// Render the Prometheus text exposition format (version 0.0.4).
     pub fn render(&self) -> String {
         let mut out = String::with_capacity(2048);
-        let mut counter = |name: &str, help: &str, value: u64| {
-            out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} counter\n{name} {value}\n"));
+        let counter = |out: &mut String, name: &str, help: &str, value: u64| {
+            out.push_str(&format!(
+                "# HELP {name} {help}\n# TYPE {name} counter\n{name} {value}\n"
+            ));
         };
-        let mut gauge = |name: &str, help: &str, value: u64| {
-            out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}\n"));
+        let gauge = |out: &mut String, name: &str, help: &str, value: u64| {
+            out.push_str(&format!(
+                "# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}\n"
+            ));
         };
         counter(
+            &mut out,
             "chao_http_requests_total",
             "Total HTTP requests served.",
             Self::count(&self.requests_total),
         );
         counter(
+            &mut out,
             "chao_http_errors_total",
             "HTTP responses with status >= 500.",
             Self::count(&self.errors_total),
         );
         counter(
+            &mut out,
             "chao_ws_connects_total",
             "Total WebSocket upgrades accepted.",
             Self::count(&self.ws_connects_total),
         );
         gauge(
+            &mut out,
             "chao_ws_connections",
             "Currently open WebSocket connections.",
             Self::gauge(&self.ws_connections),
         );
         counter(
+            &mut out,
             "chao_persist_failures_total",
             "Failed profile persistence attempts (disk or DB saturation signal).",
             Self::count(&self.persist_failures_total),
         );
         counter(
+            &mut out,
             "chao_event_drops_total",
             "Events dropped when the broadcast queue was full (Redis/pubsub proxy).",
             Self::count(&self.event_drops_total),

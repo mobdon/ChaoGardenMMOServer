@@ -1,8 +1,0 @@
-node_modules/
-dist/
-build/
-.expo/
-coverage/
-Cargo.lock
-pnpm-lock.yaml
-*.log

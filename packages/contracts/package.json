@@ -9,17 +9,9 @@
     ".": "./src/all.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json --noEmit",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
     "test": "echo 'contracts validated via consumer tests'"
   },
   "dependencies": {
     "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "@chaogarden/config": "workspace:*",
-    "eslint": "^9.9.0",
-    "typescript": "^5.5.0"
   }
 }

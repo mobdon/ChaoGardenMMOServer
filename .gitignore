@@ -6,11 +6,3 @@ target/
 .env
 .env.*
 !.env.example
-
-# TypeScript monorepo build artifacts
-dist/
-build/
-.turbo/
-coverage/
-.expo/
-web-build/
