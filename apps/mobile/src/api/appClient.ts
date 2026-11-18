@@ -1,5 +1,5 @@
 import { createApiClient, type ApiClient } from './client';
-import { hasTokens, getTokens, setTokens } from './tokenStorage';
+import { tokenStorage } from './tokenStorage';
 import { createUiStore } from '@/state/uiStore';
 import { ConnectionBannerModel } from '@/state/connection';
 
@@ -11,10 +11,8 @@ export const connection = new ConnectionBannerModel();
 
 export const api: ApiClient = createApiClient(
   process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
-  {
-    getTokens: async () => (hasTokens() ? getTokens() : null),
-    setTokens: setTokens,
-  },
+  // Access tokens stay in memory; the refresh token is kept in SecureStore.
+  tokenStorage,
 );
 
 export function getUiStore() {
@@ -22,4 +20,4 @@ export function getUiStore() {
 }
 
 export { createApiClient } from './client';
-export { tokenStorage } from './tokenStorage';
+export { tokenStorage, loadPersistedRefresh } from './tokenStorage';
