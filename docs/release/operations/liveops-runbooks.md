@@ -2,8 +2,9 @@
 
 Updated November 18, 2026. This is a procedure and review gate, not evidence of
 a public deployment, tested production restore or authorization to restart the
-playable preview. Source baseline `0226dc9` retains the build, persistence,
-migration and deployment findings in the [Vibe review](../../coordination/VIBE-REVIEW-2026-11-18.md).
+playable preview. The [PR integration record](../../coordination/VIBE-MERGES-2026-11-18.md)
+records the repaired Rust build gate. The baseline `0226dc9` persistence,
+migration and deployment findings remain in the [Vibe review](../../coordination/VIBE-REVIEW-2026-11-18.md).
 The working preview is a separate previously tested runtime; identify its exact
 binary and data directory before any later operational action.
 
