@@ -1,0 +1,31 @@
+name: Server checks
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo fmt --manifest-path crates/tiny-garden-games/Cargo.toml --check
+      - run: cargo clippy --manifest-path crates/tiny-garden-games/Cargo.toml --locked --all-targets -- -D warnings
+      - run: cargo test --manifest-path crates/tiny-garden-games/Cargo.toml --locked
+      - run: cargo build --release --locked
+  node-reference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm test
