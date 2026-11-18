@@ -7,6 +7,7 @@ module.exports = {
   ],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
-    '^@chaogarden/contracts$': '<rootDir>/../../packages/contracts/src/index.ts',
+    // Map to the barrel so widget-snapshot contracts resolve from the app too.
+    '^@chaogarden/contracts$': '<rootDir>/../../packages/contracts/src/all.ts',
   },
 };
