@@ -6,7 +6,7 @@ use axum::{
 };
 use chao_game_server::{
     game::hash_token,
-    service::{AppState, Config, router},
+    service::{AppState, Config, router, spawn_simulation},
 };
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
@@ -1570,4 +1570,110 @@ async fn observer_keeps_pending_terminal_receipt_after_controller_disconnect_unt
         1
     );
     observer.close(None).await.unwrap();
+}
+
+#[test]
+fn release_migration_never_bypasses_atomic_save_for_an_old_marker_and_preserves_v2_metadata() {
+    let directory = tempfile::tempdir().unwrap();
+    let token = "synthetic-release-migration-desktop";
+    let mut original = legacy_profile(token, false);
+    original["futureMetadata"] = json!({"inventoryEpoch":7,"notes":["preserve this opaque data"]});
+    original["stats"]["run"]["provenance"] = json!({"origin":"earned"});
+    original["tinyRecords"]["memory"]["audit"] = json!({"source":"trusted-receipt"});
+    let save = directory.path().join("profiles.json");
+    fs::write(
+        &save,
+        serde_json::to_vec_pretty(&json!([original])).unwrap(),
+    )
+    .unwrap();
+    let state = AppState::load(Config::local(directory.path().to_owned(), false)).unwrap();
+    let before = fs::read(&save).unwrap();
+    let expected: Value = serde_json::from_slice(&before).unwrap();
+    let expected_revision = expected[0]["identity"]["revision"].as_u64().unwrap();
+    fs::write(directory.path().join(".schema-version"), b"1").unwrap();
+    let blocker = directory.path().join("profiles.json.tmp");
+    fs::create_dir(&blocker).unwrap();
+    assert!(
+        state.release_migration().is_err(),
+        "an old marker cannot skip the common atomic writer"
+    );
+    assert_eq!(fs::read(&save).unwrap(), before);
+    {
+        let game = state.game.lock().unwrap();
+        let player = game.player_for_token(token).unwrap();
+        assert_eq!(player.identity.revision, expected_revision);
+        assert_eq!(player.tiny_records["memory"].plays, 19);
+        assert_eq!(game.players.len(), 1);
+    }
+    fs::remove_dir(blocker).unwrap();
+    for _ in 0..2 {
+        state.release_migration().unwrap();
+        assert_eq!(
+            fs::read(&save).unwrap(),
+            before,
+            "repeat release migration must preserve the exact v2 document"
+        );
+    }
+    let recovered = AppState::load(Config::local(directory.path().to_owned(), false)).unwrap();
+    let profiles = recovered.game.lock().unwrap().export_profiles();
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0]["identity"], expected[0]["identity"]);
+    assert_eq!(profiles[0]["futureMetadata"], original["futureMetadata"]);
+    assert_eq!(
+        profiles[0]["stats"]["run"]["provenance"],
+        original["stats"]["run"]["provenance"]
+    );
+    assert_eq!(
+        profiles[0]["tinyRecords"]["memory"],
+        original["tinyRecords"]["memory"]
+    );
+}
+
+#[tokio::test]
+async fn expired_lease_stops_held_input_before_the_next_real_simulation_tick() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = AppState::load(Config::local(directory.path().to_owned(), false)).unwrap();
+    let session = new_session(&state).await;
+    let token = session["token"].as_str().unwrap();
+    let id = session["player"]["id"].as_str().unwrap();
+    acquire(&state, token, "direct").await;
+    let (initial_x, initial_time) = {
+        let mut game = state.game.lock().unwrap();
+        game.connect(id);
+        game.players
+            .get_mut(id)
+            .unwrap()
+            .identity
+            .lease
+            .as_mut()
+            .unwrap()
+            .expires_at = 1;
+        game.set_input(id, &json!({"dx":1,"dz":0}));
+        (game.players[id].x, game.time)
+    };
+    let simulation = spawn_simulation(state.clone());
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if state.game.lock().unwrap().time >= initial_time + 100. {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("simulation must process trusted ticks");
+    {
+        let game = state.game.lock().unwrap();
+        assert_eq!(
+            game.players[id].x, initial_x,
+            "expired control cannot move during the stale-input grace period"
+        );
+        assert_eq!(game.players[id].input.dx, 0.);
+        assert_eq!(game.players[id].input.dz, 0.);
+    }
+    state.shutdown.send(true).unwrap();
+    timeout(Duration::from_secs(2), simulation)
+        .await
+        .unwrap()
+        .unwrap();
 }

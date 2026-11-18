@@ -225,6 +225,20 @@ the same commit. Tests exercise write/rename failure and restart; this is not a
 claim of database replication or protection against every hardware/power fault.
 Run only one authority against the data directory.
 
+The writer also takes an OS lock on `profiles.lock` and compares the current
+document with its last committed bytes before replacement. A competing writer
+or stale loaded authority fails without overwriting newer progression; reload
+the authoritative state before retrying. Rust 1.89 or later is required for the
+file-lock API. The release `migrate` command uses this same atomic path and does
+not trust an old `.schema-version` marker to skip validation.
+
+Authenticated sockets are counted per device as well as per Chao. An observer
+does not keep another device's abandoned interactive Tiny round alive. A
+controlling device's final disconnect or revocation stops held input and cancels
+unfinished interactive activity while preserving opted-in Watch and pending
+terminal rewards. An authenticated observer can flush a pending reward through
+Save; the receipt and credit still commit once.
+
 For recovery, stop the authority, archive the entire current data directory and
 restore a complete known-good **v2** backup into an isolated directory. Point a
 test instance at it and verify canonical IDs, wallet/records, revisions and
@@ -269,3 +283,21 @@ it does not establish the planned 100–500-player target. A measured persistenc
 and stream design is a separate integration gate before public deployment.
 `tests/reference/identity-compat.test.js` proves the Node guard rejects v2 before
 runtime construction, export or process startup without changing save bytes.
+
+Validation on November 18, 2026: `cargo test --locked` passed 128 host tests;
+`cargo fmt --all -- --check` and strict all-target Clippy passed. The separate
+Tiny core passed 21 tests and Tiny games passed 22, with formatting and strict
+Clippy; one ROM-dependent reference test was intentionally ignored because no
+reference ROM was configured. All 51 isolated Node reference tests passed.
+Recovery checks include exact v1 backup, opaque nested field preservation,
+latest-v2 restore with revoked devices and earned receipts, failed atomic
+creation/care/revocation, stale-writer/OS-lock exclusion and pending terminal
+reward settlement by an observer after the controller disconnects.
+
+The implementation started from `a8188a3` and was rebased onto later upstream
+history. It retains the independent exact native Run asset route and repairs
+the upstream Rust metrics borrow/Config initialization blockers required to
+test the combined source. This does not accept the generated mobile/API or
+deployment stacks. Tiny UI and Android widget chats received the v2 contract;
+no active AFK training chat was available during coordination, so its consumer
+handoff is recorded here and `durableTraining:false` remains explicit.

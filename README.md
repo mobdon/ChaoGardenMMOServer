@@ -20,6 +20,13 @@ The commands below describe the intended Rust workflow; they are not a claim
 that this reviewed source snapshot passes them. The working preview continues
 on its earlier tested runtime.
 
+The isolated accounts PR adds the Rust v2 contract in
+[ACCOUNTS-V2.md](docs/ACCOUNTS-V2.md), repairs the Rust build blockers needed for
+its validation, and replaces the release migration rewrite with the common
+locked atomic save path. Its passing Rust/reference checks do not accept the
+separate infrastructure or TypeScript deliveries, deploy the server, or migrate
+the live preview. Coordinated desktop/Tiny/widget rollout remains required.
+
 The later Vibe PR #7 (`282f6ab`) adds a competing NestJS API and TypeScript
 simulation. Those also fail the user's Rust requirement and are unaccepted;
 their presence in Git does not replace the existing Rust service or approve a

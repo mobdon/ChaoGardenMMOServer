@@ -116,6 +116,7 @@ fn stop_abandoned_control(game: &mut Game, id: &str) {
     }
 }
 fn disconnect_device(state: &AppState, id: &str, device: &str) {
+    state.metrics.ws_closed();
     let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
     let mut connections = state
         .device_connections
@@ -566,6 +567,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, auth: Option<(Str
             return;
         }
         game.connect(&id);
+        state.metrics.ws_opened();
         *state
             .device_connections
             .lock()

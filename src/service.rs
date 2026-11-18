@@ -210,6 +210,13 @@ impl AppState {
         Ok(state)
     }
     pub fn persist(&self, game: &mut Game) -> io::Result<()> {
+        let result = self.persist_profiles(game);
+        if result.is_err() {
+            self.metrics.record_persist_failure();
+        }
+        result
+    }
+    fn persist_profiles(&self, game: &mut Game) -> io::Result<()> {
         if !game.dirty {
             return Ok(());
         }
@@ -515,6 +522,7 @@ pub fn asset_filename(path: &str) -> Option<String> {
     let filename = path.strip_prefix("/api/assets/")?;
     let glbs = [
         "chao",
+        "chao-locomotion",
         "hub",
         "garden",
         "hero-garden",
@@ -709,7 +717,6 @@ pub fn spawn_simulation(state: AppState) -> tokio::task::JoinHandle<()> {
                     if crate::phone::has_pending(&game) && game.time >= game.tiny_save_retry_at
                         && let Err(value)=state.persist(&mut game) {
                         eprintln!("Could not save Tiny Garden result: {value}");
-                        state.metrics.record_persist_failure();
                         game.tiny_save_retry_at=game.time+1000.;
                         crate::phone::save_failed(&mut game);
                     }

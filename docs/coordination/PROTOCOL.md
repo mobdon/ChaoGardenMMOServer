@@ -2,6 +2,14 @@
 
 Updated November 18, 2026. Integration constraints for the isolated accounts branch `codex/accounts-pairing-ownership`, based on server commit `a8188a3030eb176ec4c3b7156f93410da5bb6f09`. This is a proposed v2 contract and review gate, not an already shipped authentication protocol. Keep the accounts PR unmerged until matching client migrations and cross-feature tests pass.
 
+The isolated Rust implementation now specifies exact endpoints, fencing fields,
+errors and capability discovery in [ACCOUNTS-V2.md](../ACCOUNTS-V2.md). It uses
+`sequence` as a durable per-lease replay fence and serializes revision-sensitive
+intents; the `operationId`/`payload` shape below remains a proposal rather than
+an accepted alternative wire format. Current per-frame full-store fsync cost is
+unmeasured and remains a stream/capacity integration limit. This source delivery
+has not been deployed or enabled on the live preview.
+
 ## Shared-file ownership
 
 Accounts owns new identity/pairing/lease modules and its isolated `game.rs`/`service.rs` hooks. AFK training and competitions should supply new modules plus small integration patches against those agreed hooks. Integration owns the final combination and live rollout. Do not edit another chat's checkout, live saves or preview.
