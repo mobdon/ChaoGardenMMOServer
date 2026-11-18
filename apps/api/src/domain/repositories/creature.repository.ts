@@ -33,6 +33,16 @@ export class CreatureRepository {
     return rows.map(CreatureRepository.toView);
   }
 
+  /** Read-only listing used by realtime garden snapshots (no stat mutation). */
+  async listByGarden(gardenUid: string, pageSize = 50): Promise<CreatureView[]> {
+    const rows = await this.db.creature.findMany({
+      where: { gardenUid, retiredAt: null },
+      orderBy: { createdAt: 'asc' },
+      take: pageSize,
+    });
+    return rows.map(CreatureRepository.toView);
+  }
+
   async findById(id: string): Promise<CreatureView | null> {
     const c = await this.db.creature.findUnique({ where: { id } });
     return c ? CreatureRepository.toView(c) : null;
