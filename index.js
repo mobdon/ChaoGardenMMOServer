@@ -43,6 +43,9 @@ try {
   if (existsSync(profilePath)) {
     const parsed = JSON.parse(readFileSync(profilePath, 'utf8'));
     if (!Array.isArray(parsed)) throw new Error('Profiles must be an array.');
+    if (parsed.some(profile => profile !== null && typeof profile === 'object' && Object.hasOwn(profile, 'care'))) {
+      throw new Error('Rust care profiles are unsupported by the Node reference. Use the Rust authority to preserve care state.');
+    }
     profiles = parsed;
   }
 } catch (error) {
