@@ -22,6 +22,8 @@ Server workers can read all thirteen briefs and the proposed cross-feature contr
 
 Start Tiny Garden, Android widget, AFK training and device pairing together. The four game-specific Rust asset tracks can run independently after agreeing the common manifest format. Care, movement and competitions consume those outputs. Capacity/deployment measures the integrated service. This original chat integrates throughout.
 
+Movement handoff: client commit `279a7b7` already publishes `src/chao-locomotion.js`, its scene hooks, native Run119 build/verification tools and focused tests. The native movement stream should use that dependency rather than rebuild the helper; keep `src/scene.js` changes as a small reviewed patch. The exact `chao-locomotion.glb` server route works in the current local runtime but its source patch remains separately unpublished while Vibe's server build is blocked. Preserve opaque bodies, flame/gem alpha and depth-occluded bloom. The movement chat reports an isolated `codex/native-chao-movement` branch; it is not a merged delivery.
+
 ## Copy-and-paste chat briefs
 
 ### 1. Client — Tiny Garden app
