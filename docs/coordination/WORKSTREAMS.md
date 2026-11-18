@@ -6,6 +6,7 @@ Server workers can read all thirteen briefs and the proposed cross-feature contr
 
 ## Coordination rules
 
+- The user's Rust requirement in [AGENTS.md](../../AGENTS.md) applies to every brief: game/shared mechanics and asset readers/converters must be Rust. Shared browser mechanics use the agreed Rust/WASM boundary; presentation/platform adapters call the real Rust protocol. The unaccepted Expo/TypeScript delivery is not a completed Rust task. Read [the Vibe review](VIBE-REVIEW-2026-11-18.md) before extending it.
 - Use the server repository's `docs/coordination/BOARD.md`, `PROTOCOL.md` and `WORKSTREAMS.md` for Vibe Coder/repository coordination. This chat does not update the private Vibe website board. Claim a workstream and record its branch, dependencies, evidence and PR there; do not assume an unreported chat is running.
 - The original integration chat owns integration, release QA, the playable preview, the client TASKS.md and cross-repository contracts. Repository coordination lives in docs/coordination/ in the server repository; generated release templates do not establish feature completion.
 - Use a separate branch/worktree for each implementation chat. Start from the verified published source; do not let multiple chats mutate the same checkout/index. Branches use codex/ prefix. Open reviewable PRs; the integration chat coordinates merges.

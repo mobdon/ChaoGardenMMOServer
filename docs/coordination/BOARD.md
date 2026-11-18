@@ -7,6 +7,36 @@ before starting. The Vibe-generated release documents arrived in server commit
 `b525d8b` through PR #1; they are planning drafts, not implementation evidence.
 No Vibe website board or external chat has been updated by creating these files.
 
+## Incoming Vibe source — review blocked
+
+**UNACCEPTED — Rust requirement reaffirmed by the user.** Game systems, shared
+mechanics and asset readers/converters require Rust; shared browser mechanics
+use the agreed Rust/WASM boundary. The generated Expo/TypeScript mobile delivery
+does not complete those tasks. Read [AGENTS.md](../../AGENTS.md) before further
+implementation. Platform/rendering adapters must use the real Rust protocol.
+
+The remote server head reviewed is
+`5ec51f94ad24135a41d6a0c2320d155cccd486f3`, following release-doc commit
+`b525d8b`. Read the integration
+[review report](VIBE-REVIEW-2026-11-18.md) for concrete findings and repair gates.
+These generated PRs are source deliveries under review; they are separate from
+the thirteen ownership/workstream rows below and do not prove those chats have
+started or completed their briefs.
+
+| Vibe PR / source commit | Delivered paths | Review status |
+| --- | --- | --- |
+| #2 / `826c0f2` | Infrastructure, deploy/backup scripts, Rust metrics/probes/migration | REVIEW BLOCKED: current source fails compilation; deployment/persistence/migration/rollback require repairs and tests. No production infrastructure was executed. |
+| #3 / `7476c94` | E2E, k6 and Maestro scaffolding | REVIEW BLOCKED: invalid fixtures/runner paths and false-positive checks; no passing capacity or end-to-end acceptance established. |
+| #4 / `5ec51f9` | Expo mobile UI and contracts under the server repository | REVIEW BLOCKED: integration/contract findings; source UI is not completed Tiny Garden, secure pairing or an installed Android widget. |
+| #7 / `282f6ab` | Competing NestJS/Prisma API and TypeScript simulation/contracts, 59 later paths | UNACCEPTED: conflicts with the user's Rust game/server requirement; detailed source review is a separate addendum. This is not a replacement Rust persistence layer. |
+
+The main repository already contains these commits. The live preview remains
+the separate tested versioned runtime with SHA-256
+`51A07F9C382ECB70785654297180349DD2E34F677D5921818EA2B9A6ECEC3100`.
+Fetching/reviewing source does not deploy it. Server runtime changes and live
+rollout remain held. Review notes, Rust requirements and corrected planning
+documents may be published separately; that does not accept the feature code.
+
 ## Status and evidence rules
 
 - **ACTIVE — verified:** the integration chat has observed a started workstream.
