@@ -1,4 +1,17 @@
-// Prisma schema for accounts, device sessions, and rotating refresh tokens.
+// Prisma schema for Chao Garden MMO.
+//
+// Covers: accounts/devices (legacy auth tables), profiles, creatures + stats +
+// traits, gardens, placed decorations, inventory stacks, item definitions,
+// ring (currency) ledgers, friendships, garden visits, competition entries,
+// notifications, simulation checkpoints and audit logs.
+//
+// Conventions:
+// - All ids are UUID v4 (generated in Postgres via gen_random_uuid()).
+// - All timestamps are UTC (`timestamptz(3)` via DateTime).
+// - Currency (rings) is only ever mutated through the RingLedger, which is
+//   append-only; balances are derived but cached on the profile with a CHECK
+//   constraint preventing negatives.
+// - Mutations that award items/currency carry a unique `idempotencyKey`.
 
 generator client {
   provider = "prisma-client-js"
@@ -9,25 +22,35 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ---------------------------------------------------------------------------
+// Accounts & devices
+// ---------------------------------------------------------------------------
+
 model User {
-  id           String          @id @default(cuid())
-  email        String?         @unique
+  id           String    @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  email        String?   @unique
   passwordHash String?
   displayName  String
-  guest        Boolean         @default(false)
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+  guest        Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  /// Soft deletion: account deactivation preserves audit history.
+  deletedAt    DateTime?
 
-  sessions     DeviceSession[]
-  refreshTokens RefreshToken[]
-  creatures    Json            @default("[]")
-  inventory    Json            @default("{}")
-  rings        Int             @default(0)
+  sessions       DeviceSession[]
+  refreshTokens  RefreshToken[]
+  profile        Profile?
+  friendships    Friendship[]    @relation("Requester")
+  friendOf       Friendship[]    @relation("Addressee")
+  notifications  Notification[]
+  auditLogs      AuditLog[]
+
+  @@index([guest])
 }
 
 model DeviceSession {
-  id         String    @id @default(cuid())
-  userId     String
+  id         String    @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  userId     String    @db.Uuid
   deviceName String
   createdAt  DateTime  @default(now())
   lastUsedAt DateTime  @default(now())
@@ -36,15 +59,15 @@ model DeviceSession {
   user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   refreshTokens RefreshToken[]
 
-  @@index([userId])
+  @@index([userId, revokedAt])
 }
 
 model RefreshToken {
-  id         String    @id @default(cuid())
+  id         String    @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
   // SHA-256 hex digest of the opaque token. Raw tokens are never persisted.
   hash       String    @unique
-  sessionId  String
-  userId     String
+  sessionId  String    @db.Uuid
+  userId     String    @db.Uuid
   expiresAt  DateTime
   createdAt  DateTime  @default(now())
   // Set when rotated. A lookup that finds consumedAt != null is a replay.
@@ -55,4 +78,307 @@ model RefreshToken {
 
   @@index([sessionId])
   @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Profiles & progression
+// ---------------------------------------------------------------------------
+
+model Profile {
+  userId        String   @id @db.Uuid
+  title         String?
+  /// Cached ring balance; derived from RingLedger. CHECK enforces >= 0.
+  rings         Int      @default(0)
+  level         Int      @default(1)
+  experience    Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gardens         Garden[]
+  ringLedger      RingLedger[]
+  outgoingVisits  GardenVisit[]    @relation("Visitor")
+  receivedVisits  GardenVisit[]    @relation("Host")
+  competitionEntry CompetitionEntry[]
+
+  /// Negative balances are a server invariant violation, never a state.
+  @@index([rings])
+  @@index([level])
+}
+
+// ---------------------------------------------------------------------------
+// Item definitions & inventory
+// ---------------------------------------------------------------------------
+
+model ItemDefinition {
+  id          String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  key         String   @unique // stable slug, e.g. "food.apple"
+  kind        ItemKind
+  name        String
+  description String?
+  /// Arbitrary per-kind payload (nutrition, training stat, decoration mesh).
+  data        Json     @default("{}")
+  /// Buy price in rings; null means not purchasable.
+  price       Int?
+  stackable   Boolean  @default(true)
+  maxStack    Int      @default(99)
+  createdAt   DateTime @default(now())
+
+  inventoryStacks InventoryStack[]
+  placements      PlacedDecoration[]
+  competitionEntry CompetitionEntry[]
+
+  @@index([kind])
+}
+
+enum ItemKind {
+  FOOD
+  TRAINING
+  DECORATION
+}
+
+/// One row per (owner, item) stack; quantity is the only mutable field.
+model InventoryStack {
+  id        String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  ownerUid  String   @db.Uuid
+  itemId    String   @db.Uuid
+  quantity  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner Profile        @relation(fields: [ownerUid], references: [userId], onDelete: Cascade)
+  item  ItemDefinition @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@unique([ownerUid, itemId])
+  @@index([ownerUid])
+}
+
+// ---------------------------------------------------------------------------
+// Gardens & decorations
+// ---------------------------------------------------------------------------
+
+model Garden {
+  id        String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  ownerUid  String   @db.Uuid
+  name      String
+  theme     String   @default("neutral")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  /// Soft deletion so visits/friend history keep garden names.
+  deletedAt DateTime?
+
+  owner      Profile            @relation(fields: [ownerUid], references: [userId], onDelete: Cascade)
+  creatures  Creature[]
+  decorations PlacedDecoration[]
+  visits     GardenVisit[]
+
+  @@unique([ownerUid, name])
+  @@index([ownerUid])
+}
+
+model PlacedDecoration {
+  id        String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  gardenUid String   @db.Uuid
+  itemId    String   @db.Uuid
+  x         Int
+  y         Int
+  rotation  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  garden Garden         @relation(fields: [gardenUid], references: [id], onDelete: Cascade)
+  item   ItemDefinition @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  /// One decoration occupies one tile.
+  @@unique([gardenUid, x, y])
+  @@index([gardenUid])
+}
+
+// ---------------------------------------------------------------------------
+// Creatures
+// ---------------------------------------------------------------------------
+
+model Creature {
+  id         String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  ownerUid   String   @db.Uuid
+  gardenUid  String?  @db.Uuid
+  name       String
+  /// Original placeholder species key, e.g. "species.balloon".
+  speciesKey String
+  alignment  CreatureAlignment @default(NEUTRAL)
+  /// Aggregate stat block (swim/fly/run/power/stamina).
+  stats      Json     @default("{}")
+  /// Personality traits / learned behaviours.
+  traits     Json     @default("[]")
+  level      Int      @default(1)
+  experience Int      @default(0)
+  mood       Int      @default(50)
+  hunger     Int      @default(50)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  /// Creatures are never hard-deleted; retirement keeps history intact.
+  retiredAt  DateTime?
+
+  owner  Profile @relation(fields: [ownerUid], references: [userId], onDelete: Cascade)
+  garden Garden? @relation(fields: [gardenUid], references: [id], onDelete: SetNull)
+
+  entries CompetitionEntry[]
+
+  @@index([ownerUid])
+  @@index([gardenUid])
+  @@index([speciesKey])
+}
+
+enum CreatureAlignment {
+  HERO
+  NEUTRAL
+  DARK
+}
+
+// ---------------------------------------------------------------------------
+// Economy — append-only ring ledger
+// ---------------------------------------------------------------------------
+
+model RingLedger {
+  id             String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  ownerUid       String   @db.Uuid
+  /// Signed delta. Never zero. Sum over ledger + initial balance = cached rings.
+  delta          Int
+  /// Rationale code, e.g. "reward.competition", "purchase.item".
+  reason         String
+  /// Idempotency: awarding the same reward twice is rejected by the DB.
+  idempotencyKey String?  @unique
+  /// Optional free-form context (competition id, item key, ...).
+  meta           Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  owner Profile @relation(fields: [ownerUid], references: [userId], onDelete: Cascade)
+
+  @@index([ownerUid, createdAt])
+  @@index([reason])
+}
+
+// ---------------------------------------------------------------------------
+// Social
+// ---------------------------------------------------------------------------
+
+/// Friendship is a directed request that becomes mutual on accept.
+model Friendship {
+  id           String         @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  requesterUid String         @db.Uuid
+  addresseeUid String         @db.Uuid
+  status       FriendshipStatus @default(PENDING)
+  createdAt    DateTime       @default(now())
+  respondedAt  DateTime?
+
+  requester Profile @relation("Requester", fields: [requesterUid], references: [userId], onDelete: Cascade)
+  addressee Profile @relation("Addressee", fields: [addresseeUid], references: [userId], onDelete: Cascade)
+
+  @@unique([requesterUid, addresseeUid])
+  @@index([addresseeUid, status])
+}
+
+model GardenVisit {
+  id          String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  gardenUid   String   @db.Uuid
+  visitorUid  String   @db.Uuid
+  /// Idempotent: a visitor can only log one visit per garden per day.
+  visitDay    DateTime @db.Date
+  createdAt   DateTime @default(now())
+
+  garden  Garden  @relation(fields: [gardenUid], references: [id], onDelete: Cascade)
+  visitor Profile @relation("Visitor", fields: [visitorUid], references: [userId], onDelete: Cascade)
+
+  @@unique([gardenUid, visitorUid, visitDay])
+  @@index([visitorUid])
+}
+
+// ---------------------------------------------------------------------------
+// Competitions
+// ---------------------------------------------------------------------------
+
+model Competition {
+  id        String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  key       String   @unique // stable schedule key, e.g. "karate.2025w01"
+  name      String
+  kind      String // e.g. "karate", "race"
+  startsAt  DateTime
+  endsAt    DateTime
+  /// Rings paid to the winner, if any.
+  prize     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  entries CompetitionEntry[]
+
+  @@index([startsAt])
+}
+
+model CompetitionEntry {
+  id             String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  competitionUid String   @db.Uuid
+  creatureUid    String   @db.Uuid
+  itemId         String?  @db.Uuid // item used to enter, if any
+  score          Int      @default(0)
+  placement      Int?
+  /// Prevents the same creature entering the same competition twice.
+  idempotencyKey String   @unique
+  createdAt      DateTime @default(now())
+
+  competition Competition    @relation(fields: [competitionUid], references: [id], onDelete: Cascade)
+  creature    Creature       @relation(fields: [creatureUid], references: [id], onDelete: Cascade)
+  item        ItemDefinition? @relation(fields: [itemId], references: [id], onDelete: SetNull)
+
+  @@index([competitionUid, placement])
+}
+
+// ---------------------------------------------------------------------------
+// Notifications & audit
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id        String    @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  userId    String    @db.Uuid
+  kind      String
+  payload   Json      @default("{}")
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+}
+
+/// Append-only audit trail for all economy/social mutations.
+model AuditLog {
+  id        String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  userId    String   @db.Uuid
+  action    String // e.g. "inventory.consume", "rings.award"
+  targetUid String?  @db.Uuid
+  meta      Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([action])
+}
+
+// ---------------------------------------------------------------------------
+// Simulation checkpoints
+// ---------------------------------------------------------------------------
+
+/// Deterministic-tick snapshots so a client can resume simulation offline.
+model SimulationCheckpoint {
+  id          String   @id @db.Uuid @default(dbgenerated("gen_random_uuid()"))
+  gardenUid   String   @db.Uuid
+  /// Monotonic tick counter for the garden.
+  tick        BigInt
+  /// Full serialized snapshot (rng state, creature states, ...).
+  state       Json
+  createdAt   DateTime @default(now())
+
+  garden Garden @relation(fields: [gardenUid], references: [id], onDelete: Cascade)
+
+  @@unique([gardenUid, tick])
+  @@index([gardenUid, tick])
 }
