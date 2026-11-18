@@ -79,6 +79,7 @@ pub struct Player {
     pub tiny_game: Option<TinyRun>,
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
+    pub care: crate::care::CareState,
     pub boosting: bool,
     pub boost_energy: f64,
     pub happiness: f64,
@@ -148,7 +149,8 @@ impl Player {
                 (*key, json!({"current": current, "required": required}))
             })
             .collect();
-        json!({"ready": checks.iter().all(|(_, current, required)| current >= required), "requirements": requirements})
+        json!({"ready": checks.iter().all(|(_, current, required)| current >= required), "requirements": requirements,
+            "rules":"adapted-prototype-evolution-v1","nativeConditions":"unknown"})
     }
     pub fn public(&self) -> Value {
         json!({
@@ -170,6 +172,7 @@ impl Player {
         let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
+            "energy":self.energy,"hunger":self.hunger,"care":self.care,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
@@ -286,38 +289,16 @@ pub struct ShopItem {
     pub price: u32,
     pub r#type: &'static str,
 }
-pub const SHOP_CATALOG: [ShopItem; 4] = [
-    ShopItem {
-        id: "garden-fruit",
-        name: "Garden Fruit",
-        description: "Restore 25 energy and fullness; gain 10 happiness.",
-        price: 5,
-        r#type: "fruit",
-    },
-    ShopItem {
-        id: "run-drive",
-        name: "Run Drive",
-        description: "Raise Run by 2 levels.",
-        price: 12,
-        r#type: "drive",
-    },
-    ShopItem {
-        id: "power-drive",
-        name: "Power Drive",
-        description: "Raise Power by 2 levels.",
-        price: 12,
-        r#type: "drive",
-    },
-    ShopItem {
-        id: "eggshell-cap",
-        name: "Eggshell Cap",
-        description: "Own and equip a little eggshell hat.",
-        price: 25,
-        r#type: "cosmetic",
-    },
-];
+pub const SHOP_CATALOG: [ShopItem; 1] = [ShopItem {
+    id: "eggshell-cap",
+    name: "Eggshell Cap",
+    description: "Own and equip a little eggshell hat.",
+    price: 25,
+    r#type: "cosmetic",
+}];
 
 pub struct Game {
+    pub care_catalog: crate::care_catalog::CareCatalog,
     pub activities: ActivityCatalog,
     pub time: f64,
     pub allow_owner_bootstrap: bool,
@@ -374,6 +355,7 @@ impl Game {
                 .map_err(|error| format!("{error} for {zone}"))?;
         }
         let mut game = Self {
+            care_catalog: crate::care_catalog::CareCatalog::default(),
             activities: ActivityCatalog::default(),
             time: now,
             allow_owner_bootstrap,
@@ -491,9 +473,10 @@ impl Game {
             tiny_game: None,
             tiny_result: None,
             watch: None,
+            care: crate::care::CareState::restore(data.get("care"))?,
             happiness: number(&data["happiness"], 65., 0., 100.),
-            energy: 100.,
-            hunger: 100.,
+            energy: number(&data["energy"], 100., 0., 100.),
+            hunger: number(&data["hunger"], 100., 0., 100.),
             hp: if admin { 250. } else { 100. },
             max_hp: if admin { 250. } else { 100. },
             missions_completed: number(&data["missionsCompleted"], 0., 0., 99999.).floor() as u32,
@@ -570,7 +553,10 @@ impl Game {
     }
     pub fn set_input(&mut self, id: &str, input: &Value) {
         if let Some(player) = self.players.get_mut(id).filter(|p| p.connections > 0) {
-            if player.tiny_game.is_some() || player.watch.is_some() {
+            if player.tiny_game.is_some()
+                || player.watch.is_some()
+                || player.care.activity_lock.is_some()
+            {
                 return;
             }
             let mut dx = number(&input["dx"], 0., -1., 1.);
@@ -724,6 +710,27 @@ impl Game {
     fn action_inner(&mut self, p: &mut Player, message: &Value) {
         let action = message["action"].as_str().unwrap_or_default();
         let id = p.id.clone();
+        if p.care.activity_lock.is_some() {
+            self.notice(
+                &id,
+                "Finish your current activity before another action.",
+                "error",
+            );
+            return;
+        }
+        if action == "feed"
+            || (action == "buy"
+                && ["garden-fruit", "run-drive", "power-drive"]
+                    .iter()
+                    .any(|item| message["item"] == *item))
+        {
+            self.notice(
+                &id,
+                "Use the versioned care inventory controls to purchase and consume items.",
+                "info",
+            );
+            return;
+        }
         if action.starts_with("watch-") {
             watch::action(self, p, message);
             return;
@@ -980,35 +987,6 @@ impl Game {
             );
             return;
         }
-        if action == "feed" {
-            if !self.near_interaction(p, "fruit") {
-                self.notice(&id, "Visit the Neutral Garden fruit grove, or buy Garden Fruit from Amy in the hub.", "info");
-                return;
-            }
-            if !p.cooldown("feed", self.time, 1200.) {
-                return;
-            }
-            if p.rings < 3 {
-                self.notice(
-                    &id,
-                    "Fruit costs 3 rings. Explore to collect more.",
-                    "error",
-                );
-                return;
-            }
-            p.rings -= 3;
-            p.energy = (p.energy + 35.).min(100.);
-            p.hunger = (p.hunger + 30.).min(100.);
-            p.happiness = (p.happiness + 8.).min(100.);
-            p.gain("stamina", 1);
-            self.dirty = true;
-            self.notice(
-                &id,
-                "Yum! Fruit restored energy and raised Stamina.",
-                "success",
-            );
-            return;
-        }
         if let Some(stat) = action
             .strip_prefix("train-")
             .filter(|stat| MAIN_STATS.contains(stat))
@@ -1073,19 +1051,9 @@ impl Game {
             return;
         }
         p.rings -= item.price;
-        match item.id {
-            "garden-fruit" => {
-                p.energy = (p.energy + 25.).min(100.);
-                p.hunger = (p.hunger + 25.).min(100.);
-                p.happiness = (p.happiness + 10.).min(100.);
-            }
-            "run-drive" => p.gain("run", 2),
-            "power-drive" => p.gain("power", 2),
-            "eggshell-cap" => {
-                p.owned_cosmetics.push("eggshell".into());
-                p.equipped = Some("eggshell".into());
-            }
-            _ => {}
+        if item.id == "eggshell-cap" {
+            p.owned_cosmetics.push("eggshell".into());
+            p.equipped = Some("eggshell".into());
         }
         self.dirty = true;
         self.notice(
@@ -1188,6 +1156,14 @@ impl Game {
             })
         .max(0.);
         if enemy.hp == 0. {
+            crate::care::mission_drop(
+                p,
+                &self.care_catalog,
+                &mission.id,
+                &enemy.id,
+                enemy.x,
+                enemy.z,
+            );
             p.rings += 5;
             p.gain("power", 1);
             self.dirty = true;
@@ -1250,6 +1226,16 @@ impl Game {
         self.events.push(Event { target: None, message: json!({"type":"event", "kind":"mech-shot", "playerId":p.id, "zone":p.zone,
             "x":x, "y":y, "z":z, "hitX":hit_x, "hitY":hit_y, "hitZ":hit_z, "hit":target_id.is_some(), "targetId":target_id}) });
         if killed {
+            if let (Some(mission), Some(enemy_id)) = (&self.mission, &target_id) {
+                crate::care::mission_drop(
+                    p,
+                    &self.care_catalog,
+                    &mission.id,
+                    enemy_id,
+                    hit_x,
+                    hit_z,
+                );
+            }
             p.rings += 5;
             p.gain("power", 1);
             self.dirty = true;
@@ -1309,7 +1295,7 @@ impl Game {
                 self.players.insert(id, p);
                 continue;
             }
-            if self.time - p.last_input_at > 350. {
+            if self.time - p.last_input_at > 350. || p.care.activity_lock.is_some() {
                 p.input = Input::default();
             }
             watch::tick(self, &mut p);
@@ -1563,6 +1549,7 @@ impl Game {
         json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.connections > 0 || p.watch.is_some()).map(Player::public).collect::<Vec<_>>(),
             "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
             "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
+            "care":crate::care::public(self,self_id),
             "karate": self.players.get(self_id).and_then(|p|p.karate.as_ref().map(KarateBout::public)),
             "activityResult": self.players.get(self_id).and_then(|p|p.activity_result.as_ref()),
             "tinyGame":self.players.get(self_id).and_then(|p|p.tiny_game.as_ref().map(TinyRun::public)),
