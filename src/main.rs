@@ -52,7 +52,10 @@ fn run_release_migration() -> io::Result<()> {
     let config = Config::from_env().map_err(io::Error::other)?;
     let state = AppState::load(config)?;
     state.release_migration()?;
-    println!("Release migration complete: {}", state.config.data_dir.display());
+    println!(
+        "Release migration complete: {}",
+        state.config.data_dir.display()
+    );
     Ok(())
 }
 
