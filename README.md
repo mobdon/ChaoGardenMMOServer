@@ -8,6 +8,76 @@ from the owner's game installation.
 Client repository: `mobdon/ChaoGardenMMOClient`.
 Server repository: `mobdon/ChaoGardenMMOServer`.
 
+## TypeScript monorepo (pnpm + Turborepo)
+
+The TypeScript workspace lives alongside the Rust authority:
+
+| Path | Package | Role |
+| --- | --- | --- |
+| `apps/mobile` | `@chaogarden/mobile` | Expo React Native client |
+| `apps/api` | `@chaogarden/api` | NestJS API server (auth, sessions, gameplay bridge) |
+| `packages/contracts` | `@chaogarden/contracts` | Shared Zod schemas / API contracts |
+| `packages/simulation` | `@chaogarden/simulation` | Deterministic game logic (pure, no platform deps) |
+| `packages/config` | `@chaogarden/config` | Shared TypeScript, ESLint and Prettier settings |
+
+### Prerequisites
+
+- Node.js >= 20
+- pnpm >= 9 (`corepack enable` works out of the box)
+- Docker (for local PostgreSQL and Redis)
+- Rust toolchain only if you are also running the authority server below
+
+### Local startup
+
+```sh
+corepack enable
+pnpm install --frozen-lockfile   # or plain `pnpm install` after adding a dep
+
+docker compose up -d             # PostgreSQL (5432) + Redis (6379)
+
+cp apps/api/.env.example apps/api/.env       # fill in a real JWT_SECRET
+cp apps/mobile/.env.example apps/mobile/.env # only public values here
+
+pnpm dev                         # API + mobile dev servers together
+```
+
+### Everyday commands (from the repo root)
+
+```sh
+pnpm dev                 # turbo run dev (long-running)
+pnpm build               # build all workspaces in dependency order
+pnpm lint                # ESLint everywhere
+pnpm typecheck           # tsc --noEmit everywhere
+pnpm test                # Vitest/Jest suites
+pnpm format              # Prettier write (`pnpm format:check` for CI)
+pnpm clean               # remove build artifacts
+turbo run typecheck --filter=@chaogarden/api   # a single package
+```
+
+Everything must work from a clean checkout: `pnpm install --frozen-lockfile`
+followed by `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
+
+### Conventions
+
+- Strict TypeScript everywhere; shared compiler options in `packages/config/tsconfig/*`.
+- ESLint flat configs per workspace extending `@chaogarden/config/eslint`; Prettier at the root.
+- Environment is validated with Zod on startup (`apps/api/src/config/env.ts`);
+  copy the `.env.example` files to `.env` and never commit secrets.
+- Package boundaries are lint-enforced: the mobile client cannot import
+  server-only modules (`@nestjs/*`, `@prisma/*`, `ioredis`, ...), the API cannot
+  depend on the mobile client, and the simulation package forbids platform
+  dependencies.
+- Local services: `docker-compose.yml` provides PostgreSQL and Redis.
+
+### CI
+
+Continuous integration runs `pnpm install --frozen-lockfile` (with the pnpm
+store cached), then lint, typecheck, tests, and builds on every push and pull
+request. The workflow definition is checked in at `docs/ci/github-actions.yml`
+(this repository's automation policy does not allow tooling tasks to write
+`.github/workflows/` directly; copy it to `.github/workflows/ci.yml` when
+enabling CI).
+
 ## Run Rust
 
 Install stable Rust, then run from this repository:

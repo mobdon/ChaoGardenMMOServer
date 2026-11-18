@@ -1,0 +1,52 @@
+# ChaoGarden TypeScript CI workflow
+#
+# NOTE: this repo's automation policy forbids committing directly to
+# `.github/workflows/` from this task. The workflow definition below is the
+# intended CI pipeline — copy it to `.github/workflows/ci.yml` once approved.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Upload turbo cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}

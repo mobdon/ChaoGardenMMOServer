@@ -1,0 +1,22 @@
+{
+  "name": "@chaogarden/config",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared TypeScript, ESLint and Prettier configuration for the ChaoGarden monorepo.",
+  "type": "module",
+  "exports": {
+    "./eslint": "./eslint/index.mjs"
+  },
+  "files": [
+    "tsconfig"
+  ],
+  "dependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint-config-prettier": "^9.1.0",
+    "typescript-eslint": "^8.0.0"
+  },
+  "peerDependencies": {
+    "eslint": "^9.0.0"
+  }
+}
