@@ -7,6 +7,14 @@ before starting. The Vibe-generated release documents arrived in server commit
 `b525d8b` through PR #1; they are planning drafts, not implementation evidence.
 No Vibe website board or external chat has been updated by creating these files.
 
+## Vibe merge repair
+
+The user authorized useful-only PR integration. [The November 18 integration
+record](VIBE-MERGES-2026-11-18.md) records exact incoming heads, closed duplicate/
+unusable PRs and the useful Rust build/CI, architecture and operating-document
+repairs being integrated through PRs #8/#9/#11. No client/Rust feature PR is accepted
+implicitly, and no runtime or save migration follows from these source merges.
+
 ## Incoming Vibe source — review blocked
 
 **UNACCEPTED — Rust requirement reaffirmed by the user.** Game systems, shared

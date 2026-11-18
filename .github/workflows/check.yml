@@ -6,19 +6,28 @@ on:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: server
+            manifest: Cargo.toml
+          - package: tiny-garden-core
+            manifest: crates/tiny-garden-core/Cargo.toml
+          - package: tiny-garden-games
+            manifest: crates/tiny-garden-games/Cargo.toml
+    name: Rust (${{ matrix.package }})
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
-      - run: cargo fmt --manifest-path crates/tiny-garden-games/Cargo.toml --check
-      - run: cargo clippy --manifest-path crates/tiny-garden-games/Cargo.toml --locked --all-targets -- -D warnings
-      - run: cargo test --manifest-path crates/tiny-garden-games/Cargo.toml --locked
-      - run: cargo build --release --locked
+      - run: cargo fmt --manifest-path ${{ matrix.manifest }} --check
+      - run: cargo clippy --manifest-path ${{ matrix.manifest }} --locked --all-targets -- -D warnings
+      - run: cargo test --manifest-path ${{ matrix.manifest }} --locked
+      - if: matrix.package == 'server'
+        run: cargo build --release --locked
   node-reference:
     runs-on: ubuntu-latest
     steps:
