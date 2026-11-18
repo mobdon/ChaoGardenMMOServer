@@ -56,6 +56,11 @@ documents may be published separately; that does not accept the feature code.
 The stream numbers match [WORKSTREAMS.md](WORKSTREAMS.md). File paths in an
 implementation brief are relative to its named repository.
 
+The native movement stream's current scene/helper proposal and verified motion
+states are recorded in [NATIVE-MOVEMENT.md](NATIVE-MOVEMENT.md). Integration has
+no pending scene edit at the recorded baseline; the isolated patch still needs
+review and real snapshot-driven proof before merge.
+
 | # | Workstream / repository | Coordination status | Existing baseline versus next delivery | Dependencies / shared boundaries |
 | --- | --- | --- | --- | --- |
 | 1 | Tiny Garden app / client | READY — activity unverified | LOCAL TESTED: browser Tiny UI, five adapted minigames, canonical stats and Watch display. Next: complete touch/reconnect/saved-state acceptance, PWA behavior, real care/items/training controls. | 3 training, 4 identity/leases, 9 care; agree schemas before editing shared UI/transport. |
