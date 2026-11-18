@@ -253,6 +253,11 @@ async fn assets_serve_exact_allowlisted_bytes_mime_head_and_reject_traversal() {
     fs::create_dir_all(&imports).unwrap();
     for (route, filename, mime) in [
         ("chao.glb", "chao.glb", "model/gltf-binary"),
+        (
+            "chao-locomotion.glb",
+            "chao-locomotion.glb",
+            "model/gltf-binary",
+        ),
         ("hub-grass.png", "nativehubgrass.png", "image/png"),
         ("voice-amy.mp3", "voice-amy.mp3", "audio/mpeg"),
         ("discord-icon.png", "discord-icon.png", "image/png"),
@@ -323,6 +328,7 @@ async fn assets_serve_exact_allowlisted_bytes_mime_head_and_reject_traversal() {
     }
     for path in [
         "/api/assets/unknown.glb",
+        "/api/assets/chao-locomotion.glb/../profiles.json",
         "/api/assets/../../profiles.json",
         "/api/assets/%2e%2e/%2e%2e/profiles.json",
         "/api/assets/../assets/chao.glb",

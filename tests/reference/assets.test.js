@@ -9,7 +9,7 @@ import { join } from 'node:path';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const filenames = [
-  ...['chao', 'hub', 'garden', 'hero-garden', 'dark-garden', 'neutral-chaos', 'hero-chaos', 'dark-chaos', 'tails', 'knuckles', 'amy', 'chaos-emerald', 'tree-neutral', 'dark-chao-walker', 'dark-walker-shot', 'dark-walker-booster', 'shadow-air-shoes-left', 'shadow-air-shoes-right', 'knuckles-hammer-gloves-left', 'knuckles-hammer-gloves-right'].map((name) => `${name}.glb`),
+  ...['chao', 'chao-locomotion', 'hub', 'garden', 'hero-garden', 'dark-garden', 'neutral-chaos', 'hero-chaos', 'dark-chaos', 'tails', 'knuckles', 'amy', 'chaos-emerald', 'tree-neutral', 'dark-chao-walker', 'dark-walker-shot', 'dark-walker-booster', 'shadow-air-shoes-left', 'shadow-air-shoes-right', 'knuckles-hammer-gloves-left', 'knuckles-hammer-gloves-right'].map((name) => `${name}.glb`),
   ...['red', 'purple', 'cyan', 'green', 'blue', 'yellow', 'white'].map((color) => `emerald-${color}.glb`),
   'chao-flame.png', 'emotion-flame.png', 'emotion-flame-atlas.png', 'emotion-sphere.png',
   'chao-stat-panel.png', 'chao-stat-font.png', 'chao-race-parameter.png', 'discord-icon.png', 'login-chao.png',
@@ -100,6 +100,7 @@ test('local asset endpoint serves exact allowlisted files and rejects path trave
     }
     for (const path of [
       '/api/assets/unknown.glb', '/api/assets/../../profiles.json',
+      '/api/assets/chao-locomotion.glb/../profiles.json',
       '/api/assets/%2e%2e/%2e%2e/profiles.json', '/api/assets/../assets/chao.glb',
       '/api/assets/%2e%2e/assets/chao.glb', '/api/assets/chao.glb/../../profiles.json',
       '/api/assets/activities/race-normal.glb', '/api/assets/activities/../chao.glb',
