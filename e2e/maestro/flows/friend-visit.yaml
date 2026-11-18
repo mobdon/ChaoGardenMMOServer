@@ -1,0 +1,21 @@
+# Friend visit: open the friend list, visit a friend's garden, verify you are
+# a spectator (no care actions) and can return home safely.
+appId: mobdon.chaogarden.mobile
+name: friend visit
+---
+- launch:
+    clearState: true
+- tapOn: "Tap to enter the garden"
+- tapOn: "Friends"
+- assertVisible: "TestFriend"
+- tapOn: "Visit"
+- assertVisible: "TestFriend's garden"
+# Visitors cannot feed, adopt, or place decorations in someone else's garden.
+- assertNotVisible: "Feed"
+- assertNotVisible: "Decorate"
+- tapOn: "Leave garden"
+- assertVisible: "Chao Garden"
+- runScript:
+    file: ../scripts/probe-status.js
+    env:
+      CHECK: visitor-role-enforced

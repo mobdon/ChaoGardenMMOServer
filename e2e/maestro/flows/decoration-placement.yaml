@@ -1,0 +1,25 @@
+# Decoration placement: buy a tree, drag it onto the grid, restart the app and
+# confirm the server persisted the placement (authority, not local-only state).
+appId: mobdon.chaogarden.mobile
+name: decoration placement
+---
+- launch:
+    clearState: true
+- tapOn: "Tap to enter the garden"
+- tapOn: "Shop"
+- tapOn: "Round tree"
+- tapOn: "Buy"
+- assertVisible: "Round tree x1"
+- tapOn: "Decorate"
+- swipe: { from: "Round tree", to: "Garden grid slot 3" }
+- tapOn: "Place"
+- assertVisible: "Placed"
+# Restart without clearing state; placement must round-trip from the server.
+- stopApp
+- launch:
+    clearState: false
+- assertVisible: "Round tree"
+- runScript:
+    file: ../scripts/probe-status.js
+    env:
+      CHECK: decoration-persisted

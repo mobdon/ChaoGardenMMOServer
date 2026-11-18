@@ -1,0 +1,18 @@
+# Training: open the training zone, run one drill, confirm stat gain reported.
+appId: mobdon.chaogarden.mobile
+name: training
+---
+- launch:
+    clearState: true
+- tapOn: "Tap to enter the garden"
+- tapOn: "Egg"
+- tapOn: "Adopt"
+- tapOn: "Training"
+- assertVisible: "Swim drill"
+- tapOn: "Swim drill"
+# Drills are server-authoritative; the client shows progress, not edited stats.
+- assertVisible: "Drill complete"
+- runScript:
+    file: ../scripts/probe-status.js
+    env:
+      CHECK: training-session-recorded

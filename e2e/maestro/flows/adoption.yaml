@@ -1,0 +1,18 @@
+# Adoption: create a guest, adopt an egg, confirm the server accepted it.
+appId: mobdon.chaogarden.mobile
+name: chao adoption
+---
+- launch:
+    clearState: true
+- tapOn: "Tap to enter the garden"
+- assertVisible: "Egg"
+- tapOn: "Egg"
+# Adoption is a deliberate care action; require an explicit confirm so an
+# accidental tap cannot mutate the economy.
+- tapOn: "Adopt"
+- assertVisible: "Your Chao hatched"
+- runScript:
+    file: ../scripts/probe-status.js
+    env:
+      CHECK: chao-adopted
+- assertVisible: "Hunger"
