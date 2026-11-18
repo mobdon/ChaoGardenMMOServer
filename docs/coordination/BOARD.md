@@ -136,6 +136,57 @@ while writing this board:
 
 ## Dependency and merge order
 
+Client presentation follow-up: [client PR #9](https://github.com/mobdon/ChaoGardenMMOClient/pull/9)
+at `c66c148d95ba18626d90fc1318de4c323dd0345f`, branch `codex/music-controls`, based on exact
+`a7a8d093838d66cc5fa190aaf71a60a5ad410de9`, adds blue/gold Music/volume and
+independent NPC voice controls, an authoritative Watch/Take control toggle,
+exact mirrored right-native boots/title portrait, palm-mounted gloves,
+smooth Shadow-derived cadence/reduced head sway and native Chaos sampler
+restoration. Changed paths cover `index.html`, `src/{audio,main,scene,
+chao-attachments,chao-materials,chao-locomotion,shadow-skate,sonic.css}`, focused
+tests/native proof/portrait tooling and client reference docs. New native exits
+use `src/garden-exits.js`, `src/world-layout.js`, a scene picking hook, focused
+tests and actual-native geometry verifier. No Rust protocol,
+authority, identity or save-schema changes. Final client tests/build (24 tests),
+three-form original-asset proofs, 2,166-frame glove contact, 648-frame skating
+and an isolated frozen-Rust proof (14 checks, latest 59 samples/59 observer snapshots)
+passed. Actual isolated browser music mute/volume/voice independence/persistence,
+keyboard isolation and Watch start/stop/manual movement passed. The fixture
+uses disposable profiles; native terrain copies keep renderer/authority aligned.
+Wider terrain, all movement transitions and multi-client visuals remain open.
+
+Tiny/widget readiness checked November 18: canonical browser Tiny at 5173 is
+available and shows the same 139-ring Chaos. New native-art browser previews
+at 5177 have separate origin/storage. Client PR3 `cf3b236` includes a real local
+debug APK, SHA-256
+`15adadc4aba82d63e4d35a7a058d0ea904c1bd0568a35616f09291ace626a493`;
+build/lint/44 JVM tests and isolated Java-to-Rust pairing/care/restart evidence
+are recorded in its `android/verification/STATUS.md`. No installed Android
+device/launcher/Keystore/background proof exists. The current live service
+does not support that accounts-v2 adapter; ports remain loopback-only. Real
+phone connection to the canonical Chao requires coordinated account migration
+and reachable HTTPS. Durable AFK training remains unwired. No runtime rollout,
+live save migration or public exposure was performed.
+
+New native-area scope: Kindergarten (all nine actual areas, including Black
+Market), complete Neutral/Hero/Dark gardens, native doorways returning to the
+hub, and original SA2 stage/Chao selection. Client documentation tracks these
+requests separately from Amy's four-item prototype shop and catalog cards.
+Native bounded doorway clicks are implemented against original mesh/recess
+geometry. All three native GLB ray proofs pass; actual browser walking/clicking
+the Neutral cave returned a disposable Chao to Rust hub spawn (0,6). Dark's
+approach encountered an obstruction near (7.245,6.960), so its walk/click
+acceptance remains open. Hero's original doorway lies beyond the current
+authoritative terrain domain. Home remains available; original automatic
+transition volumes and complete garden collision are untraced/unaccepted.
+Client `docs/NATIVE-GARDEN-EXITS.md` records the exact sources and limits.
+`docs/NATIVE-KINDERGARTEN.md` audits all nine rooms, 365 decoded room textures
+and 55 original NPC/door/motion/light files. Rust GC visual decoding, room
+contracts/allowlists, original placement/transitions/collision, classroom and
+Black Market economy remain separate integration work. No new room is live.
+PR9 is stacked on unmerged client PR8; neither source publication changes the
+backend runtime or authorizes a live migration.
+
 Client presentation follow-up: [client PR #8](https://github.com/mobdon/ChaoGardenMMOClient/pull/8)
 at `a7a8d093838d66cc5fa190aaf71a60a5ad410de9` corrects animated foot
 sockets/toe alignment, shrinks the uniform boot fit and embeds the chest gem
