@@ -136,6 +136,19 @@ while writing this board:
 
 ## Dependency and merge order
 
+Client presentation follow-up: [client PR #8](https://github.com/mobdon/ChaoGardenMMOClient/pull/8)
+at `a7a8d093838d66cc5fa190aaf71a60a5ad410de9` corrects animated foot
+sockets/toe alignment, shrinks the uniform boot fit and embeds the chest gem
+deeper. Original Shadow jet meshes replace the prior adapted sprite effect;
+exact retail emitter matrices/timing remain untraced. Final client tests/build,
+Rust bundler checks, native geometry/PBR parity, three-form 1,086-sample proof
+and actual browser movement capture pass. The disposable Rust protocol proof
+passed 14 checks. Local rendering aliases were backed up and installed through
+existing routes; live server binary/process and canonical Chaos/139 rings,
+gear, resident Watch and mute remain intact. No protocol/authority change,
+backend rollout or save migration; preserve these 006/013 targets when
+reviewing the independent movement proposal.
+
 1. Agree the versioned ownership/observation/lease/revision envelope through
    [PROTOCOL.md](PROTOCOL.md). Accounts, AFK training, Tiny UI and Android may
    work in isolated modules concurrently; integration coordinates shared hooks.
