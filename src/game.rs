@@ -1,5 +1,6 @@
 //! Deterministic, server-owned gameplay. Incoming messages carry intent only.
 use crate::activities::{self, ActivityCatalog, ActivityRecord, KarateBout};
+use crate::competition::{self, CompetitionCatalog, CompetitionState};
 use crate::phone::{self, TinyRecord, TinyRun};
 use crate::watch::{self, WatchState};
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,9 @@ pub struct Player {
     pub tiny_game: Option<TinyRun>,
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
+    pub competition: CompetitionState,
+    pub activity_lease: Option<Value>,
+    pub extra_profile: serde_json::Map<String, Value>,
     pub boosting: bool,
     pub boost_energy: f64,
     pub happiness: f64,
@@ -158,6 +162,7 @@ impl Player {
             "stats": self.stats, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
+            "competition":competition::public(self),
             "watch":self.watch.as_ref().map(|watch|watch.public(self.connections>0)),"connected":self.connections>0,
             "mech": if self.vehicle.as_deref() == Some("dark-chao-walker") { json!({"boosting": self.boosting, "boostEnergy": self.boost_energy.round(), "grounded": self.jump_offset <= 0. && self.vy <= 0.}) } else { Value::Null },
             "rings": self.rings, "hp": self.hp, "maxHp": self.max_hp, "happiness": self.happiness,
@@ -167,14 +172,20 @@ impl Player {
         })
     }
     pub fn profile(&self) -> Value {
-        let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
+        let known = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed, "bestRaceMs": self.best_race_ms});
+        let mut profile = Value::Object(self.extra_profile.clone());
+        profile
+            .as_object_mut()
+            .unwrap()
+            .extend(known.as_object().unwrap().clone());
         phone::project_profile(self, &mut profile);
+        competition::project_profile(self, &mut profile);
         profile
     }
 }
@@ -319,6 +330,7 @@ pub const SHOP_CATALOG: [ShopItem; 4] = [
 
 pub struct Game {
     pub activities: ActivityCatalog,
+    pub competition_catalog: CompetitionCatalog,
     pub time: f64,
     pub allow_owner_bootstrap: bool,
     pub terrains: BTreeMap<String, Terrain>,
@@ -375,6 +387,7 @@ impl Game {
         }
         let mut game = Self {
             activities: ActivityCatalog::default(),
+            competition_catalog: CompetitionCatalog::default(),
             time: now,
             allow_owner_bootstrap,
             terrains,
@@ -491,6 +504,12 @@ impl Game {
             tiny_game: None,
             tiny_result: None,
             watch: None,
+            competition: competition::restore(
+                &data["competition"],
+                data["id"].as_str().unwrap_or_default(),
+            )?,
+            activity_lease: data.get("activityLease").filter(|v| !v.is_null()).cloned(),
+            extra_profile: data.as_object().cloned().unwrap_or_default(),
             happiness: number(&data["happiness"], 65., 0., 100.),
             energy: 100.,
             hunger: 100.,
@@ -518,6 +537,17 @@ impl Game {
         self.teleport(&mut player, "hub", 0., 6.)?;
         player.update_form();
         watch::restore(self, &mut player, &data["resident"]);
+        if let Some(plan) = &player.competition.plan {
+            let expected = competition::lease(plan);
+            if player
+                .activity_lease
+                .as_ref()
+                .is_some_and(|lease| *lease != expected)
+            {
+                return Err("Competition conflicts with saved activity lease".into());
+            }
+            player.activity_lease = Some(expected);
+        }
         Ok(player)
     }
 
@@ -559,7 +589,8 @@ impl Game {
     pub fn disconnect(&mut self, id: &str) {
         if let Some(mut player) = self.players.remove(id) {
             player.connections = player.connections.saturating_sub(1);
-            if player.connections == 0 && player.watch.is_none() {
+            if player.connections == 0 && player.watch.is_none() && !competition::reserved(&player)
+            {
                 let _ = self.teleport(&mut player, "hub", 0., 6.);
                 if !player.tiny_game.as_ref().is_some_and(TinyRun::saving) {
                     player.tiny_game = None;
@@ -570,7 +601,11 @@ impl Game {
     }
     pub fn set_input(&mut self, id: &str, input: &Value) {
         if let Some(player) = self.players.get_mut(id).filter(|p| p.connections > 0) {
-            if player.tiny_game.is_some() || player.watch.is_some() {
+            if player.tiny_game.is_some()
+                || player.watch.is_some()
+                || competition::training_conflict(player)
+                || competition::reserved(player)
+            {
                 return;
             }
             let mut dx = number(&input["dx"], 0., -1., 1.);
@@ -600,6 +635,13 @@ impl Game {
         true
     }
     pub fn tiny_input(&mut self, id: &str, message: &Value) {
+        if self
+            .players
+            .get(id)
+            .is_some_and(|p| competition::reserved(p) || competition::training_conflict(p))
+        {
+            return;
+        }
         let Some(mut player) = self.players.remove(id) else {
             return;
         };
@@ -724,6 +766,18 @@ impl Game {
     fn action_inner(&mut self, p: &mut Player, message: &Value) {
         let action = message["action"].as_str().unwrap_or_default();
         let id = p.id.clone();
+        if action.starts_with("competition-") {
+            competition::action(self, p, message);
+            return;
+        }
+        if competition::reserved(p) || competition::training_conflict(p) {
+            self.notice(
+                &id,
+                "Finish your reserved activity before starting another action.",
+                "error",
+            );
+            return;
+        }
         if action.starts_with("watch-") {
             watch::action(self, p, message);
             return;
@@ -1300,6 +1354,12 @@ impl Game {
         let ids: Vec<_> = self.players.keys().cloned().collect();
         for id in ids {
             let mut p = self.players.remove(&id).unwrap();
+            competition::tick(self, &mut p, dt);
+            if competition::reserved(&p) || p.activity_lease.is_some() {
+                p.input = Input::default();
+                self.players.insert(id, p);
+                continue;
+            }
             if p.connections == 0 && p.watch.is_none() {
                 self.players.insert(id, p);
                 continue;
@@ -1560,9 +1620,11 @@ impl Game {
             .players
             .get(self_id)
             .and_then(|p| activities::public_race(self, p));
-        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.connections > 0 || p.watch.is_some()).map(Player::public).collect::<Vec<_>>(),
+        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.connections > 0 || p.watch.is_some() || competition::reserved(p)).map(Player::public).collect::<Vec<_>>(),
             "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
             "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
+            "competitionCatalog":self.competition_catalog.public(),
+            "competition":self.players.get(self_id).map(competition::public),
             "karate": self.players.get(self_id).and_then(|p|p.karate.as_ref().map(KarateBout::public)),
             "activityResult": self.players.get(self_id).and_then(|p|p.activity_result.as_ref()),
             "tinyGame":self.players.get(self_id).and_then(|p|p.tiny_game.as_ref().map(TinyRun::public)),

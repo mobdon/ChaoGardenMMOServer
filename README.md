@@ -131,6 +131,10 @@ rings, ordered races, cooperative robot missions, and Chaos evolution. The
 native-roster Karate tournament loop and validated-course race authority are
 documented in [ACTIVITIES.md](ACTIVITIES.md). All 62 extracted original race
 configurations remain disabled until genuine routes and obstacles are verified.
+Opt-in AI race/Karate plans, away-time simulation, saved spectator replays and
+atomic once-only ring receipts are documented in [COMPETITIONS.md](COMPETITIONS.md).
+These bounded adapted competitions reserve the canonical Chao separately from
+resident wandering and Tiny Garden training.
 The
 owner's `mount-dark-walker` action sets `vehicle` to `"dark-chao-walker"`;
 `dismount-vehicle` clears it. While mounted, `mech-fire` (or `attack`) fires a
