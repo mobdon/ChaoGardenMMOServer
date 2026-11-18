@@ -1,103 +1,154 @@
-# Live-Ops Runbooks — Chao Garden MMO
+# Live-Operations Runbooks — Chao Garden MMO
 
-Each runbook names the actual code/config touched. Never edit player
-`profiles.json` by hand outside the documented procedures; the authority
-(`src/service.rs`, Node reference `game.js`) performs atomic writes only.
+Owner: Live-Ops / Engineering on-call. Escalation path: see
+[moderation.md](moderation.md) for admin access control and
+[release-checklist.md](release-checklist.md) for release gating.
 
-## 1. Item catalog / shop price changes
+All production changes go through the existing scripts in `scripts/`:
 
-- **Source:** fixed-price shopping catalog in server code (`src/game.rs`
-  gameplay constants; Node reference `constants.js`). Cosmetic ownership is
-  validated server-side.
-- **Procedure:**
-  1. Draft change in a branch; update catalog constants and tests
-     (`tests/game.rs`, `tests/reference/game.test.js`).
-  2. `cargo test --locked` and `npm test` green on CI.
-  3. Staging soak ≥ 24 h with the change; verify purchase, equip/unequip
-     (`equip-owner-gear` / `unequip-owner-gear` for `gear.footwear`,
-     `gear.hands`), and refund path §5.
-  4. Announce in-app + support channel (§6), deploy to production server,
-     confirm `/api/status` and a live purchase.
-- **Rollback:** revert constants and redeploy; already-purchased cosmetics are
-  owned state and must not be revoked — compensate via §5.
+| Script | Purpose |
+| --- | --- |
+| `scripts/migrate.sh <image> <env>` | Runs `chao-game-server migrate` as a release command before the new image rolls; aborts on failure |
+| `scripts/release.sh <image> <env>` | Rolling release onto `chao-api-staging` / `chao-api-production` with a post-release health gate that auto-rolls back |
+| `scripts/rollback.sh <image> <env>` | Manual rollback to a known-good image + smoke test |
+| `scripts/smoke-test.sh [env]` | `/livez`, `/readyz`, `/api/status`, `/api/activities`, `/metrics`, content-type and origin-guard checks |
+| `scripts/backup.sh <env>` | Nightly `pg_dump` to object storage with retention pruning (7d staging / 30d prod); restore drill per `docs/runbooks/database-restore.md` |
 
-## 2. Simulation / training version rollout
+Alert rules live in `infrastructure/monitoring/alerts.yml`
+(`chao_http_errors_total`, `chao_persist_failures_total`, `chao_ws_connections`,
+`chao_save_requests_total`, economy/event counters). Environments are
+provisioned by Terraform under `infrastructure/terraform/envs/`.
 
-- **Source:** server-timed idle training policy in
-  `crates/tiny-garden-core/src/training.rs` (frozen server policy, max 8-hour
-  duration, monotonic job IDs, once-only settle/cancel) surfaced by
-  `src/phone.rs` / Node `watch.js`.
-- **Procedure:**
-  1. Policy changes must preserve: bounded awards, max 8 h duration, stored
-     server timestamps, once-only transitions. Update the frozen-policy tests.
-  2. Run `cargo test --locked` (incl. `crates/tiny-garden-core/tests` and
-     `crates/tiny-garden-games/tests/public_rounds.rs`).
-  3. Shadow-run on staging with a copied profile data dir; compare awards.
-  4. Roll out during a low-activity window; save first (`save` event ack /
-     `CHAO_SHUTDOWN_STDIN` clean stop) before restart so no job is stranded.
-  5. Watch settle/cancel error rates and award totals for 24 h.
-- **Rollback:** redeploy previous binary (`Cargo.lock` pinned); in-flight
-  training jobs resume from stored server timestamps — do not rewrite job rows.
-- **Constraint:** 62 extracted race configurations stay disabled until routes
-  and obstacles are verified (`ACTIVITIES.md`); enabling any requires verified
-  activity terrain under `data/activities/terrain/{worldId}.json`.
+---
 
-## 3. Competition scheduling (races, karate, mini-games)
+## 1. Item catalog / balance changes
 
-- **Source:** race/karate catalogs (`data/activities/{races,karate}.json`
-  provenance; authority in `src/activities.rs`); mini-games from
-  `crates/tiny-garden-games` (memory, rps, search, bounce, ball) via
-  `PHONE.md` protocol.
-- **Procedure:**
-  1. Schedule published ≥ 7 days ahead with start/end UTC times and rewards.
-  2. Rewards must be bounded in-game items/rings only (no cash prizes —
-     `compliance/age-rating.md`).
-  3. Operator enables the competition entry in the activity configuration and
-     verifies via `/api/activities` detailed catalog output.
-  4. During the event, monitor participation and `posts` WS error rates.
-  5. After close, settle rewards through the authority (never by editing
-     profiles directly); publish results.
-- **Cancellation:** disable the entry, announce, compensate §5 if needed.
+Balance data is owned by the server crate (`chao-game-server`, gameplay in
+`src/game.rs`, `src/activities.rs`) plus the shared logic crates
+`crates/tiny-garden-core` and `crates/tiny-garden-games`. Activity definitions
+surfaced to clients come from `/api/activities` (`src/activities.rs`).
 
-## 4. Emergency feature disablement (kill switch)
+1. Propose the change in a PR touching the Rust source/constants **and** a
+   test in `tests/` (e.g. `tests/activities.rs`, `tests/game.rs`) asserting
+   the old/new reward or stat behavior. Any parallel client reference change
+   must keep `npm test` green (the Node suite in `game.js` / `constants.js` /
+   `activities.js` is the parity oracle).
+2. Verify locally: `cargo test --locked` and `npm test`.
+3. Staging first: build the image, then
+   `scripts/migrate.sh <staging-image> staging` followed by
+   `scripts/release.sh <staging-image> staging`, then `scripts/smoke-test.sh staging`.
+4. If economy-affecting, announce in `#chao-liveops` at least 24h ahead.
+5. Production: `scripts/migrate.sh <prod-image> production`, then
+   `scripts/release.sh <prod-image> production`. The release script's health
+   gate (`flyctl status ... healthy`) auto-rolls-back to the previous image on
+   failure; escalate to `scripts/rollback.sh` if needed.
+6. Watch `chao_economy_ring_rewards_total` and `chao_event_drops_total` on
+   `$BASE/metrics` for 24h after rollout; record the change in
+   `docs/runbooks/changelog.md` (date, PR, reviewer).
 
-Triggers: exploitable dupe, award overflow, crash loop, abuse wave.
-- **Immediate:** stop traffic at the reverse proxy for the affected endpoint
-  (e.g., `/api/session`, `/ws`) or the whole garden.
-- Clean shutdown: launcher `shutdown` line (`CHAO_SHUTDOWN_STDIN=1`) or
-  SIGTERM flushes pending progression (`README.md`).
-- Feature-level switches (training, activities, shopping, widget sync) are
-  added as config-gated flags in the server configuration block read by
-  `Config::from_env`; document each flag here when added:
-  - `[ ] CHAO_DISABLE_TRAINING` — proposed; add to `.env.example` when
-    implemented.
-  - `[ ] CHAO_DISABLE_ACTIVITIES` — proposed.
-  - `[ ] CHAO_DISABLE_SHOP` — proposed.
-- Communicate via status page + support email; publish a post-incident report
-  within 5 business days.
-- **Rollback:** redeploy previous tagged binary after cause fixed.
+**Rollback:** `scripts/rollback.sh <previous-image> production` then
+`scripts/smoke-test.sh production`. Server persistence is checkpoint-based
+(atomic profile writes in `src/game.rs`), so reverting the image restores prior
+behavior without corrupting saved profiles.
 
-## 5. Refunds and balance/ring corrections
+## 2. Simulation / gameplay logic rollout
 
-- Store-side refunds (Apple/Google) handled per store console; grant or revoke
-  cosmetic ownership through a support tool that uses the authority's own
-  write path — **never** manual JSON edits.
-- Balance corrections (rings, stats): operator submits correction request with
-  evidence; second admin confirms; correction logged in the admin action log
-  (`operations/moderation.md`).
-- Duplication exploits: freeze affected accounts (moderation action), correct
-  balances to the last verified snapshot, communicate outcome.
-- All corrections are auditable: record actor, before/after values, reason.
+Creature simulation logic is split between the server crate and
+`crates/tiny-garden-core` (deterministic core). Golden behaviors are pinned by
+unit tests in `crates/tiny-garden-core/tests/` and integration tests in
+`tests/`.
+
+1. Every logic change keeps `cargo test --locked` green, including the
+   deterministic-core tests; if client-visible outcomes change, update the
+   Node reference suite and confirm `npm test`.
+2. Deploy staging (`scripts/migrate.sh` + `scripts/release.sh` +
+   `scripts/smoke-test.sh staging`).
+3. Production rollout is **staged by cohort**: internal accounts first, then
+   10% → 100% across two days. Use Fly's machine/traffic controls to stage the
+   roll; monitor `chao_http_errors_total`, `chao_persist_failures_total`, and
+   `chao_ws_connects_total` against the thresholds in
+   `infrastructure/monitoring/alerts.yml`.
+4. Rollback = `scripts/rollback.sh <previous-image> production`; old profile
+   checkpoints remain valid because the format is forward-compatible
+   (unknown fields ignored on load).
+
+## 3. Competition / event scheduling
+
+Activities (races, bouts, event drops) are implemented server-side in
+`src/activities.rs` with counters `chao_event_drops_total` /
+`chao_economy_ring_rewards_total`.
+
+1. Schedule at least one week ahead; validate scoring math changes with
+   `tests/activities.rs` and `tests/mech.rs` before announcing.
+2. Dry-run on staging: seed two profiles, run the full activity loop through
+   `/api/session` → activity command → settle, and confirm awards once-only.
+3. Announce in-app; record in `docs/runbooks/changelog.md`.
+4. If scoring is wrong mid-event: redeploy the previous image
+   (`scripts/rollback.sh`) — scores settle from checkpoints, so re-running
+   after the fix does not double-award. Post an in-app correction notice.
+
+## 4. Emergency feature disablement (kill switches)
+
+There is no remote flag service in the MVP, so disablement is a **config-only
+redeploy of the current image** (no code change, minutes not hours):
+
+1. Declare the incident in `#chao-incidents` (severity, affected surface).
+2. Restrict the surface at the edge/environment level:
+   - Block the offending route (e.g. `/ws`, `/api/activities`) at the proxy or
+     via `GAME_PORT`/firewall in `infrastructure/terraform/envs/production`.
+   - Narrow `CHAO_ALLOWED_ORIGINS` if the abuse is browser-origin based.
+   - Reduce `CHAO_OWNER_BOOTSTRAP` / admin grants if privilege abuse is
+     involved (see `operations/moderation.md` §Admin access).
+3. Redeploy the same image: `scripts/release.sh <current-image> production`
+   (config change only), verify with `scripts/smoke-test.sh production`.
+4. If the data layer is at risk, stop writes entirely by scaling machines to
+   zero after taking an immediate `scripts/backup.sh production` snapshot.
+5. Post an incident note; fix forward via a normal release
+   (`scripts/migrate.sh` + `scripts/release.sh`).
+
+## 5. Refunds & balance corrections
+
+Profiles are persisted by the server (`src/game.rs` atomic writes); admin
+authority is a profile-level flag (`"admin": true`) granted via
+`CHAO_OWNER_BOOTSTRAP` at bootstrap only. See `operations/moderation.md` for
+access controls.
+
+1. Collect: player ID, item/amount, reason, evidence (ticket or report link).
+2. Two-person review: requester + one admin.
+3. Correction options, in order of preference:
+   - Ask the player to re-run the affected action after a server fix
+     (checkpoint settle is once-only, so no double award).
+   - For restoring lost progress: redeploy a corrected image and have the
+     player reconnect (server re-advances from their last checkpoint).
+   - For real-money refunds: process in the store console (Apple
+     *Report a Problem*, Google Play order refund) and record the transaction
+     ID in the support log. Never edit `data/` files in production by hand;
+     if a manual profile edit is unavoidable, take a `scripts/backup.sh`
+     snapshot first and perform the edit on staging-verified tooling with a
+     second admin present.
+4. Notify the player in-app and log the outcome in the support ticket.
 
 ## 6. Notification campaigns
 
-- **Scope:** opt-in push notifications (races opening, garden events); no
-  marketing without consent; store-compliant frequency.
-- **Procedure:**
-  1. Draft copy → trademark check (`compliance/review-gate.md`) and
-     accessibility review (plain language, no all-caps).
-  2. Segment = opted-in profiles on target servers; honor quiet hours in
-     recipients' local time.
-  3. Send to 5% pilot first; check opt-out/uninstall spike; then full send.
-  4. Log campaign ID, copy, segment size, opt-outs.
-- **Kill:** halt send job at provider; note in campaign log.
+1. Campaign copy is reviewed against `compliance/widget-disclosure.md` (no
+   dark patterns, no false urgency) and `compliance/privacy-data-inventory.md`
+   (notification opt-in respected).
+2. Sending is performed by the app/client layer from server-provided state
+   (`/api/status`, `/api/activities`); the server itself sends no push in the
+   MVP, so a "campaign" is a coordinated client release or widget snapshot
+   change.
+3. Rate limit: at most one re-engagement notification per 72h per player;
+   quiet hours enforced client-side.
+4. Any server-side change enabling sends must ship behind the §4 disablement
+   procedure and be smoke-tested on staging first.
+
+---
+
+## Escalation summary
+
+- Health/persistence alerts: `infrastructure/monitoring/alerts.yml`.
+- Deploy failure: `scripts/release.sh` auto-rolls back; manual fallback
+  `scripts/rollback.sh`.
+- Data loss: restore per `docs/runbooks/database-restore.md`; nightly dumps via
+  `scripts/backup.sh`.
+- Abuse/security incidents: `operations/moderation.md`.
