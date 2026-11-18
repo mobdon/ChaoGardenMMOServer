@@ -12,9 +12,11 @@ Liveness only indicates a responding process. Current `readyz` calls
 writes/fsync/rename succeed on a full/read-only volume. Do not use that result
 as a durable-save guarantee.
 
-The [metrics source](../../../src/metrics.rs) and
-[review](../../coordination/VIBE-REVIEW-2026-11-18.md) record build and coverage
-gaps. Event-drop instrumentation is not connected to all drop paths;
+The [PR integration record](../../coordination/VIBE-MERGES-2026-11-18.md)
+records the repaired Rust build/CI gate. The
+[review](../../coordination/VIBE-REVIEW-2026-11-18.md) and
+[metrics source](../../../src/metrics.rs) retain instrumentation limitations.
+Event-drop instrumentation is not connected to all drop paths;
 persistence errors are not counted consistently. Counters/alerts alone cannot
 prove once-only rewards, a good backup or capacity.
 

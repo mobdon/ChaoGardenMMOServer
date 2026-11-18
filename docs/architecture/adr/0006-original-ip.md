@@ -17,6 +17,11 @@ Preserve native Chao proportions, rigs and source motions; use Chao actions
 before adapting a stage-character capability. Keep rendering adaptations and
 MMO gameplay tuning explicitly labeled.
 
+Always use matching native effects and assets first. Search installed sources
+and the inventory before any fallback. Preserve original effect meshes,
+textures or vertex colors and material/alpha behavior; do not repurpose a
+different effect when the original resource is available.
+
 This record makes no licensing, distribution, trademark, affiliation or store
 eligibility conclusion and does not replace the selected scope with invented
 species/currencies. Release-asset decisions require their own actual review.
