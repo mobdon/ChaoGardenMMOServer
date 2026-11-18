@@ -2,7 +2,7 @@
 
 Initial base: published server `main`, commit
 `282f6abd1bdb75d0477622f8952667073dc2b751`. Branch: `codex/ai-competitions`.
-Implementation commit: `7c61e0a`. Rebased onto published `main` at `4056fcf`;
+Local implementation commit: `7830ae7`. Rebased onto published `main` at `0226dc9`;
 the later base commits changed documentation/mobile adapters, not Rust source.
 Status: isolated Rust implementation and local proof; integration review remains
 required. No deployment, live profile edits, or preview restart was performed.
