@@ -1,5 +1,12 @@
 # Live-Ops Runbooks — Chao Garden MMO
 
+Draft operating procedures, not proof of a deployed production service or
+implemented operator tools. The current local authority implements Tiny Garden
+minigames and resident Watch; durable AFK training jobs, scheduled away-time
+competitions, moderation/correction tools and push campaigns remain separate
+implementation work. Confirm the relevant feature and evidence before using
+its proposed procedure.
+
 Each runbook names the actual code/config touched. Never edit player
 `profiles.json` by hand outside the documented procedures; the authority
 (`src/service.rs`, Node reference `game.js`) performs atomic writes only.
@@ -23,21 +30,34 @@ Each runbook names the actual code/config touched. Never edit player
 
 ## 2. Simulation / training version rollout
 
-- **Source:** server-timed idle training policy in
-  `crates/tiny-garden-core/src/training.rs` (frozen server policy, max 8-hour
-  duration, monotonic job IDs, once-only settle/cancel) surfaced by
-  `src/phone.rs` / Node `watch.js`.
-- **Procedure:**
-  1. Policy changes must preserve: bounded awards, max 8 h duration, stored
-     server timestamps, once-only transitions. Update the frozen-policy tests.
-  2. Run `cargo test --locked` (incl. `crates/tiny-garden-core/tests` and
-     `crates/tiny-garden-games/tests/public_rounds.rs`).
-  3. Shadow-run on staging with a copied profile data dir; compare awards.
-  4. Roll out during a low-activity window; save first (`save` event ack /
-     `CHAO_SHUTDOWN_STDIN` clean stop) before restart so no job is stranded.
-  5. Watch settle/cancel error rates and award totals for 24 h.
-- **Rollback:** redeploy previous binary (`Cargo.lock` pinned); in-flight
-  training jobs resume from stored server timestamps — do not rewrite job rows.
+- **Current evidence:** `crates/tiny-garden-core/src/training.rs` contains a
+  tested standalone TrainingLedger adaptation with frozen policy, a maximum
+  8-hour duration, monotonic job IDs and once-only settle/cancel transitions.
+  The production server does not depend on that crate yet. Its training UI,
+  durable job storage/settlement and device/activity ownership hooks are not
+  connected. `src/phone.rs` hosts the five Tiny minigame adaptations;
+  `src/watch.rs` and Node `watch.js` implement the resident idle/wander/rest
+  routine, which awards no passive stats or rings. Those are not AFK training.
+- **Validation now:** run the independent crate suites explicitly from the
+  server repository; the main package test does not include them automatically:
+
+  ```sh
+  cargo test --locked
+  cargo test --manifest-path crates/tiny-garden-core/Cargo.toml --locked
+  cargo test --manifest-path crates/tiny-garden-games/Cargo.toml --locked
+  ```
+
+- **Proposed AFK rollout gate:** first implement the agreed training protocol,
+  authorization/lease checks, one-job-per-Chao limits, cost reservation and an
+  atomic job-plus-profile save. Prove restart recovery, duplicate requests,
+  failed saves and once-only settlement against copied test profiles. Preserve
+  the standalone policy's bounds unless an explicit balance change is agreed.
+  Only then define staging comparisons, rollout timing, metrics and rollback
+  for the actual integrated implementation.
+- **Current restart behavior:** explicit `save` acknowledgement and clean
+  `CHAO_SHUTDOWN_STDIN` shutdown flush supported progression. Resident Watch
+  restores a fresh routine without service-downtime catchup. Do not claim that
+  live AFK training jobs resume until the adapter and recovery tests exist.
 - **Constraint:** 62 extracted race configurations stay disabled until routes
   and obstacles are verified (`ACTIVITIES.md`); enabling any requires verified
   activity terrain under `data/activities/terrain/{worldId}.json`.

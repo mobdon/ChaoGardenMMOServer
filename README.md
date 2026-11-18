@@ -8,6 +8,23 @@ from the owner's game installation.
 Client repository: `mobdon/ChaoGardenMMOClient`.
 Server repository: `mobdon/ChaoGardenMMOServer`.
 
+## Current review gate
+
+Read [AGENTS.md](AGENTS.md) for the user's Rust implementation requirements and
+[the coordination board](docs/coordination/BOARD.md) before new work. The Vibe
+batch through `5ec51f9` is **unaccepted**: the new Expo/TypeScript app does not
+fulfill the Rust game/shared-mechanics scope, and the server changes contain
+confirmed build and persistence/deployment blockers. See the
+[review findings and repair tasks](docs/coordination/VIBE-REVIEW-2026-11-18.md).
+The commands below describe the intended Rust workflow; they are not a claim
+that this reviewed source snapshot passes them. The working preview continues
+on its earlier tested runtime.
+
+The later Vibe PR #7 (`282f6ab`) adds a competing NestJS API and TypeScript
+simulation. Those also fail the user's Rust requirement and are unaccepted;
+their presence in Git does not replace the existing Rust service or approve a
+second identity/save authority.
+
 ## Run Rust
 
 Install stable Rust, then run from this repository:
