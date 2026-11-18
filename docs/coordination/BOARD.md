@@ -241,3 +241,5 @@ branch/PR/evidence once verified. Do not mutate another checkout, live saves,
 the playable preview or a shared index, and do not start messaging other chats
 on the strength of this board alone. Repository updates do not imply that a
 Vibe website dashboard has been synchronized.
+
+Head-bob follow-up (November 18): client branch codex/steady-chao-head, base c66c148d95ba18626d90fc1318de4c323dd0345f, anchors actual visible head016 after native animation/skating/foot grounding, restoring its original local pose before animation. Idle/walk/run/skate/stops use the full lock; mounted pilots retain cockpit pose. Changed client src/chao-head.js and scene hook, focused unit/native proof and docs. 26 tests/build and 11,880 actual-native frames pass across three forms; all 21 head/eye meshes steady below 1.96e-7 world units, other local channels/scales/parents intact. Current preview confirms full lock and canonical 139 rings. No protocol/authority/backend/save change. See client docs/HEAD-STABILITY.md and source PR for exact head.
