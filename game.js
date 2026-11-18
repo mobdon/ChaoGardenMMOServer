@@ -58,6 +58,15 @@ function restoreStats(value, admin) {
   return stats;
 }
 
+// This comparison runtime cannot enforce or preserve Rust v2 device authority.
+// Reject before normalizing profiles rather than dropping revocations/leases.
+function assertReferenceProfile(data) {
+  if (data && typeof data === 'object' && (Object.hasOwn(data, 'identity')
+    || (Object.hasOwn(data, 'schemaVersion') && data.schemaVersion !== 1))) {
+    throw new Error('Node reference cannot load or save account/device profiles; use the Rust authority.');
+  }
+}
+
 function validateTerrain(value, zone) {
   if (!value || !Number.isFinite(value.minX) || !Number.isFinite(value.minZ)
     || !Number.isFinite(value.step) || value.step <= 0
@@ -77,6 +86,8 @@ function validateTerrain(value, zone) {
 /** Authoritative in-memory simulation. Browser messages never contain rewards or stats. */
 export class Game {
   constructor({ profiles = [], terrains = {}, activityTerrains = {}, raceCatalog = {}, karateCatalog = {}, allowOwnerBootstrap = false, now = () => Date.now() } = {}) {
+    if (!Array.isArray(profiles)) throw new TypeError('Profiles must be an array.');
+    profiles.forEach(assertReferenceProfile);
     this.now = now;
     this.time = now();
     this.allowOwnerBootstrap = allowOwnerBootstrap;
@@ -103,6 +114,7 @@ export class Game {
   }
 
   makePlayer(data) {
+    assertReferenceProfile(data);
     const admin = data.admin === true;
     const ownedCosmetics = Array.isArray(data.ownedCosmetics)
       ? [...new Set(data.ownedCosmetics.filter((id) => id === 'eggshell'))] : [];
@@ -661,6 +673,7 @@ export class Game {
   drainEvents() { return this.events.splice(0); }
 
   exportProfiles() {
+    for (const player of this.players.values()) assertReferenceProfile(player);
     return [...this.players.values()].map((player) => ({
       id: player.id, tokenHash: player.tokenHash, name: player.name, admin: player.admin,
       stats: structuredClone(player.stats), rings: player.rings, alignment: player.alignment,

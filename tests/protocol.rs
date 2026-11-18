@@ -487,7 +487,115 @@ fn bad_persistent_data_fails_startup_without_overwriting_profiles() {
     assert!(AppState::load(config).is_err());
 }
 
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type RawSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+struct Socket {
+    raw: RawSocket,
+    state: AppState,
+    token: String,
+    player_id: String,
+    device_id: String,
+}
+impl Socket {
+    async fn next(&mut self) -> Option<Result<Message, tungstenite::Error>> {
+        self.raw.next().await
+    }
+
+    async fn close(
+        &mut self,
+        frame: Option<tungstenite::protocol::CloseFrame>,
+    ) -> Result<(), tungstenite::Error> {
+        self.raw.close(frame).await
+    }
+
+    fn identity(&self) -> Value {
+        self.state.game.lock().unwrap().players[&self.player_id]
+            .identity
+            .public(&self.device_id)
+    }
+
+    async fn lease(&self, input: Value) -> Value {
+        let authorization = format!("Bearer {}", self.token);
+        let response = request(
+            router(self.state.clone()),
+            "POST",
+            "/api/lease",
+            input.to_string(),
+            &[
+                ("content-type", "application/json"),
+                ("authorization", &authorization),
+            ],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        json_body(response).await["identity"].clone()
+    }
+
+    async fn send(&mut self, message: Message) -> Result<(), tungstenite::Error> {
+        let mut message = message;
+        let mut accepted = None;
+        if let Message::Text(text) = &message
+            && let Ok(mut value) = serde_json::from_str::<Value>(text)
+            && matches!(
+                value["type"].as_str(),
+                Some("input" | "tiny-input" | "action")
+            )
+            && value["action"] != "save"
+        {
+            let activity = if value["type"] == "tiny-input"
+                || value["action"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("tiny-"))
+            {
+                "tiny"
+            } else if value["action"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("watch-"))
+            {
+                "watch"
+            } else {
+                "direct"
+            };
+            let mut identity = self.identity();
+            if identity["lease"].is_object() && identity["lease"]["activity"] != activity {
+                identity = self
+                    .lease(json!({"operation":"release",
+                    "leaseId":identity["lease"]["id"],"expectedRevision":identity["revision"]}))
+                    .await;
+            }
+            if identity["lease"].is_null() {
+                identity = self
+                    .lease(json!({"operation":"acquire","activity":activity,
+                    "expectedRevision":identity["revision"]}))
+                    .await;
+            }
+            let sequence = identity["lease"]["lastSequence"].as_u64().unwrap() + 1;
+            value["leaseId"] = identity["lease"]["id"].clone();
+            value["expectedRevision"] = identity["revision"].clone();
+            value["sequence"] = json!(sequence);
+            accepted = Some((value["leaseId"].clone(), sequence));
+            message = Message::Text(value.to_string().into());
+        }
+        self.raw.send(message).await?;
+        if let Some((lease_id, sequence)) = accepted {
+            timeout(Duration::from_secs(4), async {
+                loop {
+                    let identity = self.identity();
+                    if identity["lease"]["id"] == lease_id
+                        && identity["lease"]["lastSequence"]
+                            .as_u64()
+                            .is_some_and(|last| last >= sequence)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("authenticated gameplay intent reached its durable sequence fence");
+        }
+        Ok(())
+    }
+}
 struct LiveServer {
     _directory: TempDir,
     state: AppState,
@@ -520,12 +628,19 @@ impl LiveServer {
         }
     }
     async fn socket(&self, session: &Value) -> Socket {
-        let request = format!(
-            "{}/ws?token={}",
-            self.url,
-            session["token"].as_str().unwrap()
+        let token = session["token"].as_str().unwrap();
+        let mut request = format!("{}/ws", self.url).into_client_request().unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
         );
-        connect_async(request).await.unwrap().0
+        Socket {
+            raw: connect_async(request).await.unwrap().0,
+            state: self.state.clone(),
+            token: token.to_owned(),
+            player_id: session["player"]["id"].as_str().unwrap().into(),
+            device_id: session["identity"]["deviceId"].as_str().unwrap().into(),
+        }
     }
 }
 impl Drop for LiveServer {
@@ -701,23 +816,25 @@ async fn garden_resident_remains_visible_after_owner_disconnect_and_rejoins_once
 #[tokio::test]
 async fn websocket_handshake_requires_a_real_token_and_allowed_origin() {
     let server = LiveServer::start(false).await;
-    let error = connect_async(format!("{}/ws?token=invalid", server.url))
-        .await
-        .unwrap_err();
+    let mut invalid = format!("{}/ws", server.url).into_client_request().unwrap();
+    invalid
+        .headers_mut()
+        .insert(header::AUTHORIZATION, "Bearer invalid".parse().unwrap());
+    let error = connect_async(invalid).await.unwrap_err();
     assert!(
         matches!(error, tungstenite::Error::Http(response) if response.status() == StatusCode::UNAUTHORIZED)
     );
     let session = session(&server.state, json!({})).await;
-    let mut request = format!(
-        "{}/ws?token={}",
-        server.url,
-        session["token"].as_str().unwrap()
-    )
-    .into_client_request()
-    .unwrap();
+    let mut request = format!("{}/ws", server.url).into_client_request().unwrap();
     request
         .headers_mut()
         .insert(header::ORIGIN, "https://evil.example".parse().unwrap());
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {}", session["token"].as_str().unwrap())
+            .parse()
+            .unwrap(),
+    );
     let error = connect_async(request).await.unwrap_err();
     assert!(
         matches!(error, tungstenite::Error::Http(response) if response.status() == StatusCode::FORBIDDEN)
@@ -868,9 +985,8 @@ async fn explicit_save_acknowledges_only_a_successful_authoritative_flush_and_re
         .await
         .unwrap();
     let failure = save_result(&mut socket).await;
-    assert_eq!(failure["type"], "notice");
-    assert_eq!(failure["kind"], "error");
-    assert!(failure["text"].as_str().unwrap().contains("Could not save"));
+    assert_eq!(failure["type"], "error");
+    assert_eq!(failure["error"], "persistence_failed");
     assert!(server.state.game.lock().unwrap().dirty);
     fs::remove_dir(blocked).unwrap();
     tokio::time::sleep(Duration::from_millis(350)).await;
@@ -898,6 +1014,7 @@ async fn save_result(socket: &mut Socket) -> Value {
                 Some(Ok(Message::Text(text))) => {
                     let value: Value = serde_json::from_str(&text).unwrap();
                     if value["kind"] == "saved"
+                        || value["type"] == "error"
                         || (value["type"] == "notice" && value["kind"] == "error")
                     {
                         return value;

@@ -7,10 +7,65 @@ use tokio::{
     process::Command,
     time::timeout,
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, connect_async,
+    tungstenite::{Message, client::IntoClientRequest},
+};
+
+async fn post_json(address: &str, path: &str, token: Option<&str>, input: Value) -> Value {
+    let mut connection = TcpStream::connect(address).await.unwrap();
+    let body = input.to_string();
+    let authorization = token
+        .map(|token| format!("Authorization: Bearer {token}\r\n"))
+        .unwrap_or_default();
+    connection.write_all(format!("POST {path} HTTP/1.1\r\nHost: {address}\r\n{authorization}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+    let mut response = vec![];
+    timeout(
+        Duration::from_secs(5),
+        connection.read_to_end(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let response = String::from_utf8(response).unwrap();
+    let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
+    serde_json::from_str(body).unwrap()
+}
+
+fn intent(mut input: Value, identity: &Value) -> Message {
+    input["leaseId"] = identity["lease"]["id"].clone();
+    input["expectedRevision"] = identity["revision"].clone();
+    input["sequence"] = json!(identity["lease"]["lastSequence"].as_u64().unwrap() + 1);
+    Message::Text(input.to_string().into())
+}
+
+async fn accepted(socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>, identity: &mut Value) {
+    let expected_sequence = identity["lease"]["lastSequence"].as_u64().unwrap() + 1;
+    timeout(Duration::from_secs(4), async {
+        while let Some(message) = socket.next().await {
+            let Message::Text(text) = message.unwrap() else {
+                continue;
+            };
+            let message: Value = serde_json::from_str(&text).unwrap();
+            if message["kind"] == "intent-accepted"
+                && message["identity"]["lease"]["lastSequence"]
+                    .as_u64()
+                    .is_some_and(|sequence| sequence >= expected_sequence)
+            {
+                *identity = message["identity"].clone();
+                return;
+            }
+            assert_ne!(message["kind"], "error", "intent failed: {message}");
+        }
+        panic!("server closed before intent acceptance");
+    })
+    .await
+    .unwrap();
+}
 
 #[tokio::test]
-async fn real_binary_saves_pending_vehicle_progress_on_launcher_shutdown() {
+async fn real_binary_persists_authenticated_vehicle_progress_and_shuts_down_cleanly() {
     let directory = tempfile::tempdir().unwrap();
     let executable = std::env::var_os("CHAO_TEST_SERVER_EXE")
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_chao-game-server").into());
@@ -43,31 +98,26 @@ async fn real_binary_saves_pending_vehicle_progress_on_launcher_shutdown() {
         .trim()
         .strip_prefix("Chao Rust game server: http://")
         .expect("server startup address");
-    let mut connection = TcpStream::connect(address).await.unwrap();
-    let body = json!({"name":"Process owner"}).to_string();
-    connection.write_all(format!("POST /api/session HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-    let mut response = vec![];
-    timeout(
-        Duration::from_secs(5),
-        connection.read_to_end(&mut response),
+    let session = post_json(
+        address,
+        "/api/session",
+        None,
+        json!({"name":"Process owner"}),
     )
-    .await
-    .unwrap()
-    .unwrap();
-    let response = String::from_utf8(response).unwrap();
-    let (headers, body) = response.split_once("\r\n\r\n").unwrap();
-    assert!(headers.starts_with("HTTP/1.1 200"));
-    let session: Value = serde_json::from_str(body).unwrap();
-    let url = format!(
-        "ws://{address}/ws?token={}",
-        session["token"].as_str().unwrap()
-    );
-    let (mut socket, _) = connect_async(url).await.unwrap();
+    .await;
+    let token = session["token"].as_str().unwrap();
+    let mut identity = post_json(address, "/api/lease", Some(token), json!({
+        "operation":"acquire","activity":"direct","expectedRevision":session["identity"]["revision"]
+    })).await["identity"].clone();
+    let mut request = format!("ws://{address}/ws").into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    let (mut socket, _) = connect_async(request).await.unwrap();
     socket
-        .send(Message::Text(
-            json!({"type":"action", "action":"mount-dark-walker"})
-                .to_string()
-                .into(),
+        .send(intent(
+            json!({"type":"action", "action":"mount-dark-walker"}),
+            &identity,
         ))
         .await
         .unwrap();
@@ -76,6 +126,9 @@ async fn real_binary_saves_pending_vehicle_progress_on_launcher_shutdown() {
             match socket.next().await {
                 Some(Ok(Message::Text(text))) => {
                     let message: Value = serde_json::from_str(&text).unwrap();
+                    if message["identity"].is_object() {
+                        identity = message["identity"].clone();
+                    }
                     if message["type"] == "snapshot"
                         && message["players"]
                             .as_array()
@@ -97,19 +150,22 @@ async fn real_binary_saves_pending_vehicle_progress_on_launcher_shutdown() {
     for item in ["shadow-air-shoes", "knuckles-hammer-gloves"] {
         tokio::time::sleep(Duration::from_millis(100)).await;
         socket
-            .send(Message::Text(
-                json!({"type":"action","action":"equip-owner-gear","item":item})
-                    .to_string()
-                    .into(),
+            .send(intent(
+                json!({"type":"action","action":"equip-owner-gear","item":item}),
+                &identity,
             ))
             .await
             .unwrap();
+        accepted(&mut socket, &mut identity).await;
     }
     timeout(Duration::from_secs(4), async {
         loop {
             match socket.next().await {
                 Some(Ok(Message::Text(text))) => {
                     let message: Value = serde_json::from_str(&text).unwrap();
+                    if message["identity"].is_object() {
+                        identity = message["identity"].clone();
+                    }
                     if message["type"] == "snapshot"
                         && message["players"][0]["gear"]["footwear"] == "shadow-air-shoes"
                         && message["players"][0]["gear"]["hands"] == "knuckles-hammer-gloves"
@@ -126,10 +182,9 @@ async fn real_binary_saves_pending_vehicle_progress_on_launcher_shutdown() {
     .await
     .unwrap();
     socket
-        .send(Message::Text(
-            json!({"type":"input","boost":true,"y":9999,"boostEnergy":999999})
-                .to_string()
-                .into(),
+        .send(intent(
+            json!({"type":"input","boost":true,"y":9999,"boostEnergy":999999}),
+            &identity,
         ))
         .await
         .unwrap();
@@ -138,6 +193,9 @@ async fn real_binary_saves_pending_vehicle_progress_on_launcher_shutdown() {
             match socket.next().await {
                 Some(Ok(Message::Text(text))) => {
                     let message: Value = serde_json::from_str(&text).unwrap();
+                    if message["identity"].is_object() {
+                        identity = message["identity"].clone();
+                    }
                     if message["type"] == "snapshot"
                         && message["players"][0]["mech"]["boosting"] == true
                     {
@@ -162,10 +220,9 @@ async fn real_binary_saves_pending_vehicle_progress_on_launcher_shutdown() {
     .await
     .unwrap();
     socket
-        .send(Message::Text(
-            json!({"type":"action","action":"mech-fire","damage":999999})
-                .to_string()
-                .into(),
+        .send(intent(
+            json!({"type":"action","action":"mech-fire","damage":999999}),
+            &identity,
         ))
         .await
         .unwrap();

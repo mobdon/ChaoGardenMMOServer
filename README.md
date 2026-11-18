@@ -78,6 +78,7 @@ The server reads:
 ```text
 data/
   profiles.json
+  profiles.v1.backup.json         # exact original retained by v2 migration
   game-inventory.json             # optional client-generated inventory
   terrain/{hub,garden,hero,dark}.json
   activities/{races,karate}.json   # optional locally extracted source catalogs
@@ -86,9 +87,13 @@ data/
   imports/activities/              # four exact native activity model aliases
 ```
 
-Profiles store SHA-256 token hashes, progression, alignment, cosmetic ownership,
-and validated vehicle selection. Node reference profiles are compatible with the
-Rust server. Direct-control profiles reset to a safe hub spawn on load. An
+Profiles store SHA-256 device credential hashes, account/Chao identity,
+revisions, exclusive activity leases, progression, alignment, cosmetic ownership,
+and validated vehicle selection. Legacy Rust/Node profiles migrate once to v2,
+preserving their canonical Chao and earned progression. Startup retains the
+exact original as `profiles.v1.backup.json`; ambiguous or invalid identities fail
+closed. See [Accounts v2](docs/ACCOUNTS-V2.md) for migration/recovery and tests.
+Direct-control profiles reset to a safe hub spawn on load. An
 explicitly opted-in resident restores once at a safe eligible garden position
 with a fresh routine session; service downtime creates no simulated activity.
 Profile writes use an atomic temporary-file replacement. Keep backups of the
@@ -106,23 +111,34 @@ redistributed Sonic assets.
 
 ## Protocol and authority
 
-- `GET /api/status`: health, online connections, asset inventory, terrain state.
+- `GET /api/status`: health, online connections, asset inventory, terrain state,
+  and `accounts.version:2` capability discovery.
 - `POST /api/session`: JSON `name` and/or an existing `token`; returns a session.
   `resumeOnly:true` rejects an unknown/missing token with 404 and creates no
   profile, so a title-screen save slot cannot silently become another Chao.
+- [Accounts v2](docs/ACCOUNTS-V2.md) defines `GET /api/account`, desktop-approved
+  pairing, revocation, activity leases and authenticated HTTP intents. Android
+  receives a separate device credential for the same canonical Chao. Durable AFK
+  jobs remain unimplemented and advertise `durableTraining:false`.
 - `GET /api/activities`: detailed original catalog/provenance; compact
   descriptors and current activity state also appear in snapshots.
 - The Rust Tiny Garden game protocol, five game IDs, session-bound inputs and
   atomic earned rewards are documented in [PHONE.md](PHONE.md).
 - Tiny Watch, shared garden residency while disconnected, deliberate care,
   durable opt-in, and direct-control return are documented in [WATCH.md](WATCH.md).
-- `GET /ws?token=...`: authenticated WebSocket; receives snapshots at 10 Hz.
+- `GET /ws`: native clients use an authorization bearer header; browsers send
+  `{"type":"authenticate","token":"..."}` as the first text frame within
+  five seconds. Query strings are rejected. Authenticated snapshots arrive at
+  10 Hz with the latest private identity/revision/lease.
 - Simulation runs at 20 Hz. Movement messages carry `dx`, `dz`, and `jump` intent.
-- Actions carry `type: "action"` and an action name. Client coordinates, currency,
-  stats, roles, damage, and reward claims are ignored.
+- Actions carry `type: "action"` and an action name. Gameplay also requires
+  `leaseId`, `expectedRevision` and increasing `sequence`; credentials, lease,
+  activity and profile revision are checked before applying the intent.
+  Client coordinates, currency, stats, roles, damage, and reward claims are ignored.
 - `save` explicitly flushes authoritative profiles and returns a direct
   `{"type":"event","kind":"saved","playerId":"...","serverTime":...}`
-  only after a successful save. Disk errors return an error notice without a
+  plus the latest `identity` only after a successful save. It is exempt from
+  lease/revision/sequence fencing after authentication. Disk errors return a v2 error without a
   success acknowledgement. The browser can wait for this event before returning
   to its title screen. Save requests cannot upload profile state.
 
@@ -153,7 +169,8 @@ and a suitable reverse proxy for a public deployment.
 
 ## Retained Node reference
 
-The original implementation remains runnable for comparison and fallback:
+The original implementation remains runnable for comparison against isolated
+v1 reference data:
 
 ```sh
 npm ci
@@ -161,8 +178,13 @@ npm test
 npm start
 ```
 
-It uses the same environment variables and data format. Run one authority against
-a data directory at a time; two servers must not write the same profile file.
+It uses the same environment variables but does not implement the v2 identity
+format or authentication/lease contract. Never point it at migrated v2 saves:
+it fails closed before startup/profile normalization and export when an identity
+or non-v1 schema marker is present. It cannot enforce v2 authority. Use
+complete v2 backups for recovery; the migration's original v1 backup lacks all
+post-migration gains. Run one authority against a data directory at a time;
+two servers must not write the same profile file.
 Rust is the primary implementation. Node is a reference, not a second service
 that the Rust server requires.
 

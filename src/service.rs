@@ -3,17 +3,12 @@ use crate::metrics::Metrics;
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    extract::{
-        DefaultBodyLimit, OriginalUri, Query, Request, State, WebSocketUpgrade,
-        ws::{CloseFrame, Message, WebSocket},
-    },
+    extract::{DefaultBodyLimit, OriginalUri, Request, State},
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -25,7 +20,7 @@ use std::{
 };
 use tokio::{
     sync::{broadcast, watch},
-    time::{Instant, MissedTickBehavior},
+    time::MissedTickBehavior,
 };
 
 #[derive(Clone, Debug)]
@@ -80,7 +75,6 @@ impl Config {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             owner_bootstrap,
             allowed_origins: vec![],
-            metrics: Metrics::new(),
         }
     }
 }
@@ -92,6 +86,9 @@ pub struct AppState {
     pub events: broadcast::Sender<Event>,
     pub shutdown: watch::Sender<bool>,
     pub metrics: Arc<Metrics>,
+    pub(crate) device_connections: Arc<Mutex<BTreeMap<(String, String), usize>>>,
+    durable_profiles: Arc<Mutex<BTreeMap<String, Value>>>,
+    durable_bytes: Arc<Mutex<Option<Vec<u8>>>>,
 }
 impl AppState {
     pub fn load(config: Config) -> io::Result<Self> {
@@ -99,8 +96,13 @@ impl AppState {
             return Err(io::Error::other("Owner bootstrap requires loopback"));
         }
         let profile_path = config.data_dir.join("profiles.json");
-        let profiles: Vec<Value> = if profile_path.exists() {
-            serde_json::from_slice(&fs::read(profile_path)?)?
+        let original = if profile_path.exists() {
+            Some(fs::read(&profile_path)?)
+        } else {
+            None
+        };
+        let profiles: Vec<Value> = if let Some(bytes) = &original {
+            serde_json::from_slice(bytes)?
         } else {
             vec![]
         };
@@ -162,21 +164,102 @@ impl AppState {
         }
         let (events, _) = broadcast::channel(512);
         let (shutdown, _) = watch::channel(false);
-        Ok(Self {
+        let migrated = game.dirty;
+        let durable_profiles = game
+            .export_profiles()
+            .into_iter()
+            .map(|profile| (profile["id"].as_str().unwrap().to_owned(), profile))
+            .collect();
+        let state = Self {
             game: Arc::new(Mutex::new(game)),
             config: Arc::new(config),
             events,
             shutdown,
             metrics: Metrics::new(),
-        })
+            device_connections: Arc::new(Mutex::new(BTreeMap::new())),
+            durable_profiles: Arc::new(Mutex::new(durable_profiles)),
+            durable_bytes: Arc::new(Mutex::new(original.clone())),
+        };
+        if migrated {
+            let bytes = original
+                .as_ref()
+                .ok_or_else(|| io::Error::other("Missing migration source"))?;
+            let backup = state.config.data_dir.join("profiles.v1.backup.json");
+            if backup.exists() {
+                if fs::read(&backup)? != *bytes {
+                    return Err(io::Error::other(
+                        "Migration backup differs from source; review recovery files",
+                    ));
+                }
+            } else {
+                use std::io::Write;
+                let mut options = fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                let mut file = options.open(backup)?;
+                file.write_all(bytes)?;
+                file.sync_all()?;
+            }
+            let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+            state.persist(&mut game)?;
+        }
+        Ok(state)
     }
     pub fn persist(&self, game: &mut Game) -> io::Result<()> {
         if !game.dirty {
             return Ok(());
         }
         fs::create_dir_all(&self.config.data_dir)?;
+        // Serialize writers across processes and reject an authority whose
+        // in-memory view predates another writer's committed document.
+        let mut lock_options = fs::OpenOptions::new();
+        lock_options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            lock_options.mode(0o600);
+        }
+        let writer_lock = lock_options.open(self.config.data_dir.join("profiles.lock"))?;
+        writer_lock
+            .try_lock()
+            .map_err(|_| io::Error::other("Another authority is writing profiles"))?;
+        let mut durable_bytes = self.durable_bytes.lock().unwrap_or_else(|p| p.into_inner());
+        let disk_bytes = match fs::read(self.config.data_dir.join("profiles.json")) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        if disk_bytes != *durable_bytes {
+            return Err(io::Error::other(
+                "Profile store changed; reload the authoritative state",
+            ));
+        }
         let temporary = self.config.data_dir.join("profiles.json.tmp");
-        let bytes = serde_json::to_vec_pretty(&game.export_profiles())?;
+        let mut profiles = game.export_profiles();
+        let mut durable = self
+            .durable_profiles
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for profile in &mut profiles {
+            let id = profile["id"].as_str().unwrap();
+            if let Some(before) = durable.get(id)
+                && before != profile
+            {
+                let revision = before["identity"]["revision"].as_u64().unwrap_or(0);
+                if profile["identity"]["revision"].as_u64().unwrap_or(0) <= revision {
+                    profile["identity"]["revision"] = json!(
+                        revision
+                            .checked_add(1)
+                            .ok_or_else(|| io::Error::other("Revision exhausted"))?
+                    );
+                }
+            }
+        }
+        let bytes = serde_json::to_vec_pretty(&profiles)?;
         let mut options = fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
         #[cfg(unix)]
@@ -191,30 +274,27 @@ impl AppState {
             file.sync_all()?;
         }
         fs::rename(temporary, self.config.data_dir.join("profiles.json"))?;
+        *durable_bytes = Some(bytes);
+        for profile in &profiles {
+            if let Some(player) = game.players.get_mut(profile["id"].as_str().unwrap()) {
+                player.identity.revision = profile["identity"]["revision"].as_u64().unwrap();
+            }
+        }
+        *durable = profiles
+            .into_iter()
+            .map(|profile| (profile["id"].as_str().unwrap().to_owned(), profile))
+            .collect();
         game.dirty = false;
         crate::phone::commit_rewards(game);
         Ok(())
     }
-    /// Controlled release migration, executed once per deploy before machines
-    /// roll. Idempotent: re-running against migrated data is a no-op. The
-    /// JSON stores are validated and re-serialised in canonical form so the
-    /// new image never serves half-upgraded data, and a schema marker records
-    /// the applied version for operators.
+    /// The startup loader validates and migrates profiles before serving. The
+    /// release command uses the same locked atomic transaction, including for
+    /// legacy marker files; a separate marker never bypasses save validation.
     pub fn release_migration(&self) -> io::Result<()> {
-        const SCHEMA_VERSION: u32 = 1;
-        fs::create_dir_all(&self.config.data_dir)?;
-        let marker_path = self.config.data_dir.join(".schema-version");
-        if fs::read_to_string(&marker_path).ok().as_deref() == Some("1\n") {
-            return Ok(());
-        }
-        let profile_path = self.config.data_dir.join("profiles.json");
-        if profile_path.exists() {
-            // AppState::load already validated shape; rewrite canonically.
-            let profiles: Vec<Value> = serde_json::from_slice(&fs::read(&profile_path)?)?;
-            fs::write(&profile_path, serde_json::to_vec_pretty(&profiles)?)?;
-        }
-        fs::write(&marker_path, format!("{SCHEMA_VERSION}\n"))?;
-        Ok(())
+        let mut game = self.game.lock().unwrap_or_else(|p| p.into_inner());
+        game.dirty = true;
+        self.persist(&mut game)
     }
     pub fn watch_action(&self, game: &mut Game, id: &str, message: &Value) -> io::Result<Value> {
         let before = game
@@ -252,9 +332,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/status", get(status))
         .route("/api/activities", get(activities))
         .route("/api/session", post(session))
-        .route("/ws", get(upgrade))
-        // Deployment probes and metrics: unauthenticated, cheap, excluded from
-        // the request metrics themselves.
+        .merge(crate::accounts::routes())
+        .route("/ws", get(crate::accounts::upgrade))
         .route("/livez", get(livez))
         .route("/readyz", get(readyz))
         .route("/metrics", get(prometheus))
@@ -358,7 +437,7 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
     let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
     Json(
         json!({"ok": true, "mode": if state.config.address.ip().is_loopback() { "local-development" } else { "server" },
-        "online": game.online_connections(), "setup": setup,
+        "online": game.online_connections(), "setup": setup,"accounts":crate::accounts::capabilities(),
         "tinyGarden":{"games":["memory","rock_paper_scissors","bounce","ball","search"],"rules":"adapted","maxRingReward":crate::phone::MAX_RING_REWARD},
         "terrain": {"loaded": game.terrains.keys().collect::<Vec<_>>(), "flatFallback": TERRAIN_ZONES.into_iter().filter(|zone| !game.terrains.contains_key(*zone)).collect::<Vec<_>>()}}),
     )
@@ -371,7 +450,8 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     {
         return error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Use application/json.");
     }
-    let input: Value = match serde_json::from_slice(if body.is_empty() { b"{}" } else { &body }) {
+    let mut input: Value = match serde_json::from_slice(if body.is_empty() { b"{}" } else { &body })
+    {
         Ok(value) => value,
         Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid JSON."),
     };
@@ -381,8 +461,22 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
             "Session data must be a JSON object.",
         );
     }
+    if let Some(authorization) = headers.get(header::AUTHORIZATION) {
+        let Some(token) = authorization
+            .to_str()
+            .ok()
+            .and_then(|value| value.strip_prefix("Bearer "))
+        else {
+            return error(StatusCode::UNAUTHORIZED, "Invalid device credential.");
+        };
+        if input.get("token").is_some() {
+            return error(StatusCode::BAD_REQUEST, "Supply one credential.");
+        }
+        input["token"] = json!(token);
+        input["resumeOnly"] = json!(true);
+    }
     let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-    if input["resumeOnly"] == true
+    if (input["resumeOnly"] == true || input.get("token").is_some())
         && input["token"]
             .as_str()
             .and_then(|token| game.player_for_token(token))
@@ -390,10 +484,16 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     {
         return error(StatusCode::NOT_FOUND, "Saved Chao was not found.");
     }
+    let before = game.clone();
     match game.create_session(&input) {
         Ok(response) => match state.persist(&mut game) {
-            Ok(()) => Json(response).into_response(),
+            Ok(()) => Json(
+                game.create_session(&json!({"token":response["token"]}))
+                    .expect("Committed session remains authenticated"),
+            )
+            .into_response(),
             Err(error_value) => {
+                *game = before;
                 eprintln!("Session save failed: {error_value}");
                 error(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -592,141 +692,6 @@ async fn asset_or_missing(
         .unwrap()
 }
 
-#[derive(Deserialize)]
-struct TokenQuery {
-    token: Option<String>,
-}
-async fn upgrade(
-    State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
-    ws: WebSocketUpgrade,
-) -> Response {
-    let id = query.token.as_deref().and_then(|token| {
-        state
-            .game
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .player_for_token(token)
-            .map(|p| p.id.clone())
-    });
-    let Some(id) = id else {
-        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
-    };
-    ws.max_message_size(2048)
-        .max_frame_size(2048)
-        .on_upgrade(move |socket| handle_socket(socket, state, id))
-}
-async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
-    let mut events = state.events.subscribe();
-    let mut shutdown = state.shutdown.subscribe();
-    let (mut writer, mut reader) = socket.split();
-    state.metrics.ws_opened();
-    let initial = {
-        let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-        game.connect(&id);
-        let owner = game.players.get(&id).is_some_and(|p| p.admin);
-        game.notice(
-            &id,
-            if owner {
-                "Welcome, owner! Your admin Chao has all S grades, level 99, and max hidden stats."
-            } else {
-                "Welcome to the garden! Move with WASD and explore with other Chao."
-            },
-            "info",
-        );
-        game.snapshot(&id)
-    };
-    if writer
-        .send(Message::Text(initial.to_string().into()))
-        .await
-        .is_err()
-    {
-        state.metrics.ws_closed();
-        state
-            .game
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .disconnect(&id);
-        return;
-    }
-    let mut snapshots = tokio::time::interval(Duration::from_millis(100));
-    snapshots.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut heartbeat = tokio::time::interval_at(
-        Instant::now() + Duration::from_secs(20),
-        Duration::from_secs(20),
-    );
-    let mut alive = true;
-    let mut window = Instant::now();
-    let mut count = 0;
-    loop {
-        let outgoing: Option<Message> = tokio::select! {
-            _ = shutdown.changed() => break,
-            _ = snapshots.tick() => Some(Message::Text(state.game.lock().unwrap_or_else(|p| p.into_inner()).snapshot(&id).to_string().into())),
-            event = events.recv() => match event {
-                Ok(event) if event.target.as_deref().is_none_or(|target| target == id) => Some(Message::Text(event.message.to_string().into())),
-                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => None, Err(_) => break,
-            },
-            _ = heartbeat.tick() => { if !alive { break; } alive = false; Some(Message::Ping(Bytes::new())) },
-            incoming = reader.next() => {
-                let Some(Ok(message)) = incoming else { break; };
-                match message {
-                    Message::Pong(_) => { alive = true; None }, Message::Ping(bytes) => Some(Message::Pong(bytes)), Message::Close(_) => break,
-                    Message::Text(_) | Message::Binary(_) => {
-                        if window.elapsed() >= Duration::from_secs(1) { window = Instant::now(); count = 0; } count += 1;
-                        if count > 80 { let _ = writer.send(Message::Close(Some(CloseFrame { code: 1008, reason: "Message rate exceeded.".into() }))).await; break; }
-                        let mut response = None;
-                        if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
-                            let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-                            match value["type"].as_str() {
-                                Some("input") => game.set_input(&id, &value),
-                                Some("tiny-input") => game.tiny_input(&id, &value),
-                                Some("action") if value["action"] == "save" => {
-                                    let acknowledgement = if !game.request_save(&id) {
-                                        json!({"type":"notice","kind":"error","text":"Please wait a moment before saving again."})
-                                    } else {
-                                        match state.persist(&mut game) {
-                                            Ok(()) => json!({"type":"event","kind":"saved","playerId":id,"serverTime":game.time}),
-                                            Err(error) => {
-                                                eprintln!("Explicit save failed: {error}");
-                                                state.metrics.record_persist_failure();
-                                                json!({"type":"notice","kind":"error","text":"Could not save your progress. Stay in the garden and try again."})
-                                            }
-                                        }
-                                    };
-                                    response = Some(Message::Text(acknowledgement.to_string().into()));
-                                }
-                                Some("action") if value["action"].as_str().is_some_and(|action|action.starts_with("watch-")) => {
-                                    let result=match state.watch_action(&mut game,&id,&value) {
-                                        Ok(result)=>result,
-                                        Err(error)=>{eprintln!("Could not save resident choice: {error}");json!({"type":"notice","kind":"error","text":"Your resident choice could not save. Your previous mode was kept; please retry."})}
-                                    };
-                                    response=Some(Message::Text(result.to_string().into()));
-                                }
-                                Some("action") => game.action(&id, &value), _ => {}
-                            }
-                        }
-                        response
-                    }
-                }
-            }
-        };
-        if let Some(message) = outgoing
-            && !matches!(
-                tokio::time::timeout(Duration::from_secs(5), writer.send(message)).await,
-                Ok(Ok(()))
-            )
-        {
-            break;
-        }
-    }
-    state.metrics.ws_closed();
-    state
-        .game
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .disconnect(&id);
-}
-
 pub fn spawn_simulation(state: AppState) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut shutdown = state.shutdown.subscribe();
@@ -738,7 +703,9 @@ pub fn spawn_simulation(state: AppState) -> tokio::task::JoinHandle<()> {
             tokio::select! {
                 _ = shutdown.changed() => break,
                 _ = simulation.tick() => {
-                    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner()); game.tick(0.05);
+                    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+                    crate::accounts::expire_inputs(&mut game);
+                    game.tick(0.05);
                     if crate::phone::has_pending(&game) && game.time >= game.tiny_save_retry_at
                         && let Err(value)=state.persist(&mut game) {
                         eprintln!("Could not save Tiny Garden result: {value}");

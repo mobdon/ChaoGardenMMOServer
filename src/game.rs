@@ -1,5 +1,6 @@
 //! Deterministic, server-owned gameplay. Incoming messages carry intent only.
 use crate::activities::{self, ActivityCatalog, ActivityRecord, KarateBout};
+use crate::identity::AccountIdentity;
 use crate::phone::{self, TinyRecord, TinyRun};
 use crate::watch::{self, WatchState};
 use serde::{Deserialize, Serialize};
@@ -57,10 +58,14 @@ pub struct Race {
     pub course_id: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Player {
     pub id: String,
     pub token_hash: String,
+    pub identity: AccountIdentity,
+    // Retained only for lossless persistence of fields this authority does not
+    // understand. Gameplay, snapshots and diagnostics never read this value.
+    opaque_profile: Value,
     pub name: String,
     pub admin: bool,
     pub stats: BTreeMap<String, Stat>,
@@ -102,6 +107,18 @@ pub struct Player {
     pub last_input_at: f64,
     pub cooldowns: BTreeMap<String, f64>,
     pub race: Option<Race>,
+}
+
+impl std::fmt::Debug for Player {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Player")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("connections", &self.connections)
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Player {
@@ -152,7 +169,7 @@ impl Player {
     }
     pub fn public(&self) -> Value {
         json!({
-            "id": self.id, "name": self.name, "x": self.x, "y": self.y, "z": self.z,
+            "id": self.id, "chaoId": self.id, "name": self.name, "x": self.x, "y": self.y, "z": self.z,
             "groundY": self.ground_y, "jumpOffset": self.jump_offset, "facing": self.facing,
             "zone": self.zone, "alignment": self.alignment, "form": self.form, "admin": self.admin,
             "stats": self.stats, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
@@ -167,7 +184,7 @@ impl Player {
         })
     }
     pub fn profile(&self) -> Value {
-        let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
+        let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "identity": self.identity, "name": self.name, "admin": self.admin,
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
@@ -175,7 +192,26 @@ impl Player {
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed, "bestRaceMs": self.best_race_ms});
         phone::project_profile(self, &mut profile);
-        profile
+        let mut original = self.opaque_profile.clone();
+        merge_profile(&mut original, profile);
+        original
+    }
+}
+
+/// Keep unrecognized object keys while allowing every authoritative leaf,
+/// including arrays and explicit nulls, to replace its older stored value.
+fn merge_profile(original: &mut Value, authoritative: Value) {
+    match (original, authoritative) {
+        (Value::Object(original), Value::Object(authoritative)) => {
+            for (key, value) in authoritative {
+                if let Some(existing) = original.get_mut(&key) {
+                    merge_profile(existing, value);
+                } else {
+                    original.insert(key, value);
+                }
+            }
+        }
+        (original, authoritative) => *original = authoritative,
     }
 }
 
@@ -317,6 +353,7 @@ pub const SHOP_CATALOG: [ShopItem; 4] = [
     },
 ];
 
+#[derive(Clone)]
 pub struct Game {
     pub activities: ActivityCatalog,
     pub time: f64,
@@ -399,14 +436,25 @@ impl Game {
                 available_at: 0.,
             });
         }
+        let mut account_ids = BTreeSet::new();
+        let mut credential_hashes = BTreeSet::new();
+        let mut device_ids = BTreeSet::new();
         for profile in profiles {
-            if profile["id"].as_str().is_none() || profile["tokenHash"].as_str().is_none() {
-                continue;
-            }
+            let migrated = profile.get("identity").is_none();
             let player = game.make_player(&profile)?;
+            if game.players.contains_key(&player.id)
+                || !account_ids.insert(player.identity.account_id.clone())
+                || player.identity.devices.iter().any(|device| {
+                    !credential_hashes.insert(device.credential_hash.to_ascii_lowercase())
+                        || !device_ids.insert(device.id.clone())
+                })
+            {
+                return Err("Duplicate account, Chao or device identity in profiles".into());
+            }
             game.tokens
                 .insert(player.token_hash.clone(), player.id.clone());
             game.players.insert(player.id.clone(), player);
+            game.dirty |= migrated;
         }
         Ok(game)
     }
@@ -451,6 +499,8 @@ impl Game {
         let mut player = Player {
             id: data["id"].as_str().unwrap_or_default().into(),
             token_hash: data["tokenHash"].as_str().unwrap_or_default().into(),
+            identity: AccountIdentity::from_profile(data).map_err(|error| error.to_string())?,
+            opaque_profile: data.clone(),
             name: clean_name(data["name"].as_str()),
             admin,
             stats,
@@ -525,14 +575,18 @@ impl Game {
         if let Some(token) = input["token"].as_str().filter(|token| token.len() <= 256)
             && let Some(player) = self.player_for_token(token)
         {
-            return Ok(json!({"token": token, "player": player.public()}));
+            let device = player.identity.authenticate(token).unwrap();
+            return Ok(
+                json!({"token": token, "player": player.public(), "identity": player.identity.public(&device)}),
+            );
         }
-        if input["resumeOnly"] == true {
+        if input["resumeOnly"] == true || input.get("token").is_some() {
             return Err("Saved Chao was not found.".into());
         }
         let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let player = self.make_player(&json!({"id": Uuid::new_v4().to_string(), "tokenHash": hash_token(&token), "name": input["name"], "admin": self.allow_owner_bootstrap && self.players.is_empty()}))?;
-        let response = json!({"token": token, "player": player.public()});
+        let device = player.identity.authenticate(&token).unwrap();
+        let response = json!({"token": token, "player": player.public(), "identity": player.identity.public(&device)});
         self.tokens
             .insert(player.token_hash.clone(), player.id.clone());
         self.players.insert(player.id.clone(), player);
@@ -543,14 +597,16 @@ impl Game {
         if token.len() > 256 {
             return None;
         }
-        self.tokens
-            .get(&hash_token(token))
-            .and_then(|id| self.players.get(id))
+        self.players
+            .values()
+            .find(|player| player.identity.authenticate(token).is_some())
     }
     pub fn connect(&mut self, id: &str) -> bool {
         if let Some(player) = self.players.get_mut(id) {
+            if player.connections == 0 {
+                player.input = Input::default();
+            }
             player.connections += 1;
-            player.input = Input::default();
             true
         } else {
             false

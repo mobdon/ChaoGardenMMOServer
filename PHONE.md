@@ -2,8 +2,9 @@
 
 The primary Rust authority hosts five playable Tiny Garden minigame
 adaptations: `memory`, `rock_paper_scissors`, `bounce`, `ball`, and `search`.
-They use the same canonical Chao profile and bearer credential as the main
-browser game. They do not execute an original GBA ROM or claim native timing,
+They use the same canonical Chao profile as the main browser game, with a
+separate revocable credential for each paired device. They do not execute an
+original GBA ROM or claim native timing,
 graphics, physics or complete engine fidelity. Core rules and source/evidence
 limits are documented in `crates/tiny-garden-games/README.md`.
 
@@ -15,15 +16,26 @@ these minigames. The Rust `/api/status` response advertises
 
 Resume a selected browser save with `POST /api/session` and JSON
 `{ "token":"...", "resumeOnly":true }`. Unknown/missing credentials return
-404 without creating another Chao. Connect `/ws?token=...` as in the main game.
-Separate-device pairing and an exclusive device lease are not implemented.
-Multiple sockets using one credential share one profile, one clock, one active
-minigame and one reward receipt. They can issue competing intents.
+404 without creating another Chao. Android pairs using a desktop-approved,
+single-use 120-second invitation. Connect `/ws` with a native bearer header or
+send `{"type":"authenticate","token":"..."}` as the browser's first text
+frame within five seconds. Query-string credentials are rejected.
+
+[Accounts v2](docs/ACCOUNTS-V2.md) specifies pairing, revocation, snapshots,
+migration, errors and the complete intent envelope. Require
+`/api/status.accounts.version:2`. Read `GET /api/account` with the bearer header,
+then acquire a `tiny` activity lease using `POST /api/lease`. Finish/stop and
+release a conflicting activity before handing off. Every Tiny intent includes
+the current `leaseId`, latest `expectedRevision` and a positive increasing
+`sequence`. Read the updated identity from acknowledgements/snapshots; do not
+reuse the sample revisions below. A stale device, lease or sequence cannot drive
+another device's game. Reconnect retains the same canonical Chao and must
+reconcile the current lease and counter before resuming controls.
 
 Start a game:
 
 ```json
-{"type":"action","action":"tiny-start","gameId":"memory"}
+{"type":"action","action":"tiny-start","gameId":"memory","leaseId":"current-lease-id","expectedRevision":7,"sequence":1}
 ```
 
 Starting from a garden/hub canonically returns the Chao home and dismounts an
@@ -56,7 +68,7 @@ player retains seven canonical stats and saved `tinyRecords` in snapshots.
 Send only an input intent, bound to the current server session ID:
 
 ```json
-{"type":"tiny-input","sessionId":"server-generated-uuid","input":{"kind":"memory_flip","cell":3}}
+{"type":"tiny-input","sessionId":"server-generated-uuid","input":{"kind":"memory_flip","cell":3},"leaseId":"current-lease-id","expectedRevision":8,"sequence":2}
 ```
 
 The core README lists all input kinds and bounds. Surplus fields inside an
@@ -71,7 +83,7 @@ wall-clock behavior are separate acceptance work.
 Stop using the same ID:
 
 ```json
-{"type":"action","action":"tiny-stop","sessionId":"server-generated-uuid"}
+{"type":"action","action":"tiny-stop","sessionId":"server-generated-uuid","leaseId":"current-lease-id","expectedRevision":9,"sequence":3}
 ```
 
 Stale IDs cannot control or stop a later game. Stopping an unfinished game or
@@ -118,6 +130,17 @@ Saved `tinyRecords[gameId]` contains `plays`, `completions`, `ringsEarned` and
 `lastResultId`. Ring credit and receipt survive restart together. Runtime board
 state does not resume after a server restart. Receipts and the core claim latch
 prevent repeat payment for the same server run.
+
+Transport `intent-accepted` events confirm the fenced intent was persisted;
+they do not replace the terminal `tiny-game-result` reward event. Lease expiry
+does not discard a pending result or create another minigame. Explicit Save is
+authenticated but does not require a lease. HTTP clients can use `/api/intent`
+with the same message inside the documented v2 envelope.
+
+Durable AFK training remains a separate integration. This release advertises
+`accounts.durableTraining:false`; a `training` reservation name is not a running
+job or an entitlement to stat gains. Clients must wait for the AFK contract and
+server capability before enabling training controls.
 
 Validation covers all five authenticated WebSocket start/stop flows, forged and
 stale inputs, shared-profile clocks, activity exclusion, canonical dismount,

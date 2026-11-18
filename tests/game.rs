@@ -106,7 +106,21 @@ fn resume_only_rejects_missing_or_unknown_tokens_without_creating_a_profile() {
         .create_session(&json!({"token":token,"resumeOnly":true}))
         .unwrap();
     assert_eq!(resumed["player"]["id"], id);
-    assert!(g.create_session(&json!({"token":"legacy-unknown"})).is_ok());
+    assert!(
+        g.create_session(&json!({"token":"legacy-unknown"}))
+            .is_err()
+    );
+    assert_eq!(g.players.len(), count);
+}
+
+#[test]
+fn additional_observer_connection_does_not_clear_active_movement() {
+    let (mut game, id, _) = fixture(false);
+    game.set_input(&id, &json!({"dx":1,"dz":0}));
+    assert_eq!(game.players[&id].input.dx, 1.);
+    assert!(game.connect(&id));
+    assert_eq!(game.players[&id].connections, 2);
+    assert_eq!(game.players[&id].input.dx, 1.);
 }
 
 #[test]
