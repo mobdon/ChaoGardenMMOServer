@@ -1,0 +1,25 @@
+# Login refresh: named account login refreshes the bearer token and resumes
+# progression; the previous guest profile is not silently re-created.
+appId: mobdon.chaogarden.mobile
+name: login refresh
+---
+- launch:
+    clearState: true
+- tapOn: "Tap to enter the garden"
+- tapOn: "Account"
+- tapOn: "Sign in"
+# Credentials come from a secure local test account file; never inlined here.
+- tapOn: "Use test account"
+- assertVisible: "Welcome back"
+- tapOn: "Refresh session"
+- assertVisible: "Session refreshed"
+# Relaunch must resume the named profile, not the guest slot.
+- stopApp
+- launch:
+    clearState: false
+- assertVisible: "Welcome back"
+- assertNotVisible: "Guest"
+- runScript:
+    file: ../scripts/probe-status.js
+    env:
+      CHECK: token-refresh-single-profile

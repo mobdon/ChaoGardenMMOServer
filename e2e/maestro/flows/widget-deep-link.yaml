@@ -1,0 +1,25 @@
+# Widget deep-link entry: cold-start the phone widget snapshot, then deep-link
+# from the widget into the app's garden screen with matching snapshotVersion.
+appId: mobdon.chaogarden.mobile
+name: widget deep-link entry
+---
+- launch:
+    clearState: true
+- tapOn: "Tap to enter the garden"
+# Prime the widget snapshot cache by requesting a refresh from the app screen.
+- tapOn: "Update widget"
+- stopApp
+# Launch via the widget's deep-link URL (chao://garden?slot=1&v=3).
+- launchApp:
+    appId: mobdon.chaogarden.widget
+    clearState: false
+- tapOn: "Widget garden tile"
+# The app must open straight into the garden, honouring the widget's
+# snapshotVersion and resuming the same session (no new guest profile).
+- assertVisible: "Chao Garden"
+- assertVisible: "Rings"
+- assertNotVisible: "Sign in"
+- runScript:
+    file: ../scripts/probe-status.js
+    env:
+      CHECK: deep-link-snapshot-version-matched

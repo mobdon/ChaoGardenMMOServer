@@ -1,0 +1,42 @@
+{
+  "$comment": "Release pass thresholds. All values are machine-readable and enforced by scripts/verify-thresholds.js against k6 JSON summaries and integration reports.",
+  "api": {
+    "p95_latency_ms": { "session_create": 250, "garden_snapshot": 150, "care_command_ack": 120, "room_join": 300 },
+    "error_rate_max": 0.01,
+    "dropped_event_rate_max": 0.001,
+    "db_connections_max": { "staging": 20, "production": 80 },
+    "duplicate_economy_mutations_max": 0
+  },
+  "k6": {
+    "garden_sync_read": {
+      "http_req_duration_p95_ms": 150,
+      "http_req_failed_rate": 0.01,
+      "min_requests_per_second": 50
+    },
+    "care_command_burst": {
+      "http_req_duration_p95_ms": 120,
+      "http_req_failed_rate": 0.02,
+      "max_db_connections": 20,
+      "duplicate_reward_claims": 0
+    },
+    "websocket_connect": {
+      "ws_connect_success_rate": 0.995,
+      "ws_handshake_p95_ms": 400,
+      "snapshot_gap_drop_rate": 0.001
+    },
+    "room_fanout": {
+      "event_delivery_p95_ms": 250,
+      "dropped_event_rate": 0.001,
+      "per_peer_rate_limit_429_rate": 0.0
+    },
+    "reconnect_storm": {
+      "session_resume_success_rate": 0.99,
+      "resume_p95_ms": 400,
+      "server_restart_dropped_snapshots_max": 1
+    }
+  },
+  "maestro": {
+    "flow_timeout_ms": 120000,
+    "max_flaky_retries": 1
+  }
+}

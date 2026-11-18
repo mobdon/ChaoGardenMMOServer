@@ -1,0 +1,19 @@
+# Guest onboarding: fresh install -> guest session -> hub without any login.
+appId: mobdon.chaogarden.mobile
+name: guest onboarding
+---
+- launch:
+    clearState: true
+- assertVisible: "Tap to enter the garden"
+- tapOn: "Tap to enter the garden"
+# Guest sessions are created server-side; the app must show the assigned
+# resident name and never prompt for credentials.
+- assertVisible: "Guest"
+- assertNotVisible: "Sign in"
+- assertVisible: "Chao Garden"
+# Movement sanity: hub snapshot arrives (10 Hz) and rings counter renders.
+- assertVisible: "Rings"
+- runScript:
+    file: ../scripts/probe-status.js
+    env:
+      CHECK: guest-session-created

@@ -1,0 +1,24 @@
+# Offline restart: go offline, kill and relaunch the app, verify the local
+# snapshot cache renders and the resume-only session reconnects cleanly.
+appId: mobdon.chaogarden.mobile
+name: offline restart
+---
+- launch:
+    clearState: true
+- tapOn: "Tap to enter the garden"
+- assertVisible: "Rings"
+# Force airplane mode so the app must serve its last good widget snapshot.
+- toggleAirplaneMode: true
+- assertVisible: "Offline — showing last garden state"
+- stopApp
+- launch:
+    clearState: false
+- assertVisible: "Offline — showing last garden state"
+- assertVisible: "Rings"
+- toggleAirplaneMode: false
+# Back online: resumeOnly token must reconnect without creating a new profile.
+- assertVisible: "Rings"
+- runScript:
+    file: ../scripts/probe-status.js
+    env:
+      CHECK: session-resumed-not-duplicated

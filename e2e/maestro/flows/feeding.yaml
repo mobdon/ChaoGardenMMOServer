@@ -1,0 +1,21 @@
+# Feeding: pick fruit from the garden tree, feed the Chao, verify stats move.
+appId: mobdon.chaogarden.mobile
+name: feeding
+---
+- launch:
+    clearState: true
+- tapOn: "Tap to enter the garden"
+- tapOn: "Egg"
+- tapOn: "Adopt"
+- assertVisible: "Hunger"
+- tapOn: "Fruit tree"
+- tapOn: "Pick fruit"
+# Inventory count decrements locally and the server acknowledges the action.
+- assertVisible: "Fruit x2"
+- tapOn: "Feed"
+- assertVisible: "Hunger"
+- assertNotVisible: "Starving"
+- runScript:
+    file: ../scripts/probe-status.js
+    env:
+      CHECK: fruit-consumed

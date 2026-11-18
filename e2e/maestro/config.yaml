@@ -1,0 +1,13 @@
+# Maestro config shared by all flows.
+# The runner script (e2e/scripts/run-e2e.sh) starts the Rust authority on an
+# ephemeral port with a disposable CHAO_DATA_DIR and injects these env values
+# via `maestro test --env` so flows never hard-code credentials or hosts.
+appId: mobdon.chaogarden.mobile
+name: ChaoGarden mobile suite
+---
+# Common environment (documented defaults; CLI overrides win):
+#   BASE_URL      http://127.0.0.1:<port>
+#   WIDGET_SNAPSHOT_VERSION   3
+#   TEST_TOKEN_FILE           path the app reads its resume token from
+launchArguments:
+  - "--server ${BASE_URL}"
