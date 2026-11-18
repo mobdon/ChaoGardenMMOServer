@@ -1,0 +1,58 @@
+// Prisma schema for accounts, device sessions, and rotating refresh tokens.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String          @id @default(cuid())
+  email        String?         @unique
+  passwordHash String?
+  displayName  String
+  guest        Boolean         @default(false)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  sessions     DeviceSession[]
+  refreshTokens RefreshToken[]
+  creatures    Json            @default("[]")
+  inventory    Json            @default("{}")
+  rings        Int             @default(0)
+}
+
+model DeviceSession {
+  id         String    @id @default(cuid())
+  userId     String
+  deviceName String
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime  @default(now())
+  revokedAt  DateTime?
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([userId])
+}
+
+model RefreshToken {
+  id         String    @id @default(cuid())
+  // SHA-256 hex digest of the opaque token. Raw tokens are never persisted.
+  hash       String    @unique
+  sessionId  String
+  userId     String
+  expiresAt  DateTime
+  createdAt  DateTime  @default(now())
+  // Set when rotated. A lookup that finds consumedAt != null is a replay.
+  consumedAt DateTime?
+
+  session DeviceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([userId])
+}
