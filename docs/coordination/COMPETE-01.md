@@ -1,13 +1,15 @@
 # COMPETE-01 implementation handoff
 
-Base: published server `main`, commit
+Initial base: published server `main`, commit
 `282f6abd1bdb75d0477622f8952667073dc2b751`. Branch: `codex/ai-competitions`.
+Implementation commit: `7c61e0a`. Rebased onto published `main` at `4056fcf`;
+the later base commits changed documentation/mobile adapters, not Rust source.
 Status: isolated Rust implementation and local proof; integration review remains
 required. No deployment, live profile edits, or preview restart was performed.
 
-The source branch did not contain the integration chat's newer coordination
-board/protocol documents. Those were read from its separate checkout. This
-addendum records this workstream without replacing that chat's board.
+The initial base did not contain the integration chat's newer coordination
+board/protocol documents. Those were read from its separate checkout and are
+present after rebase. Only this workstream's board row was updated.
 
 The versioned implemented protocol and complete rules are in
 [COMPETITIONS.md](../../COMPETITIONS.md). New owned modules are
@@ -50,6 +52,12 @@ existing println formatted for the repository-wide formatting check.
   manual activity records/rewards are unchanged by the abstract simulation.
 
 ## Evidence and remaining limits
+
+Validated November 18, 2026: 102 server tests, 22 Tiny game tests, 21 Tiny core
+tests and 49 Node reference tests passed. The explicitly selected ignored local
+catalog proof also passed. Repository/Tiny crate formatting and Clippy with
+warnings denied passed; the optimized Rust server release build passed.
+The separate ROM-dependent Tiny core proof was not invoked.
 
 The proof suite covers both match types, stat scaling, placements, duplicate
 devices/intents, foreign/training lease conflicts, failed/retried writes,
