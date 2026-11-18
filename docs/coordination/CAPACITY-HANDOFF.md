@@ -4,6 +4,8 @@ Branch `codex/measured-capacity`, measured base `282f6ab`. Isolated worktree:
 `C:/Users/Admin/Documents/ChatGPT/mmo/.local/worktrees/server-capacity`.
 This is a source/test proposal, not authority to merge, migrate or deploy.
 The separate live preview, canonical save and other worktrees remain untouched.
+[Draft PR #18](https://github.com/mobdon/ChaoGardenMMOServer/pull/18) contains
+the isolated proposal; implementation commit is `096bfdc`.
 
 ## Shared hooks requiring integration review
 
