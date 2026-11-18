@@ -4,7 +4,7 @@
 
 Review snapshot: `5ec51f94ad24135a41d6a0c2320d155cccd486f3`, against the previously published Rust baseline `a8188a3030eb176ec4c3b7156f93410da5bb6f09`. The four Vibe deliveries change 97 paths. This is a finite review of this snapshot; later commits need a separate review.
 
-**Later incoming batch:** PR #7 advanced upstream to `282f6abd1bdb75d0477622f8952667073dc2b751`, adding/changing 59 paths after this review snapshot. Its `apps/api` NestJS/Prisma authority and `packages/simulation` TypeScript gameplay/growth/training conflict with the mandatory Rust scope and are unaccepted. Detailed source findings belong to a separate addendum; the 25 findings below do not claim to review those later 59 paths. The Rust instructions are being published separately so further tasks receive this constraint immediately.
+**Later incoming batch:** PR #7 advanced upstream to `282f6abd1bdb75d0477622f8952667073dc2b751`, adding/changing 59 paths after this review snapshot. Its `apps/api` NestJS/Prisma authority and `packages/simulation` TypeScript gameplay/growth/training conflict with the mandatory Rust scope and are unaccepted. The [separate source review addendum](VIBE-PR7-REVIEW-2026-11-18.md) records its findings; the 25 findings below remain scoped to the earlier snapshot. Rust instructions were published separately in documentation-only commit `e09cd62`.
 
 | Delivery | Commit | Review result |
 | --- | --- | --- |

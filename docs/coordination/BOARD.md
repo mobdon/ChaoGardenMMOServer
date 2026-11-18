@@ -28,7 +28,7 @@ started or completed their briefs.
 | #2 / `826c0f2` | Infrastructure, deploy/backup scripts, Rust metrics/probes/migration | REVIEW BLOCKED: current source fails compilation; deployment/persistence/migration/rollback require repairs and tests. No production infrastructure was executed. |
 | #3 / `7476c94` | E2E, k6 and Maestro scaffolding | REVIEW BLOCKED: invalid fixtures/runner paths and false-positive checks; no passing capacity or end-to-end acceptance established. |
 | #4 / `5ec51f9` | Expo mobile UI and contracts under the server repository | REVIEW BLOCKED: integration/contract findings; source UI is not completed Tiny Garden, secure pairing or an installed Android widget. |
-| #7 / `282f6ab` | Competing NestJS/Prisma API and TypeScript simulation/contracts, 59 later paths | UNACCEPTED: conflicts with the user's Rust game/server requirement; detailed source review is a separate addendum. This is not a replacement Rust persistence layer. |
+| #7 / `282f6ab` | Competing NestJS/Prisma API and TypeScript simulation/contracts, 59 later paths | UNACCEPTED: conflicts with the user's Rust game/server requirement. [Source review addendum](VIBE-PR7-REVIEW-2026-11-18.md) records 17 blockers/reliability findings and validation limits. This is not a replacement Rust persistence layer. |
 
 The main repository already contains these commits. The live preview remains
 the separate tested versioned runtime with SHA-256
@@ -73,6 +73,15 @@ implementation brief are relative to its named repository.
 | 13 | Original chat — integration and release QA / both repositories | ACTIVE — verified | Owns cross-repository contracts, canonical owner/save protection, playable preview, merge order, release evidence and this coordination layer. Source publication is verified; later changes need their own audited release. | Reviews every shared-file/protocol change, resolves conflicts and performs coordinated client/server rollout. |
 
 ## Current implementation evidence
+
+The separate Rust Accounts/pairing chat reports v2 source in its isolated
+`codex/accounts-pairing-ownership` worktree, with pairing/revocation/leases and
+account/identity/migration tests. That is reported work awaiting integration
+review and compatible client rollout; it has not merged or touched the live
+preview/save. Its incoming `docs/ACCOUNTS-V2.md` contract and durable AFK-job
+ownership hooks still need review/consumer agreement. Preserve that Rust work;
+the competing NestJS auth delivery does not replace it. No direct reply to
+another chat was sent on the strength of its incoming progress note.
 
 These are recorded local results, not fresh claims that every check was rerun
 while writing this board:
