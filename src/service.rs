@@ -437,6 +437,7 @@ pub fn asset_filename(path: &str) -> Option<String> {
     let colors = ["red", "purple", "cyan", "green", "blue", "yellow", "white"];
     let pngs = [
         "chao-flame.png",
+        "chao-shadow.png",
         "emotion-flame.png",
         "emotion-flame-atlas.png",
         "emotion-sphere.png",

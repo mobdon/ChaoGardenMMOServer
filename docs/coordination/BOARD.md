@@ -244,3 +244,45 @@ Vibe website dashboard has been synchronized.
 
 Head-bob follow-up (November 18): client branch codex/steady-chao-head, base c66c148d95ba18626d90fc1318de4c323dd0345f, anchors actual visible head016 after native animation/skating/foot grounding, restoring its original local pose before animation. Idle/walk/run/skate/stops use the full lock; mounted pilots retain cockpit pose. Changed client src/chao-head.js and scene hook, focused unit/native proof and docs. 26 tests/build and 11,880 actual-native frames pass across three forms; all 21 head/eye meshes steady below 1.96e-7 world units, other local channels/scales/parents intact. Current preview confirms full lock and canonical 139 rings. No protocol/authority/backend/save change. See client docs/HEAD-STABILITY.md and source PR for exact head.
 Published head-bob source: client PR #10, https://github.com/mobdon/ChaoGardenMMOClient/pull/10 at 025dcce565d42d22bae3fc558695cbe4f1b92541 (stacked on PR #9); seven client paths, no server code changes.
+
+November 18 follow-up: the user's repeated bob report remained valid after
+actor-local head locking. Actual render/camera investigation found a second
+camera interpolation behind the already interpolated actor. A disposable
+native-garden downhill capture measured 0.042728 world focus height error;
+direct camera focus now measures zero error and below0.001px vertical head
+center range after turns. Cached draw-mesh measurements supplement the prior
+11,880-frame rig proof. Client base025dcce, branchcodex/steady-chao-head/PR10;
+changed src/chao-head.js,scene.js,shadow-skate.js,chao-shadows.js,focused tests,
+native verification/extraction tooling,Vite exact asset bridge and reference
+docs/TASKS/REQUESTS. 32 client tests/build, native head proof and three-form
+90-frame sustained coast/30-frame larger-air-gap exit proof pass. Native
+downhill Rust/browser observations explain skate resets: genuine small
+jumpOffset values instantly cleared the old presentation. The new near-floor
+descending coast retains phase, truthful air state and jets-off, with fresh
+monotonic observation renewal and bounded gap/deadline. Final current-service
+positive-gap browser coast/jump acceptance remains explicitly open; grounded
+native slope/camera/shadow captures pass. See client SLOPE-PRESENTATION.md.
+
+Native PC shadow exists: al_mm_kage.prs/kyotu32_marukage was decoded by the
+existing Rust reader, original alpha preserved. Client uses native pixels
+with explicitly adapted terrain-triangle projection,size and opacity; full
+retail shadow-engine internals remain untraced. Native bytes stay ignored.
+Server route slice basef0fa6a278b1d1ffc421924d75dbbccc323bfc5e9 changes only
+src/service.rs,index.js,tests/protocol.rs,tests/reference/assets.test.js plus
+this board: exact chao-shadow.png allowlist, MIME/GET/HEAD/missing/private-path
+tests. Formatting, strict scoped Clippy, two Rust asset tests and Node asset
+test pass. No gameplay/protocol/save-schema changes or backend rollout. The
+local client exact PNG bridge avoids replacing the frozen authority. Preserve
+the current canonical balance (last observed142, not the older139/141 notes),
+credentials, gear and resident choice.
+
+Client follow-up source is
+`02fea862f54c0a5ba96083decffeb7b566ba39aa` on `codex/steady-chao-head`,
+associated with client PR #10:
+https://github.com/mobdon/ChaoGardenMMOClient/pull/10.
+The independently reviewed server route slice is published for review on
+`codex/native-chao-shadow-route`, based on
+`f0fa6a278b1d1ffc421924d75dbbccc323bfc5e9`. Its only source changes are the
+four route/test files above plus this coordination record. Source publication
+does not merge, deploy or restart the Rust authority, copy native assets, or
+modify a canonical save. The server PR records its exact immutable head.
