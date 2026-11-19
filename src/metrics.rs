@@ -209,6 +209,9 @@ impl Metrics {
     pub fn record_persist_failure(&self) {
         self.persist_failures_total.fetch_add(1, Ordering::Relaxed);
     }
+    pub fn record_event_drop(&self) {
+        self.record_event_lag(1);
+    }
     pub fn record_event_lag(&self, count: u64) {
         self.event_lag_total.fetch_add(count, Ordering::Relaxed);
     }
@@ -276,6 +279,11 @@ impl Metrics {
             ),
             (
                 "chao_event_lag_total",
+                "Broadcast entries missed by lagging peers; those peers disconnect.",
+                &self.event_lag_total,
+            ),
+            (
+                "chao_event_drops_total",
                 "Broadcast entries missed by lagging peers; those peers disconnect.",
                 &self.event_lag_total,
             ),

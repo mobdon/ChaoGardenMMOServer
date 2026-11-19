@@ -225,3 +225,19 @@ service path and coherent metrics, not its 100–500-player capacity. The read-o
 gate evaluator exits 1 for the historical matrix/soak and preserves their raw
 evidence. `GATE-RESULTS.jsonl` records current-policy evaluation, including old
 missing-evidence failures; the current candidate smoke passes reevaluation.
+
+### Integration with care and away competitions
+
+Current room filtering includes away competitors in their own rooms. Save
+timing wraps the existing care, Tiny reward and competition transaction, and
+JSON decoding preserves fractional care timestamps across reload. The combined
+source passed 153 Rust host tests, 63 Node tests, five backup/preflight tests,
+formatting and strict Clippy. Three tests still require local native fixtures.
+
+The 12-client, 12-resident release smoke initially missed the tick and snapshot
+age gates at 18.78 Hz and 584.56 ms p95. A 30-second repeat at the same client
+and resident counts passed at 19.96 Hz and 53.82 ms p95, with 27 save
+acknowledgments, zero cross-room leaks, and all 24 canonical identities,
+credentials, owner flags and resident choices preserved. The release binary
+SHA-256 was `21c4450e6505fa75a1c39f54193d20a668738aa1a695075ade69870dfc343c81`.
+Sustained 100–500-player capacity and deployment acceptance remain open.

@@ -313,17 +313,22 @@ fn training_requires_knuckles_or_pond_and_consumes_energy_with_cooldown() {
 }
 
 #[test]
-fn fruit_grove_has_position_cost_and_recovery() {
+fn legacy_feed_cannot_bypass_canonical_inventory_even_at_the_fruit_grove() {
     let (mut g, id, _) = fixture(false);
     act(&mut g, &id, "feed", json!({}));
     assert_eq!(g.players[&id].rings, 20);
     act(&mut g, &id, "garden", json!({}));
     position(&mut g, &id, -7., -5.);
     g.players.get_mut(&id).unwrap().energy = 10.;
+    let stats = g.players[&id].stats.clone();
+    let happiness = g.players[&id].happiness;
     act(&mut g, &id, "feed", json!({"price":-999}));
-    assert_eq!(g.players[&id].rings, 17);
-    assert!(g.players[&id].energy > 45.);
-    assert_eq!(g.players[&id].stats["stamina"].level, 2);
+    assert_eq!(g.players[&id].rings, 20);
+    assert!(g.players[&id].energy < 11.);
+    assert_eq!(g.players[&id].happiness, happiness);
+    assert_eq!(g.players[&id].stats, stats);
+    assert!(g.players[&id].care.inventory.is_empty());
+    assert!(g.players[&id].care.receipts.is_empty());
 }
 
 #[test]
@@ -475,7 +480,7 @@ fn authorized_owner_dark_chaos_override_preserves_stats_currency_and_persists() 
 }
 
 #[test]
-fn shop_fixed_prices_effects_and_unknown_item_overspend_checks() {
+fn legacy_shop_consumables_and_unknown_items_cannot_spend_or_grant_effects() {
     let (mut g, id, _) = fixture(false);
     position(&mut g, &id, -4., 8.);
     {
@@ -491,18 +496,18 @@ fn shop_fixed_prices_effects_and_unknown_item_overspend_checks() {
         json!({"item":"garden-fruit","price":-999,"rings":99999,"energy":99999}),
     );
     let p = &g.players[&id];
-    assert_eq!(p.rings, 15);
-    assert!(p.energy >= 45. && p.energy < 46.);
-    assert_eq!(p.hunger, 55.);
-    assert_eq!(p.happiness, 50.);
+    assert_eq!(p.rings, 20);
+    assert!(p.energy < 21.);
+    assert_eq!(p.hunger, 30.);
+    assert_eq!(p.happiness, 40.);
     act(
         &mut g,
         &id,
         "buy",
         json!({"item":"run-drive","price":0,"levels":99}),
     );
-    assert_eq!(g.players[&id].rings, 3);
-    assert_eq!(g.players[&id].stats["run"].level, 3);
+    assert_eq!(g.players[&id].rings, 20);
+    assert_eq!(g.players[&id].stats["run"].level, 1);
     for item in [
         json!("power-drive"),
         json!("../profiles.json"),
@@ -510,30 +515,34 @@ fn shop_fixed_prices_effects_and_unknown_item_overspend_checks() {
     ] {
         act(&mut g, &id, "buy", json!({"item":item}));
     }
-    assert_eq!(g.players[&id].rings, 3);
+    assert_eq!(g.players[&id].rings, 20);
     assert_eq!(g.players[&id].stats["power"].level, 1);
+    assert!(g.players[&id].care.inventory.is_empty());
+    assert!(g.players[&id].care.receipts.is_empty());
 }
 
 #[test]
 fn shop_proximity_is_server_owned_with_boundary_checks() {
     let (mut g, id, _) = fixture(false);
+    g.players.get_mut(&id).unwrap().rings = 100;
     act(
         &mut g,
         &id,
         "buy",
-        json!({"item":"garden-fruit","x":-4,"z":8}),
+        json!({"item":"eggshell-cap","x":-4,"z":8}),
     );
-    assert_eq!(g.players[&id].rings, 20);
+    assert_eq!(g.players[&id].rings, 100);
     position(&mut g, &id, -1.99, 8.);
-    act(&mut g, &id, "buy", json!({"item":"garden-fruit"}));
-    assert_eq!(g.players[&id].rings, 20);
+    act(&mut g, &id, "buy", json!({"item":"eggshell-cap"}));
+    assert_eq!(g.players[&id].rings, 100);
     position(&mut g, &id, -2.01, 8.);
-    act(&mut g, &id, "buy", json!({"item":"garden-fruit"}));
-    assert_eq!(g.players[&id].rings, 15);
+    act(&mut g, &id, "buy", json!({"item":"eggshell-cap"}));
+    assert_eq!(g.players[&id].rings, 75);
+    assert_eq!(g.players[&id].equipped.as_deref(), Some("eggshell"));
     act(&mut g, &id, "garden", json!({}));
     position(&mut g, &id, -4., 8.);
-    act(&mut g, &id, "buy", json!({"item":"garden-fruit"}));
-    assert_eq!(g.players[&id].rings, 15);
+    act(&mut g, &id, "buy", json!({"item":"eggshell-cap"}));
+    assert_eq!(g.players[&id].rings, 75);
 }
 
 #[test]

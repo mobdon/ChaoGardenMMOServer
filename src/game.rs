@@ -1,5 +1,6 @@
 //! Deterministic, server-owned gameplay. Incoming messages carry intent only.
 use crate::activities::{self, ActivityCatalog, ActivityRecord, KarateBout};
+use crate::competition::{self, CompetitionCatalog, CompetitionState};
 use crate::phone::{self, TinyRecord, TinyRun};
 use crate::watch::{self, WatchState};
 use serde::{Deserialize, Serialize};
@@ -60,6 +61,8 @@ pub struct Race {
 
 #[derive(Clone, Debug)]
 pub struct Player {
+    /// Preserve future/unmodeled save metadata through care's additive migration.
+    pub(crate) profile_extra: Value,
     pub id: String,
     pub token_hash: String,
     pub name: String,
@@ -80,6 +83,9 @@ pub struct Player {
     pub tiny_game: Option<TinyRun>,
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
+    pub care: crate::care::CareState,
+    pub competition: CompetitionState,
+    pub activity_lease: Option<Value>,
     pub boosting: bool,
     pub boost_energy: f64,
     pub happiness: f64,
@@ -149,7 +155,8 @@ impl Player {
                 (*key, json!({"current": current, "required": required}))
             })
             .collect();
-        json!({"ready": checks.iter().all(|(_, current, required)| current >= required), "requirements": requirements})
+        json!({"ready": checks.iter().all(|(_, current, required)| current >= required), "requirements": requirements,
+            "rules":"adapted-prototype-evolution-v1","nativeConditions":"unknown"})
     }
     pub fn public(&self) -> Value {
         json!({
@@ -159,6 +166,7 @@ impl Player {
             "stats": self.stats, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
+            "competition":competition::public(self),
             "watch":self.watch.as_ref().map(|watch|watch.public(self.connections>0)),"connected":self.connections>0,
             "mech": if self.vehicle.as_deref() == Some("dark-chao-walker") { json!({"boosting": self.boosting, "boostEnergy": self.boost_energy.round(), "grounded": self.jump_offset <= 0. && self.vy <= 0.}) } else { Value::Null },
             "rings": self.rings, "hp": self.hp, "maxHp": self.max_hp, "happiness": self.happiness,
@@ -171,12 +179,45 @@ impl Player {
         let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
+            "energy":self.energy,"hunger":self.hunger,"care":self.care,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed, "bestRaceMs": self.best_race_ms});
         phone::project_profile(self, &mut profile);
-        profile
+        competition::project_profile(self, &mut profile);
+        let mut preserved = self.profile_extra.clone();
+        merge_profile(&mut preserved, profile);
+        preserved
+    }
+}
+
+// Canonical known values win; unmodeled object fields survive a round trip.
+fn merge_profile(preserved: &mut Value, canonical: Value) {
+    match (preserved, canonical) {
+        (Value::Object(existing), Value::Object(current)) => {
+            for (key, value) in current {
+                // Strict/normalized ledgers are complete canonical replacements.
+                // Merging an empty inventory would resurrect consumed stacks.
+                if [
+                    "care",
+                    "competition",
+                    "activityLease",
+                    "tinyRecords",
+                    "raceRecords",
+                    "karateRecords",
+                ]
+                .contains(&key.as_str())
+                {
+                    existing.insert(key, value);
+                } else if let Some(previous) = existing.get_mut(&key) {
+                    merge_profile(previous, value);
+                } else {
+                    existing.insert(key, value);
+                }
+            }
+        }
+        (previous, current) => *previous = current,
     }
 }
 
@@ -287,39 +328,18 @@ pub struct ShopItem {
     pub price: u32,
     pub r#type: &'static str,
 }
-pub const SHOP_CATALOG: [ShopItem; 4] = [
-    ShopItem {
-        id: "garden-fruit",
-        name: "Garden Fruit",
-        description: "Restore 25 energy and fullness; gain 10 happiness.",
-        price: 5,
-        r#type: "fruit",
-    },
-    ShopItem {
-        id: "run-drive",
-        name: "Run Drive",
-        description: "Raise Run by 2 levels.",
-        price: 12,
-        r#type: "drive",
-    },
-    ShopItem {
-        id: "power-drive",
-        name: "Power Drive",
-        description: "Raise Power by 2 levels.",
-        price: 12,
-        r#type: "drive",
-    },
-    ShopItem {
-        id: "eggshell-cap",
-        name: "Eggshell Cap",
-        description: "Own and equip a little eggshell hat.",
-        price: 25,
-        r#type: "cosmetic",
-    },
-];
+pub const SHOP_CATALOG: [ShopItem; 1] = [ShopItem {
+    id: "eggshell-cap",
+    name: "Eggshell Cap",
+    description: "Own and equip a little eggshell hat.",
+    price: 25,
+    r#type: "cosmetic",
+}];
 
 pub struct Game {
+    pub care_catalog: crate::care_catalog::CareCatalog,
     pub activities: ActivityCatalog,
+    pub competition_catalog: CompetitionCatalog,
     pub time: f64,
     pub allow_owner_bootstrap: bool,
     pub terrains: BTreeMap<String, Terrain>,
@@ -378,7 +398,9 @@ impl Game {
                 .map_err(|error| format!("{error} for {zone}"))?;
         }
         let mut game = Self {
+            care_catalog: crate::care_catalog::CareCatalog::default(),
             activities: ActivityCatalog::default(),
+            competition_catalog: CompetitionCatalog::default(),
             time: now,
             allow_owner_bootstrap,
             terrains,
@@ -455,6 +477,7 @@ impl Game {
             None
         };
         let mut player = Player {
+            profile_extra: data.clone(),
             id: data["id"].as_str().unwrap_or_default().into(),
             token_hash: data["tokenHash"].as_str().unwrap_or_default().into(),
             name: clean_name(data["name"].as_str()),
@@ -497,9 +520,15 @@ impl Game {
             tiny_game: None,
             tiny_result: None,
             watch: None,
+            care: crate::care::CareState::restore(data.get("care"))?,
+            competition: competition::restore(
+                &data["competition"],
+                data["id"].as_str().unwrap_or_default(),
+            )?,
+            activity_lease: data.get("activityLease").filter(|v| !v.is_null()).cloned(),
             happiness: number(&data["happiness"], 65., 0., 100.),
-            energy: 100.,
-            hunger: 100.,
+            energy: number(&data["energy"], 100., 0., 100.),
+            hunger: number(&data["hunger"], 100., 0., 100.),
             hp: if admin { 250. } else { 100. },
             max_hp: if admin { 250. } else { 100. },
             missions_completed: number(&data["missionsCompleted"], 0., 0., 99999.).floor() as u32,
@@ -524,6 +553,17 @@ impl Game {
         self.teleport(&mut player, "hub", 0., 6.)?;
         player.update_form();
         watch::restore(self, &mut player, &data["resident"]);
+        if let Some(plan) = &player.competition.plan {
+            let expected = competition::lease(plan);
+            if player
+                .activity_lease
+                .as_ref()
+                .is_some_and(|lease| *lease != expected)
+            {
+                return Err("Competition conflicts with saved activity lease".into());
+            }
+            player.activity_lease = Some(expected);
+        }
         Ok(player)
     }
 
@@ -565,7 +605,8 @@ impl Game {
     pub fn disconnect(&mut self, id: &str) {
         if let Some(mut player) = self.players.remove(id) {
             player.connections = player.connections.saturating_sub(1);
-            if player.connections == 0 && player.watch.is_none() {
+            if player.connections == 0 && player.watch.is_none() && !competition::reserved(&player)
+            {
                 let _ = self.teleport(&mut player, "hub", 0., 6.);
                 if !player.tiny_game.as_ref().is_some_and(TinyRun::saving) {
                     player.tiny_game = None;
@@ -576,7 +617,11 @@ impl Game {
     }
     pub fn set_input(&mut self, id: &str, input: &Value) {
         if let Some(player) = self.players.get_mut(id).filter(|p| p.connections > 0) {
-            if player.tiny_game.is_some() || player.watch.is_some() {
+            if player.tiny_game.is_some()
+                || player.watch.is_some()
+                || competition::training_conflict(player)
+                || competition::reserved(player)
+            {
                 return;
             }
             let mut dx = number(&input["dx"], 0., -1., 1.);
@@ -606,6 +651,13 @@ impl Game {
         true
     }
     pub fn tiny_input(&mut self, id: &str, message: &Value) {
+        if self
+            .players
+            .get(id)
+            .is_some_and(|p| competition::reserved(p) || competition::training_conflict(p))
+        {
+            return;
+        }
         let Some(mut player) = self.players.remove(id) else {
             return;
         };
@@ -730,6 +782,31 @@ impl Game {
     fn action_inner(&mut self, p: &mut Player, message: &Value) {
         let action = message["action"].as_str().unwrap_or_default();
         let id = p.id.clone();
+        if action.starts_with("competition-") {
+            competition::action(self, p, message);
+            return;
+        }
+        if competition::reserved(p) || competition::training_conflict(p) {
+            self.notice(
+                &id,
+                "Finish your reserved activity before starting another action.",
+                "error",
+            );
+            return;
+        }
+        if action == "feed"
+            || (action == "buy"
+                && ["garden-fruit", "run-drive", "power-drive"]
+                    .iter()
+                    .any(|item| message["item"] == *item))
+        {
+            self.notice(
+                &id,
+                "Use the versioned care inventory controls to purchase and consume items.",
+                "info",
+            );
+            return;
+        }
         if action.starts_with("watch-") {
             watch::action(self, p, message);
             return;
@@ -986,35 +1063,6 @@ impl Game {
             );
             return;
         }
-        if action == "feed" {
-            if !self.near_interaction(p, "fruit") {
-                self.notice(&id, "Visit the Neutral Garden fruit grove, or buy Garden Fruit from Amy in the hub.", "info");
-                return;
-            }
-            if !p.cooldown("feed", self.time, 1200.) {
-                return;
-            }
-            if p.rings < 3 {
-                self.notice(
-                    &id,
-                    "Fruit costs 3 rings. Explore to collect more.",
-                    "error",
-                );
-                return;
-            }
-            p.rings -= 3;
-            p.energy = (p.energy + 35.).min(100.);
-            p.hunger = (p.hunger + 30.).min(100.);
-            p.happiness = (p.happiness + 8.).min(100.);
-            p.gain("stamina", 1);
-            self.dirty = true;
-            self.notice(
-                &id,
-                "Yum! Fruit restored energy and raised Stamina.",
-                "success",
-            );
-            return;
-        }
         if let Some(stat) = action
             .strip_prefix("train-")
             .filter(|stat| MAIN_STATS.contains(stat))
@@ -1079,19 +1127,9 @@ impl Game {
             return;
         }
         p.rings -= item.price;
-        match item.id {
-            "garden-fruit" => {
-                p.energy = (p.energy + 25.).min(100.);
-                p.hunger = (p.hunger + 25.).min(100.);
-                p.happiness = (p.happiness + 10.).min(100.);
-            }
-            "run-drive" => p.gain("run", 2),
-            "power-drive" => p.gain("power", 2),
-            "eggshell-cap" => {
-                p.owned_cosmetics.push("eggshell".into());
-                p.equipped = Some("eggshell".into());
-            }
-            _ => {}
+        if item.id == "eggshell-cap" {
+            p.owned_cosmetics.push("eggshell".into());
+            p.equipped = Some("eggshell".into());
         }
         self.dirty = true;
         self.notice(
@@ -1194,6 +1232,14 @@ impl Game {
             })
         .max(0.);
         if enemy.hp == 0. {
+            crate::care::mission_drop(
+                p,
+                &self.care_catalog,
+                &mission.id,
+                &enemy.id,
+                enemy.x,
+                enemy.z,
+            );
             p.rings += 5;
             p.gain("power", 1);
             self.dirty = true;
@@ -1256,6 +1302,16 @@ impl Game {
         self.events.push(Event { target: None, message: json!({"type":"event", "kind":"mech-shot", "playerId":p.id, "zone":p.zone,
             "x":x, "y":y, "z":z, "hitX":hit_x, "hitY":hit_y, "hitZ":hit_z, "hit":target_id.is_some(), "targetId":target_id}) });
         if killed {
+            if let (Some(mission), Some(enemy_id)) = (&self.mission, &target_id) {
+                crate::care::mission_drop(
+                    p,
+                    &self.care_catalog,
+                    &mission.id,
+                    enemy_id,
+                    hit_x,
+                    hit_z,
+                );
+            }
             p.rings += 5;
             p.gain("power", 1);
             self.dirty = true;
@@ -1308,6 +1364,12 @@ impl Game {
         let ids: Vec<_> = self.players.keys().cloned().collect();
         for id in ids {
             let mut p = self.players.remove(&id).unwrap();
+            competition::tick(self, &mut p, dt);
+            if competition::reserved(&p) || p.activity_lease.is_some() {
+                p.input = Input::default();
+                self.players.insert(id, p);
+                continue;
+            }
             if p.connections == 0 && p.watch.is_none() {
                 self.players.insert(id, p);
                 continue;
@@ -1317,7 +1379,7 @@ impl Game {
                 self.players.insert(id, p);
                 continue;
             }
-            if self.time - p.last_input_at > 350. {
+            if self.time - p.last_input_at > 350. || p.care.activity_lock.is_some() {
                 p.input = Input::default();
             }
             if p.watch.is_some() {
@@ -1625,9 +1687,12 @@ impl Game {
             .players
             .get(self_id)
             .and_then(|p| activities::public_race(self, p));
-        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || ((p.connections > 0 || p.watch.is_some()) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
+        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || ((p.connections > 0 || p.watch.is_some() || competition::reserved(p)) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
             "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().filter(|_|mission_visible).map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
             "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
+            "care":crate::care::public(self,self_id),
+            "competitionCatalog":self.competition_catalog.public(),
+            "competition":self.players.get(self_id).map(competition::public),
             "karate": self.players.get(self_id).and_then(|p|p.karate.as_ref().map(KarateBout::public)),
             "activityResult": self.players.get(self_id).and_then(|p|p.activity_result.as_ref()),
             "tinyGame":self.players.get(self_id).and_then(|p|p.tiny_game.as_ref().map(TinyRun::public)),

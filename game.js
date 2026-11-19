@@ -77,6 +77,9 @@ function validateTerrain(value, zone) {
 /** Authoritative in-memory simulation. Browser messages never contain rewards or stats. */
 export class Game {
   constructor({ profiles = [], terrains = {}, activityTerrains = {}, raceCatalog = {}, karateCatalog = {}, allowOwnerBootstrap = false, now = () => Date.now() } = {}) {
+    if (profiles.some(profile => profile && (profile.competition != null || profile.activityLease != null))) {
+      throw new Error('Competition and activity-lease profiles require the Rust authority; the Node reference cannot safely write them.');
+    }
     this.now = now;
     this.time = now();
     this.allowOwnerBootstrap = allowOwnerBootstrap;

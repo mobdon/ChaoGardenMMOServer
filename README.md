@@ -14,11 +14,13 @@ Read [AGENTS.md](AGENTS.md) for the user's Rust implementation requirements and
 [the coordination board](docs/coordination/BOARD.md) before new work. The Vibe
 batch through `5ec51f9` is **unaccepted**: the new Expo/TypeScript app does not
 fulfill the Rust game/shared-mechanics scope, and the server changes contain
-confirmed build and persistence/deployment blockers. See the
+previously confirmed build failures plus persistence/deployment blockers. See the
 [review findings and repair tasks](docs/coordination/VIBE-REVIEW-2026-11-18.md).
-The commands below describe the intended Rust workflow; they are not a claim
-that this reviewed source snapshot passes them. The working preview continues
-on its earlier tested runtime.
+The Vibe merge repair restores Rust compilation and checks the server, both
+Tiny crates and Node reference separately. See [the PR integration record](docs/coordination/VIBE-MERGES-2026-11-18.md)
+for exact results and PR dispositions. This resolves the build gate only;
+persistence/deployment, unused generated systems and feature acceptance remain
+separate. The working preview continues on its earlier tested runtime.
 
 The later Vibe PR #7 (`282f6ab`) adds a competing NestJS API and TypeScript
 simulation. Those also fail the user's Rust requirement and are unaccepted;
@@ -61,6 +63,8 @@ Configuration:
 | `GAME_PORT` | `3001` | Listener port; `0` selects an available port |
 | `CHAO_OWNER_BOOTSTRAP` | disabled | `1` or `true` grants the first profile owner powers; loopback only |
 | `CHAO_ALLOWED_ORIGINS` | empty | Comma-separated HTTP(S) browser origins |
+| `CHAO_CARE_AUDIT_DIR` | disabled | Ignored local animal/drive audit directory; requires the executable below |
+| `CHAO_CARE_EXECUTABLE` | disabled | Read-only audited Steam executable used to verify native signed care rows |
 | `CHAO_SHUTDOWN_STDIN` | disabled | `1` accepts a `shutdown` line (or launcher EOF) on stdin for a clean save and exit |
 | `CHAO_MAX_CONNECTIONS` | `600` | Simultaneous sockets, including duplicate credentials; admission bound, not a measured capacity claim |
 | `CHAO_MAX_PROFILES` | `10000` | New profile admission bound; existing profiles can still resume |
@@ -71,6 +75,15 @@ Configuration:
 Owner bootstrap must be explicitly enabled for a new private development data
 directory. Existing owner profiles retain their server-stored role with bootstrap
 disabled. Request fields never grant ownership.
+
+Authoritative inventory, feeding, needs, signed item effects and retry/persistence
+behavior are described in [CARE.md](CARE.md), including the Tiny Garden UI
+contract. Native rows require both care paths and source verification; there
+is no guessed native fallback. Item-to-point/need conversion and mission drops
+are labeled MMO adaptations. Native learned behavior, parts and evolution
+conditions remain disabled/unknown. Existing earned forms remain intact.
+Legacy `feed` and consumable `buy` actions now refuse effects; clients must
+send the versioned care requests. Integrate the UI contract before deployment.
 
 The development launcher enables stdin shutdown when starting the Rust binary,
 so Windows restarts flush pending progression before the process exits. A direct
@@ -136,6 +149,10 @@ rings, ordered races, cooperative robot missions, and Chaos evolution. The
 native-roster Karate tournament loop and validated-course race authority are
 documented in [ACTIVITIES.md](ACTIVITIES.md). All 62 extracted original race
 configurations remain disabled until genuine routes and obstacles are verified.
+Opt-in AI race/Karate plans, away-time simulation, saved spectator replays and
+atomic once-only ring receipts are documented in [COMPETITIONS.md](COMPETITIONS.md).
+These bounded adapted competitions reserve the canonical Chao separately from
+resident wandering and Tiny Garden training.
 The
 owner's `mount-dark-walker` action sets `vehicle` to `"dark-chao-walker"`;
 `dismount-vehicle` clears it. While mounted, `mech-fire` (or `attack`) fires a

@@ -369,6 +369,60 @@ async fn assets_serve_exact_allowlisted_bytes_mime_head_and_reject_traversal() {
 }
 
 #[tokio::test]
+async fn native_chao_shadow_png_is_exact_missing_safe_and_head_compatible() {
+    let (directory, state) = fixture(false);
+    let route = "/api/assets/chao-shadow.png";
+    assert_eq!(asset_filename(route).as_deref(), Some("chao-shadow.png"));
+    for method in ["GET", "HEAD"] {
+        let response = request(router(state.clone()), method, route, Body::empty(), &[]).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+    }
+    let imports = directory.path().join("imports");
+    fs::create_dir_all(&imports).unwrap();
+    let bytes = b"\x89PNG\r\n\x1a\nprivate synthetic shadow alias fixture";
+    fs::write(imports.join("chao-shadow.png"), bytes).unwrap();
+    fs::write(
+        imports.join("chao-shadow-source.prs"),
+        b"private native source",
+    )
+    .unwrap();
+    for method in ["GET", "HEAD"] {
+        let response = request(router(state.clone()), method, route, Body::empty(), &[]).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(
+            response.headers()[header::CONTENT_LENGTH],
+            bytes.len().to_string()
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        if method == "HEAD" {
+            assert!(body.is_empty());
+        } else {
+            assert_eq!(&body[..], bytes);
+        }
+    }
+    for path in [
+        "/api/assets/chao-shadow-source.prs",
+        "/api/assets/chao-shadow.json",
+        "/api/assets/chao-shadow.png.json",
+        "/api/assets/CHAO-SHADOW.PNG",
+        "/api/assets/imports/chao-shadow.png",
+        "/api/assets/chao-shadow.png/../profiles.json",
+        "/api/assets/%2e%2e/imports/chao-shadow.png",
+    ] {
+        assert!(asset_filename(path).is_none(), "{path}");
+        assert_eq!(
+            request(router(state.clone()), "GET", path, Body::empty(), &[])
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn audio_ranges_support_closed_open_suffix_and_unsatisfiable_requests() {
     let (dir, state) = fixture(false);
     fs::create_dir_all(dir.path().join("imports")).unwrap();
