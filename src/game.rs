@@ -332,6 +332,7 @@ pub const SHOP_CATALOG: [ShopItem; 1] = [ShopItem {
 
 pub struct Game {
     pub care_catalog: crate::care_catalog::CareCatalog,
+    pub native_tiny: crate::native_tiny::Sources,
     pub tiny_shop_catalog: Option<tiny_garden_core::shop::TinyShopCatalog>,
     pub tiny_egg_source: Option<crate::collection::EggSource>,
     pub activities: ActivityCatalog,
@@ -391,6 +392,7 @@ impl Game {
         }
         let mut game = Self {
             care_catalog: crate::care_catalog::CareCatalog::default(),
+            native_tiny: Default::default(),
             tiny_shop_catalog: None,
             tiny_egg_source: None,
             activities: ActivityCatalog::default(),
@@ -586,6 +588,9 @@ impl Game {
     pub fn disconnect(&mut self, id: &str) {
         if let Some(mut player) = self.players.remove(id) {
             player.connections = player.connections.saturating_sub(1);
+            if let Some(run) = &mut player.tiny_game {
+                run.release_controls();
+            }
             if player.connections == 0 && player.care.tiny_resident {
                 if !player.tiny_game.as_ref().is_some_and(TinyRun::saving) {
                     player.tiny_game = None;

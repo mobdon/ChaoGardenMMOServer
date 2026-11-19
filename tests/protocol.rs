@@ -498,6 +498,9 @@ struct LiveServer {
 impl LiveServer {
     async fn start(owner: bool) -> Self {
         let (directory, state) = fixture(owner);
+        Self::start_state(directory, state).await
+    }
+    async fn start_state(directory: TempDir, state: AppState) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let app = router(state.clone());
@@ -1046,4 +1049,340 @@ async fn phone_socket_result_waits_for_durable_receipt_and_retries_without_dupli
         1
     );
     socket.close(None).await.unwrap();
+}
+
+async fn wire(socket: &mut Socket, v: Value) {
+    socket
+        .send(Message::Text(v.to_string().into()))
+        .await
+        .unwrap();
+}
+async fn native_start(socket: &mut Socket, id: &str) -> Value {
+    wire(
+        socket,
+        json!({"type":"action","action":"tiny-start","gameId":id}),
+    )
+    .await;
+    snapshot_until(socket, |s| s["tinyGame"]["gameId"] == id).await["tinyGame"].clone()
+}
+async fn native_intent(socket: &mut Socket, run: &Value, input: Value) {
+    wire(
+        socket,
+        json!({"type":"tiny-input","sessionId":run,"input":input}),
+    )
+    .await;
+}
+async fn buttons(socket: &mut Socket, run: &Value, held: u16) {
+    native_intent(socket, run, json!({"kind":"native_buttons","held":held})).await;
+}
+fn native_clock(server: &LiveServer, ticks: usize) {
+    let mut g = server.state.game.lock().unwrap();
+    for _ in 0..ticks {
+        g.tick(0.05);
+    }
+}
+fn private_payload(variable: &str) -> std::path::PathBuf {
+    std::env::var_os(variable)
+        .map(Into::into)
+        .unwrap_or_else(|| panic!("Set {variable} to the matching private file to run this test"))
+}
+#[test]
+fn native_sources_fail_closed_on_wrong_bytes_and_report_adapted_when_absent() {
+    let (dir, state) = fixture(false);
+    let sources = &state.game.lock().unwrap().native_tiny;
+    assert_eq!(sources.rules(), "adapted");
+    for row in sources.capabilities().as_object().unwrap().values() {
+        assert_eq!(row["rulesVersion"], "adapted-v1");
+        assert_eq!(row["native"], false);
+    }
+    let path = dir.path().join("bad");
+    let mut cfg = Config::local(dir.path().to_owned(), false);
+    cfg.tiny_a3ve_payload = Some(path.clone());
+    assert!(AppState::load(cfg.clone()).is_err());
+    fs::write(&path, vec![0; 188_716]).unwrap();
+    assert!(AppState::load(cfg.clone()).is_err());
+    cfg.tiny_a3ve_payload = None;
+    cfg.tiny_asoe_payload = Some(path.clone());
+    fs::write(&path, vec![0; 138752]).unwrap();
+    assert!(AppState::load(cfg.clone()).is_err());
+    cfg.tiny_asoe_payload = None;
+    cfg.tiny_garden_payload = Some(path);
+    assert!(AppState::load(cfg).is_err());
+}
+
+#[tokio::test]
+#[ignore = "requires private verified A2NE and A3VE payloads"]
+async fn native_button_socket_and_memory_wallet_survive_write_failure_retry_and_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::local(dir.path().to_owned(), true);
+    cfg.tiny_garden_payload = Some(private_payload("CHAO_TINY_GARDEN_PAYLOAD"));
+    cfg.tiny_a3ve_payload = Some(private_payload("CHAO_TINY_A3VE_PAYLOAD"));
+    let server = LiveServer::start_state(dir, AppState::load(cfg.clone()).unwrap()).await;
+    let status = json_body(
+        request(
+            router(server.state.clone()),
+            "GET",
+            "/api/status",
+            Body::empty(),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        status["tinyGarden"]["nativeTinyGames"]["memory"]["rulesVersion"],
+        "a2ne-memory-v1"
+    );
+    assert_eq!(
+        status["tinyGarden"]["nativeTinyGames"]["ball"]["maxRingReward"],
+        128
+    );
+    assert_eq!(
+        status["tinyGarden"]["nativeTinyGames"]["search"]["native"],
+        false
+    );
+    let owner = session(&server.state, json!({"name":"Native adapter fixture"})).await;
+    let id = owner["player"]["id"].as_str().unwrap();
+    let mut s = server.socket(&owner).await;
+    let ball = native_start(&mut s, "ball").await;
+    assert_eq!(ball["rulesVersion"], "a3ve-ball-v1");
+    assert_eq!(ball["view"]["state"]["board"].as_array().unwrap().len(), 10);
+    assert!(!ball.to_string().contains("feed"));
+    let run = &ball["id"];
+    for invalid in [
+        json!({"kind":"native_buttons","held":256}),
+        json!({"kind":"native_buttons","held":16,"rings":900}),
+        json!({"kind":"ball_shoot","color":"red"}),
+    ] {
+        native_intent(&mut s, run, invalid).await;
+        assert_eq!(
+            save_result(&mut s).await["text"],
+            "Invalid Tiny Garden input."
+        );
+    }
+    native_clock(&server, 12);
+    buttons(&mut s, run, 8).await;
+    buttons(&mut s, run, 0).await;
+    snapshot_until(&mut s, |s| {
+        s["tinyGame"]["view"]["state"]["screen"] == "pause"
+    })
+    .await;
+    buttons(&mut s, run, 128).await;
+    buttons(&mut s, run, 0).await;
+    snapshot_until(&mut s, |s| {
+        s["tinyGame"]["view"]["state"]["quitSelected"] == true
+    })
+    .await;
+    wire(
+        &mut s,
+        json!({"type":"action","action":"tiny-stop","sessionId":run}),
+    )
+    .await;
+    snapshot_until(&mut s, |s| s["tinyGame"].is_null()).await;
+    native_clock(&server, 5);
+    let mem = native_start(&mut s, "memory").await;
+    let run = &mem["id"];
+    assert_eq!(mem["rulesVersion"], "a2ne-memory-v1");
+    let mut known = [None; 30];
+    {
+        // Accelerate only the authority clock. Track faces/occupancy through the
+        // same sanitized projection sent over the socket; never read the seed.
+        let mut g = server.state.game.lock().unwrap();
+        let mut previous = [false; 30];
+        for _ in 0..2400 {
+            let public = g.players[id].tiny_game.as_ref().unwrap().public();
+            let v = &public["view"]["state"];
+            let cells = v["cells"].as_array().unwrap();
+            let occupied: [bool; 30] = std::array::from_fn(|i| cells[i]["occupied"] == true);
+            let from = (0..30).find(|&i| previous[i] && !occupied[i]);
+            let to = (0..30).find(|&i| !previous[i] && occupied[i]);
+            if let (Some(from), Some(to)) = (from, to) {
+                known[to] = known[from].take();
+            }
+            for (i, c) in cells.iter().enumerate() {
+                if let Some(face) = c["face"].as_u64() {
+                    known[i] = Some(face);
+                }
+            }
+            if v["phase"] == "matching" {
+                assert!(cells.iter().all(|c| c["face"].is_null()));
+                break;
+            }
+            previous = occupied;
+            g.tick(0.02);
+        }
+    }
+    let mut snap = snapshot_until(&mut s, |s| {
+        s["tinyGame"]["view"]["state"]["phase"] == "matching"
+    })
+    .await;
+    let blocked = server._directory.path().join("profiles.json.tmp");
+    fs::create_dir(&blocked).unwrap();
+    let mut base = 0;
+    for face in 0..7 {
+        let pair: Vec<_> = (0..30).filter(|&i| known[i] == Some(face)).collect();
+        assert_eq!(pair.len(), 2, "missing public cards for face {face}");
+        for (pick, cell) in pair.into_iter().enumerate() {
+            let v = &snap["tinyGame"]["view"]["state"];
+            base += v["cells"][cell]["ringValue"].as_u64().unwrap();
+            let mut x = v["cursor"][0].as_u64().unwrap() as usize;
+            let mut y = v["cursor"][1].as_u64().unwrap() as usize;
+            let (tx, ty) = (cell % 6, cell / 6);
+            // Shortest wrapped path: at most three direction presses plus A; the
+            // browser-equivalent FIFO never contains more than eight transitions.
+            while (x, y) != (tx, ty) {
+                let mut mask = 0;
+                if x != tx {
+                    if (tx + 6 - x) % 6 <= 3 {
+                        x = (x + 1) % 6;
+                        mask |= 16;
+                    } else {
+                        x = (x + 5) % 6;
+                        mask |= 32;
+                    }
+                }
+                if y != ty {
+                    if (ty + 5 - y) % 5 <= 2 {
+                        y = (y + 1) % 5;
+                        mask |= 128;
+                    } else {
+                        y = (y + 4) % 5;
+                        mask |= 64;
+                    }
+                }
+                buttons(&mut s, run, mask).await;
+                buttons(&mut s, run, 0).await;
+            }
+            buttons(&mut s, run, 1).await;
+            buttons(&mut s, run, 0).await;
+            snap = snapshot_until(&mut s, |s| {
+                let sel = &s["tinyGame"]["view"]["state"]["selected"][pick];
+                sel["column"] == tx && sel["row"] == ty
+            })
+            .await;
+            if pick == 1 {
+                native_clock(&server, 60);
+                snap = snapshot_until(&mut s, |s| {
+                    let v = &s["tinyGame"]["view"]["state"];
+                    v["matchedPairs"] == face + 1
+                        && (v["phase"] != "matching" || v["selected"][0].is_null())
+                })
+                .await;
+            }
+        }
+    }
+    native_clock(&server, 250);
+    let pending = snapshot_until(&mut s, |s| s["tinyGame"]["phase"] == "saving").await;
+    let earned = (base + 60).min(99);
+    assert!(earned > 0);
+    assert_eq!(pending["tinyGame"]["result"]["earnedRings"], earned);
+    assert_eq!(pending["tinyGame"]["result"]["saved"], false);
+    assert_eq!(player(&pending, id)["rings"], 20);
+    assert!(player(&pending, id)["tinyRecords"]["memory"].is_null());
+    let profile_path = server._directory.path().join("profiles.json");
+    let before: Value = serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
+    assert_eq!(before[0]["rings"], 20);
+    assert!(before[0]["tinyRecords"]["memory"].is_null());
+    fs::remove_dir(blocked).unwrap();
+    wire(&mut s, json!({"type":"action","action":"save"})).await;
+    let credited = snapshot_until(&mut s, |s| s["tinyGame"]["phase"] == "finished").await;
+    assert_eq!(credited["tinyGame"]["result"]["saved"], true);
+    assert_eq!(credited["tinyGame"]["result"]["id"], *run);
+    assert_eq!(credited["tinyGame"]["result"]["completed"], true);
+    buttons(&mut s, run, 1).await;
+    native_clock(&server, 10);
+    wire(&mut s, json!({"type":"action","action":"save"})).await;
+    assert_eq!(save_result(&mut s).await["kind"], "saved");
+    s.close(None).await.unwrap();
+    let reload = AppState::load(cfg).unwrap();
+    let g = reload.game.lock().unwrap();
+    let p = g
+        .player_for_token(owner["token"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(p.id, id);
+    assert!(p.admin);
+    assert_eq!(p.rings, 20 + earned as u32);
+    assert_eq!(
+        p.tiny_records["memory"].last_result_id.as_deref(),
+        run.as_str()
+    );
+    assert_eq!(p.tiny_records["memory"].rings_earned, earned as u32);
+    assert_eq!(p.tiny_records["memory"].plays, 1);
+    assert!(!p.tiny_records.contains_key("ball"));
+}
+
+#[tokio::test]
+#[ignore = "requires private verified ASOE payload"]
+async fn native_asoe_socket_owns_lane_clock_cards_and_finalizes_only_after_finish() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::local(dir.path().to_owned(), false);
+    cfg.tiny_asoe_payload = Some(private_payload("CHAO_TINY_ASOE_PAYLOAD"));
+    let server = LiveServer::start_state(dir, AppState::load(cfg.clone()).unwrap()).await;
+    let owner = session(&server.state, json!({"name":"ASOE fixture"})).await;
+    let mut s = server.socket(&owner).await;
+    let run = native_start(&mut s, "rock_paper_scissors").await;
+    let id = &run["id"];
+    assert_eq!(run["rulesVersion"], "asoe-rps-v1");
+    let view = &run["view"]["state"];
+    assert_eq!(view["shots"], 5);
+    assert_eq!(view["lane"], 1);
+    for (lane, card) in view["cards"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(card["lane"], lane);
+        assert_eq!(card["x"], 12 + 64 * lane);
+        assert_eq!(card["y"], 116);
+        assert!(card["gesture"].as_u64().unwrap() <= 2);
+    }
+    assert!(view["targets"].as_array().unwrap().len() < 10);
+    assert!(view.get("rng").is_none());
+    wire(&mut s,json!({"type":"tiny-input","sessionId":id,"input":{"kind":"native_buttons","held":32},"dt":5000})).await;
+    assert_eq!(
+        save_result(&mut s).await["text"],
+        "Invalid Tiny Garden input."
+    );
+    for invalid in [
+        json!({"kind":"rps_select","slot":0}),
+        json!({"kind":"native_buttons","held":8}),
+        json!({"kind":"native_buttons","held":32,"gesture":0}),
+    ] {
+        native_intent(&mut s, id, invalid).await;
+        assert_eq!(save_result(&mut s).await["kind"], "error");
+    }
+    buttons(&mut s, id, 32).await;
+    snapshot_until(&mut s, |s| s["tinyGame"]["view"]["state"]["lane"] == 0).await;
+    // A second identical mask after the stale-input deadline must create a new edge.
+    buttons(&mut s, id, 16).await;
+    snapshot_until(&mut s, |s| s["tinyGame"]["view"]["state"]["lane"] == 1).await;
+    native_clock(&server, 12);
+    buttons(&mut s, id, 16).await;
+    snapshot_until(&mut s, |s| s["tinyGame"]["view"]["state"]["lane"] == 2).await;
+    buttons(&mut s, id, 0).await;
+    native_clock(&server, 604);
+    let finishing = snapshot_until(&mut s, |s| {
+        s["tinyGame"]["view"]["state"]["screen"] == "result"
+    })
+    .await;
+    assert_eq!(finishing["tinyGame"]["phase"], "playing");
+    assert!(finishing["tinyGame"]["result"].is_null());
+    native_clock(&server, 100);
+    let finished = snapshot_until(&mut s, |s| s["tinyGame"]["phase"] == "finished").await;
+    assert_eq!(
+        finished["tinyGame"]["result"]["rulesVersion"],
+        "asoe-rps-v1"
+    );
+    assert_eq!(finished["tinyGame"]["result"]["reason"], "time_up");
+    assert_eq!(finished["tinyGame"]["result"]["rings"], 0);
+    assert_eq!(finished["tinyGame"]["result"]["saved"], true);
+    s.close(None).await.unwrap();
+    let reload = AppState::load(cfg).unwrap();
+    let game = reload.game.lock().unwrap();
+    let p = game
+        .player_for_token(owner["token"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        p.tiny_records["rock_paper_scissors"]
+            .last_result_id
+            .as_deref(),
+        id.as_str()
+    );
+    assert_eq!(p.tiny_records["rock_paper_scissors"].plays, 1);
 }

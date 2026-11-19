@@ -43,6 +43,8 @@ pub struct Config {
     pub owner_bootstrap: bool,
     pub allowed_origins: Vec<String>,
     pub tiny_garden_payload: Option<PathBuf>,
+    pub tiny_a3ve_payload: Option<PathBuf>,
+    pub tiny_asoe_payload: Option<PathBuf>,
 }
 impl Config {
     pub fn from_env() -> Result<Self, String> {
@@ -81,6 +83,8 @@ impl Config {
             address: SocketAddr::new(host, port),
             owner_bootstrap,
             allowed_origins,
+            tiny_asoe_payload: env::var_os("CHAO_TINY_ASOE_PAYLOAD").map(PathBuf::from),
+            tiny_a3ve_payload: env::var_os("CHAO_TINY_A3VE_PAYLOAD").map(PathBuf::from),
             tiny_garden_payload: env::var_os("CHAO_TINY_GARDEN_PAYLOAD").map(PathBuf::from),
         })
     }
@@ -91,6 +95,8 @@ impl Config {
             owner_bootstrap,
             allowed_origins: vec![],
             tiny_garden_payload: None,
+            tiny_a3ve_payload: None,
+            tiny_asoe_payload: None,
         }
     }
 }
@@ -132,6 +138,7 @@ impl AppState {
             Game::new(profiles, terrains, config.owner_bootstrap, now).map_err(io::Error::other)?;
         if let Some(path) = &config.tiny_garden_payload {
             let bytes = crate::care::load_tiny_payload(path)?;
+            game.native_tiny.load_memory(&bytes)?;
             game.tiny_shop_catalog = Some(
                 tiny_garden_core::shop::TinyShopCatalog::from_verified_payload(&bytes)
                     .map_err(io::Error::other)?,
@@ -140,6 +147,12 @@ impl AppState {
                 crate::collection::EggSource::from_verified_payload(&bytes)
                     .map_err(io::Error::other)?,
             );
+        }
+        if let Some(path) = &config.tiny_asoe_payload {
+            game.native_tiny.load_rps(path)?;
+        }
+        if let Some(path) = &config.tiny_a3ve_payload {
+            game.native_tiny.load_ball(path)?;
         }
         match (
             env::var_os("CHAO_CARE_AUDIT_DIR"),
@@ -396,7 +409,7 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
     Json(
         json!({"ok": true, "mode": if state.config.address.ip().is_loopback() { "local-development" } else { "server" },
         "online": game.online_connections(), "setup": setup,"capabilities":{"careMutations":true},
-        "tinyGarden":{"games":["memory","rock_paper_scissors","bounce","ball","search"],"rules":"adapted","maxRingReward":crate::phone::MAX_RING_REWARD,"shop":crate::care::tiny_shop_catalog(&game),"autoResident":true,"observerSockets":true,"training":crate::training::capability(),"ownedEggs":{"enabled":game.tiny_egg_source.is_some(),"rulesVersion":crate::collection::RULES,"rotationMs":crate::collection::ROTATION_MS,"maxHeldEggs":1,"maxChao":crate::collection::MAX_CHAO,"selectionEnabled":false}},
+        "tinyGarden":{"games":["memory","rock_paper_scissors","bounce","ball","search"],"rules":game.native_tiny.rules(),"nativeTinyGames":game.native_tiny.capabilities(),"maxRingReward":game.native_tiny.max_ring_reward(),"shop":crate::care::tiny_shop_catalog(&game),"autoResident":true,"observerSockets":true,"training":crate::training::capability(),"ownedEggs":{"enabled":game.tiny_egg_source.is_some(),"rulesVersion":crate::collection::RULES,"rotationMs":crate::collection::ROTATION_MS,"maxHeldEggs":1,"maxChao":crate::collection::MAX_CHAO,"selectionEnabled":false}},
         "terrain": {"loaded": game.terrains.keys().collect::<Vec<_>>(), "flatFallback": TERRAIN_ZONES.into_iter().filter(|zone| !game.terrains.contains_key(*zone)).collect::<Vec<_>>()}}),
     )
 }

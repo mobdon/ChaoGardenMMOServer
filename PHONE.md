@@ -1,15 +1,27 @@
 # Tiny Garden phone/playground protocol
 
-The primary Rust authority hosts five playable Tiny Garden minigame
-adaptations: `memory`, `rock_paper_scissors`, `bounce`, `ball`, and `search`.
-They use the same canonical Chao profile and bearer credential as the main
-browser game. They do not execute an original GBA ROM or claim native timing,
-graphics, physics or complete engine fidelity. Core rules and source/evidence
-limits are documented in `crates/tiny-garden-games/README.md`.
+The Rust authority hosts five games using the canonical Chao and credential:
+`memory`, `rock_paper_scissors`, `bounce`, `ball`, and `search`. On startup
+the following private decoded source files select cartridge-backed Rust rules.
+Explicitly configured missing, invalid or mismatched files fail startup. No
+file is distributed. Unconfigured games use the existing adapted rules in
+`crates/tiny-garden-games`. The retained Node reference does not host them.
 
-The Node implementation remains an older gameplay reference and does not host
-these minigames. The Rust `/api/status` response advertises
-`tinyGarden.games`, `rules:"adapted"`, and `maxRingReward:100`.
+| Game | Server configuration | Run rulesVersion | Maximum credited rings |
+| --- | --- | --- | ---: |
+| Memory | `CHAO_TINY_GARDEN_PAYLOAD` (A2NE) | `a2ne-memory-v1` | 99 |
+| Rock Paper Scissors | `CHAO_TINY_ASOE_PAYLOAD` (ASOE) | `asoe-rps-v1` | 99 |
+| Ball | `CHAO_TINY_A3VE_PAYLOAD` (A3VE) | `a3ve-ball-v1` | 128 |
+| Unconfigured games, Bounce and Search | no verified full round bound | `adapted-v1` | 100 |
+
+`GET /api/status` lists the available IDs in `tinyGarden.games` and reports
+`tinyGarden.nativeTinyGames[gameId]={native,rulesVersion,maxRingReward}`. The
+aggregate `rules` field is `per-game` when any native title is selected and
+`adapted` otherwise; the aggregate `maxRingReward` is the largest per-game
+limit. Choose controls using the **active run's** `rulesVersion`. Source-backed
+rules cover the playable round; they do not imply native browser assets,
+authentic BIOS execution or an embedded ROM emulator. Per-game CPU parity
+evidence and exclusions are documented in `crates/tiny-garden-core/NATIVE_*.md`.
 
 ## Credentials and session identity
 
@@ -39,6 +51,7 @@ Snapshots include:
     "id":"server-generated-uuid",
     "gameId":"memory",
     "phase":"playing",
+    "rulesVersion":"adapted-v1",
     "startedAt":123456,
     "view":{"game":"memory","state":{}},
     "result":null
@@ -47,19 +60,50 @@ Snapshots include:
 }
 ```
 
-`state` contains each core's public `*View` fields, in snake_case. Hidden board
+Adapted `state` uses the existing snake_case public fields. Native states use
+camelCase. Memory sends a 6-column × 5-row array of cells (only visible faces),
+a cursor and the current walker and selected cards. Ball sends a 10×10 board,
+1-based stage, screen, scroll, player, current shot/resolution and visible
+falling rings in pixels. RPS sends its clock, visible targets, three current
+card states, lane, marker, shots and actor; hidden targets and unrevealed
+replacement gestures are excluded. Hidden board
 faces, future Search target order and PRNG seeds are not serialized. The self
 player retains seven canonical stats and saved `tinyRecords` in snapshots.
 
 ## Input and exit
 
-Send only an input intent, bound to the current server session ID:
+For native rules send the current button mask. Edges, elapsed time and score
+belong to the authority. The host accepts up to eight queued transitions,
+deduplicates unchanged masks and consumes one per native frame. A release
+wins if the queue is full. For a held key, refresh its mask more frequently
+than 350 ms. Send zero on release, blur or navigation. Any disconnect clears
+held input even if another connection keeps the round alive.
+
+```json
+{"type":"tiny-input","sessionId":"server-generated-uuid","input":{"kind":"native_buttons","held":16}}
+```
+
+A=1, B=2, Start=8, Right=16, Left=32, Up=64, Down=128. Ball accepts these
+bits (including native pause/quit); Memory accepts all except Start; RPS
+accepts only A/Left/Right. A dismisses native result screens. The active
+pause menu is not ported for Memory/RPS. RPS fires the current lane's
+source-generated card; the client cannot select a gesture. Unsupported bits,
+additional fields and adapted intents are rejected for a native run. If a
+native core rejects an unrepresentable cartridge state, the host shows
+`phase:"error"`; cancel the round to start again. It yields no payout.
+
+A host frame accumulator uses the GBA cadence of 16,777,216 clock cycles per
+second and 280,896 per frame, driven by the existing 50 ms simulation ticks.
+Skipped service ticks therefore stretch elapsed wall time. The browser sends
+no frame counter, seed, time, finish or reward.
+
+For adapted rules, send an input intent bound to the same server session ID:
 
 ```json
 {"type":"tiny-input","sessionId":"server-generated-uuid","input":{"kind":"memory_flip","cell":3}}
 ```
 
-The core README lists all input kinds and bounds. Surplus fields inside an
+The adapted core README lists its input kinds and bounds. Surplus fields inside an
 intent are rejected, including forged score/damage/time/result claims. Move
 input is bounded to integers -1..1, throttled to 25 Hz and released after 350 ms
 without another movement intent. Other inputs are throttled to 12.5 Hz, with
@@ -83,10 +127,10 @@ finished screen directly.
 
 ## Atomic earned rewards
 
-Native-guide score schedules and MMO currency limits are separate. The service
-caps one terminal game's credited reward at 100 rings and caps the wallet at
-999999. `earnedRings` preserves the core's earned amount before those caps. The
-100-ring cap is an MMO adaptation, including when Search's unresolved default
+The server uses the per-game limits above and caps the canonical wallet at
+999999. Native Ball can retain caught rings on loss or cartridge pause/quit.
+Using the protocol’s explicit tiny-stop always cancels an unearned round. `earnedRings` preserves the core's earned amount before those caps. The adapted
+100-ring cap is an MMO rule, including when Search's unresolved default
 schedule totals 140 or an endless game earns more.
 
 A terminal core result enters phase `saving`. Its proposed ring credit and
@@ -106,6 +150,7 @@ Only a durable commit emits:
   "gameId":"memory",
   "rings":86,
   "earnedRings":86,
+  "rulesVersion":"adapted-v1",
   "reason":"all_pairs",
   "completed":true,
   "elapsedMs":5000,

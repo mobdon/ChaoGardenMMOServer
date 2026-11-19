@@ -4,6 +4,7 @@ pub mod care_catalog;
 pub mod collection;
 pub mod evolution;
 pub mod game;
+pub mod native_tiny;
 pub mod phone;
 pub mod service;
 pub mod training;

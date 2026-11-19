@@ -1,5 +1,6 @@
-//! Adapted Tiny Garden games: input-only control, one run per profile and a
+//! Tiny Garden games: input-only control, one run per profile and a
 //! staged reward whose ring credit and receipt share one atomic profile write.
+use crate::native_tiny::NativeRun;
 use crate::{
     game::{Event, Game, Input, Player},
     watch,
@@ -10,7 +11,8 @@ use std::collections::BTreeMap;
 use tiny_garden_games::{TinyGame, TinyInput, TinySession};
 use uuid::Uuid;
 
-const GAME_IDS: [&str; 5] = ["memory", "rock_paper_scissors", "bounce", "ball", "search"];
+pub(crate) const GAME_IDS: [&str; 5] =
+    ["memory", "rock_paper_scissors", "bounce", "ball", "search"];
 pub const MAX_RING_REWARD: u32 = 100;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -68,21 +70,50 @@ pub struct TinyRun {
     pub id: String,
     pub game_id: String,
     pub started_at: f64,
-    pub core: TinySession,
+    core: RunCore,
     last_move_at: f64,
     pending: Option<PendingReward>,
     result: Option<Value>,
     save_failed: bool,
 }
 
+#[derive(Clone, Debug)]
+enum RunCore {
+    Adapted(Box<TinySession>),
+    Native(Box<NativeRun>),
+}
 impl TinyRun {
+    pub fn adapted(&self) -> Option<&TinySession> {
+        if let RunCore::Adapted(core) = &self.core {
+            Some(core)
+        } else {
+            None
+        }
+    }
+    pub(crate) fn release_controls(&mut self) {
+        if let RunCore::Native(core) = &mut self.core {
+            core.release();
+        }
+    }
+    fn rules(&self) -> &'static str {
+        match &self.core {
+            RunCore::Adapted(_) => "adapted-v1",
+            RunCore::Native(core) => core.rules(),
+        }
+    }
+    fn view(&self) -> Value {
+        match &self.core {
+            RunCore::Adapted(core) => json!(core.view()),
+            RunCore::Native(core) => json!({"game":self.game_id,"state":core.view()}),
+        }
+    }
     pub fn saving(&self) -> bool {
         self.pending.is_some()
     }
     pub fn public(&self) -> Value {
         json!({"id":self.id,"gameId":self.game_id,"startedAt":self.started_at,
-            "phase":if self.pending.is_some(){"saving"}else if self.result.is_some(){"finished"}else{"playing"},
-            "view":self.core.view(),"result":self.pending.as_ref().map(|p|&p.result).or(self.result.as_ref())})
+            "phase":if self.pending.is_some(){"saving"}else if self.result.is_some(){"finished"}else if matches!(&self.core, RunCore::Native(core) if core.halted()){"error"}else{"playing"},
+            "rulesVersion":self.rules(),"view":self.view(),"result":self.pending.as_ref().map(|p|&p.result).or(self.result.as_ref())})
     }
 }
 
@@ -118,6 +149,15 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
                 return;
             };
             let game_id: TinyGame = serde_json::from_value(json!(id)).expect("fixed game ID");
+            let seed = Uuid::new_v4().as_u128() as u64;
+            let core = match game.native_tiny.begin(game_id, seed as u32) {
+                Ok(Some(run)) => RunCore::Native(Box::new(run)),
+                Ok(None) => RunCore::Adapted(Box::new(TinySession::new(game_id, seed))),
+                Err(_) => {
+                    game.notice(&player.id, "The native round could not start.", "error");
+                    return;
+                }
+            };
             if game.teleport(player, "hub", 0., 6.).is_err() {
                 game.notice(
                     &player.id,
@@ -136,7 +176,7 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
                 id: Uuid::new_v4().to_string(),
                 game_id: id.to_owned(),
                 started_at: game.time,
-                core: TinySession::new(game_id, Uuid::new_v4().as_u128() as u64),
+                core,
                 last_move_at: game.time,
                 pending: None,
                 result: None,
@@ -179,6 +219,16 @@ pub fn input(game: &mut Game, player: &mut Player, message: &Value) {
     if message["sessionId"] != run.id || run.pending.is_some() || run.result.is_some() {
         return;
     }
+    if let RunCore::Native(core) = &mut run.core {
+        let envelope_ok = message.as_object().is_some_and(|m| {
+            m.keys()
+                .all(|k| matches!(k.as_str(), "type" | "input" | "sessionId"))
+        });
+        if !envelope_ok || core.buttons(&message["input"], game.time).is_err() {
+            game.notice(&player.id, "Invalid Tiny Garden input.", "error");
+        }
+        return;
+    }
     let intent: TinyInput = match serde_json::from_value(message["input"].clone()) {
         Ok(input) => input,
         Err(_) => {
@@ -192,7 +242,10 @@ pub fn input(game: &mut Game, player: &mut Player, message: &Value) {
         return;
     }
     let run = player.tiny_game.as_mut().unwrap();
-    if run.core.input(intent).is_err() {
+    let RunCore::Adapted(core) = &mut run.core else {
+        return;
+    };
+    if core.input(intent).is_err() {
         return;
     }
     if moving {
@@ -208,12 +261,15 @@ pub fn tick(game: &mut Game, player: &mut Player, dt: f64) {
     if run.pending.is_some() || run.result.is_some() {
         return;
     }
-    if game.time - run.last_move_at > 350. {
-        let _ = run.core.input(TinyInput::Move { x: 0, y: 0 });
+    match &mut run.core {
+        RunCore::Native(core) => core.advance(dt, game.time),
+        RunCore::Adapted(core) => {
+            if game.time - run.last_move_at > 350. {
+                let _ = core.input(TinyInput::Move { x: 0, y: 0 });
+            }
+            let _ = core.advance((dt * 1000.).round().clamp(1., 100.) as u32);
+        }
     }
-    let _ = run
-        .core
-        .advance((dt * 1000.).round().clamp(1., 100.) as u32);
     prepare_reward(game, player);
 }
 
@@ -221,19 +277,27 @@ fn prepare_reward(game: &mut Game, player: &mut Player) {
     let Some(run) = &mut player.tiny_game else {
         return;
     };
-    if run.pending.is_some() || run.result.is_some() || run.core.outcome().is_none() {
+    if run.pending.is_some() || run.result.is_some() {
         return;
     }
-    let Ok(outcome) = run.core.claim_result() else {
-        return;
+    let rules = run.rules();
+    let (value, limit) = match &mut run.core {
+        RunCore::Adapted(core) => {
+            let Ok(outcome) = core.claim_result() else {
+                return;
+            };
+            (outcome, MAX_RING_REWARD)
+        }
+        RunCore::Native(core) => {
+            let Some(outcome) = core.take_outcome() else {
+                return;
+            };
+            (outcome, core.max_ring_reward())
+        }
     };
-    let value = serde_json::to_value(outcome).expect("core result serialization");
-    let earned = value["rings"]
-        .as_u64()
-        .unwrap_or(0)
-        .min(u64::from(u32::MAX)) as u32;
+    let earned = value.rings;
     let credited = earned
-        .min(MAX_RING_REWARD)
+        .min(limit)
         .min(999999_u32.saturating_sub(player.rings));
     let mut record = player
         .tiny_records
@@ -244,11 +308,11 @@ fn prepare_reward(game: &mut Game, player: &mut Player) {
         return;
     }
     record.plays = (record.plays + 1).min(99999);
-    record.completions = (record.completions + u32::from(value["completed"] == true)).min(99999);
+    record.completions = (record.completions + u32::from(value.completed)).min(99999);
     record.rings_earned = record.rings_earned.saturating_add(credited).min(999999);
     record.last_result_id = Some(run.id.clone());
     let result = json!({"id":run.id,"gameId":run.game_id,"rings":credited,"earnedRings":earned,
-        "reason":value["reason"],"completed":value["completed"],"elapsedMs":value["elapsed_ms"],"saved":false});
+        "rulesVersion":rules,"reason":value.reason,"completed":value.completed,"elapsedMs":value.elapsed_ms,"saved":false});
     run.pending = Some(PendingReward {
         rings_after: player.rings + credited,
         record,

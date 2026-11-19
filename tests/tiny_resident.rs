@@ -43,7 +43,14 @@ fn run_id(game: &Game, id: &str) -> String {
     game.players[id].tiny_game.as_ref().unwrap().id.clone()
 }
 fn memory_view(game: &Game, id: &str) -> MemoryView {
-    match game.players[id].tiny_game.as_ref().unwrap().core.view() {
+    match game.players[id]
+        .tiny_game
+        .as_ref()
+        .unwrap()
+        .adapted()
+        .unwrap()
+        .view()
+    {
         TinyView::Memory(view) => view,
         _ => panic!("expected public Memory view"),
     }
