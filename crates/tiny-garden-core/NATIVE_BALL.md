@@ -51,6 +51,8 @@ are `0x8205` for the ceiling, `0xA209` and `0x9209` for the two colors, and
 `0xB20D`, `0xB211`, `0xB215` for the ring bundles. The high bits select the
 original palette bank. The player child reads the native OBJ descriptor at
 `0x2DCFC`; native caught ring animation uses tiles `0x143` / `0x147`.
+For zero-based board indices the cell top-left is `(16+16*c,16*r-scroll)`. Falling-ring and shot coordinates are pixel anchors (the server converts ring Y from signed 16.16). The player child anchor is `(player.x,159)`; its idle/left two-piece offsets are (-13,-31) and (-5,-31); the right movement/throw pair uses (-12,-31) and (+4,-31). These offsets come from the descriptors selected at DF8E–DF98, not a centered sprite rectangle. The shot at E134 uses descriptor 2DD1C with (-8,-8).
+
 No source tiles, palettes, decoded programs, saves, or audio are included.
 
 ## Verification and limits
@@ -76,7 +78,7 @@ start from generated boards. They compare board cells, remaining markers,
 horizontal position, player phase, column, timer, scroll, board flags and ring
 total on every frame through four victories and four losses.
 
-A 512-case run matched 4,608 operation cases and 12 replays. The four win-stage replays ran 4,836, 6,028, 6,835, and 7,359 frames and collected 6, 10, 13, and 11 rings. Full sessions took 70 frames for a pause quit, 1,132 for an early loss, 26,144 for a fourth-stage loss with 42 rings, and 26,826 for a four-stage victory with 51 rings. The last two carry the original RNG and rings across all four stages. The full-session digest includes the board, stage and ring count at every frame, including projectiles still active behind a result banner.
+A 512-case run matched 4,608 operation cases and 13 replays. The four win-stage replays ran 4,836, 6,028, 6,835, and 7,359 frames and collected 6, 10, 13, and 11 rings. Full sessions took 70 frames for a pause quit, 1,132 for an early loss, 26,144 for a fourth-stage loss with 42 rings, and 26,826 for a four-stage victory with 51 rings. A second pause-quit trace (seed 26) catches one ring on frame 854, then returns to Garden on frame 877 with that ring. The server fixture replays those buttons using the same source gate and proves the single partial award and receipt survive a repeated save and restart. The late-loss and full-win traces carry the original RNG and rings across all four stages. The full-session digest includes the board, stage and ring count at every frame, including projectiles still active behind a result banner.
 
 Full round checks enter the actual A3VE `0xD294` loader, dispatch its native
 frame callback, execute its linked-list task allocator and scheduler, and
@@ -86,5 +88,6 @@ supply BIOS arithmetic or omit graphics submission, sound, and the garden
 scene backup/restore. The lower-level operation oracle isolates task creation
 when inspecting its exact emitted arguments. There is no instruction-level
 claim for hardware I/O, art/audio reproduction, or the ROM's surrounding
-Garden, title and save engine. Complete phone rendering, service authorization,
-live controls, frame pacing and durable payout are outside this crate change.
+Garden, title and save engine. The source-gated service adapter, its clock and atomic payout are documented
+in `../../PHONE.md`; phone graphics and presentation remain separate from
+these CPU gameplay checks.

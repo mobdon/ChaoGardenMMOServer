@@ -522,6 +522,9 @@ def session_case(o, mode, seed):
         held = 0
         if mode == "quit":
             held = {48: 8, 52: 128, 54: 1}.get(tick, 0)
+        elif mode == "partial_quit":
+            # Win one ring then quit via the actual cartridge pause menu.
+            held = 2 if tick <= 854 and tick % 20 == 0 else {855: 8, 859: 128, 861: 1}.get(tick, 0)
         elif mode == "loss":
             held = 1 if tick > 1090 and tick % 3 == 0 else 0
         elif 48 <= tick <= 56:
@@ -610,13 +613,16 @@ def main():
     sessions = {}
     for mode, seed in [
         ("quit", 21),
+        ("partial_quit", 26),
         ("loss", 23),
         ("late_loss", 0x13579),
         ("clear", 1),
     ]:
         case, events = session_case(scheduler, mode, seed)
-        if events[0][-1][3] != {"quit": 1, "loss": 2, "late_loss": 2, "clear": 3}[mode]:
+        if events[0][-1][3] != {"quit": 1, "partial_quit": 1, "loss": 2, "late_loss": 2, "clear": 3}[mode]:
             raise AssertionError("wrong native ending for " + mode)
+        if mode == "partial_quit" and events[0] != [[854, 0, 1, 0], [877, 0, 1, 1]]:
+            raise AssertionError("partial-quit capture or original award changed")
         sessions[len(cases)] = events
         cases.append(case)
     crate = Path(__file__).resolve().parents[1]

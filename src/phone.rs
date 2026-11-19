@@ -380,3 +380,79 @@ pub fn commit_rewards(game: &mut Game) {
     }
     watch::maintain_all(game);
 }
+
+#[cfg(test)]
+mod native_receipt {
+    use super::*;
+    use crate::service::{AppState, Config};
+
+    #[test]
+    #[ignore = "requires the private verified A3VE payload"]
+    fn native_ball_pause_quit_saves_exact_original_partial_award() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::local(dir.path().to_owned(), true);
+        cfg.tiny_a3ve_payload = Some(
+            std::env::var_os("CHAO_TINY_A3VE_PAYLOAD")
+                .expect("explicit private A3VE payload required")
+                .into(),
+        );
+        let state = AppState::load(cfg.clone()).unwrap();
+        let mut g = state.game.lock().unwrap();
+        let session = g
+            .create_session(&json!({"name":"Original Ball receipt"}))
+            .unwrap();
+        let id = session["player"]["id"].as_str().unwrap();
+        g.connect(id);
+        g.action(id, &json!({"action":"tiny-start","gameId":"ball"}));
+        // Only this test fixes the host seed. The socket has no seed or score field.
+        let round = g.native_tiny.begin(TinyGame::Ball, 26).unwrap().unwrap();
+        let run = g.players.get_mut(id).unwrap().tiny_game.as_mut().unwrap();
+        run.core = RunCore::Native(Box::new(round));
+        let session_id = run.id.clone();
+        // This short, deterministic input trace is independently observed on the
+        // A3VE CPU: first catch on frame 854; Start, Down, A quit with one ring
+        // and the garden return on frame 877. No scores are submitted.
+        let mut previous = 0;
+        for frame in 1..=877 {
+            let held = match frame {
+                855 => 8,
+                859 => 128,
+                861 => 1,
+                n if n <= 854 && n % 20 == 0 => 2,
+                _ => 0,
+            };
+            if held != previous {
+                g.tiny_input(id,&json!({"type":"tiny-input","sessionId":session_id,"input":{"kind":"native_buttons","held":held}}));
+                previous = held;
+            }
+            // One cartridge frame, rounded upward one nanosecond.
+            g.tick(4389. / 262144. + 1e-9);
+            let p = &g.players[id];
+            assert_eq!(p.rings, 20);
+            let r = p.tiny_game.as_ref().unwrap();
+            assert_eq!(r.saving(), frame == 877);
+            if frame == 854 {
+                assert_eq!(r.public()["view"]["state"]["rings"], 1);
+            }
+        }
+        let pending = g.players[id].tiny_game.as_ref().unwrap().public();
+        assert_eq!(pending["result"]["rings"], 1);
+        assert_eq!(pending["result"]["reason"], "quit");
+        assert_eq!(pending["result"]["completed"], false);
+        state.persist(&mut g).unwrap();
+        state.persist(&mut g).unwrap();
+        assert_eq!(g.players[id].rings, 21);
+        drop(g);
+        let reload = AppState::load(cfg).unwrap();
+        let game = reload.game.lock().unwrap();
+        let p = game
+            .player_for_token(session["token"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(p.rings, 21);
+        assert_eq!(p.tiny_records["ball"].plays, 1);
+        assert_eq!(
+            p.tiny_records["ball"].last_result_id.as_deref(),
+            Some(session_id.as_str())
+        );
+    }
+}
