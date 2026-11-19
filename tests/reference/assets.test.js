@@ -11,7 +11,7 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const filenames = [
   ...['chao', 'hub', 'garden', 'hero-garden', 'dark-garden', 'neutral-chaos', 'hero-chaos', 'dark-chaos', 'tails', 'knuckles', 'amy', 'chaos-emerald', 'tree-neutral', 'dark-chao-walker', 'dark-walker-shot', 'dark-walker-booster', 'shadow-air-shoes-left', 'shadow-air-shoes-right', 'knuckles-hammer-gloves-left', 'knuckles-hammer-gloves-right'].map((name) => `${name}.glb`),
   ...['red', 'purple', 'cyan', 'green', 'blue', 'yellow', 'white'].map((color) => `emerald-${color}.glb`),
-  'chao-flame.png', 'emotion-flame.png', 'emotion-flame-atlas.png', 'emotion-sphere.png',
+  'chao-flame.png', 'chao-shadow.png', 'emotion-flame.png', 'emotion-flame-atlas.png', 'emotion-sphere.png',
   'chao-stat-panel.png', 'chao-stat-font.png', 'chao-race-parameter.png', 'discord-icon.png', 'login-chao.png',
   'tiny-neutral-chaos.png', 'tiny-hero-chaos.png', 'tiny-dark-chaos.png',
   'shadow-skate-motion.json',
@@ -46,6 +46,7 @@ test('local asset endpoint serves exact allowlisted files and rejects path trave
     await mkdir(join(filename, '..'), { recursive: true });
     await writeFile(filename, Buffer.alloc(256, 17));
   }
+  await writeFile(join(dataDir, 'imports', 'chao-shadow-source.prs'), 'private native source fixture');
   await mkdir(join(dataDir,'activities'));
   await writeFile(join(dataDir,'activities','races.json'),JSON.stringify({courses:[{id:'fixture-course',name:'Fixture course',group:'test',available:false,source:{evidence:'fixture-source'}}]}));
   const child = spawn(process.execPath, ['--input-type=module', '-e',
@@ -98,12 +99,23 @@ test('local asset endpoint serves exact allowlisted files and rejects path trave
         assert.equal(JSON.parse(get.body).error, 'Local asset not found.');
       }
     }
+    await rm(join(dataDir, 'imports', 'chao-shadow.png'));
+    for (const method of ['GET', 'HEAD']) {
+      const missing = await request(port, '/api/assets/chao-shadow.png', { method });
+      assert.equal(missing.status, 404);
+      assert.equal(missing.headers['content-type'], 'application/json; charset=utf-8');
+      if (method === 'HEAD') assert.equal(missing.body.length, 0);
+      else assert.equal(JSON.parse(missing.body).error, 'Local asset not found.');
+    }
     for (const path of [
       '/api/assets/unknown.glb', '/api/assets/../../profiles.json',
       '/api/assets/%2e%2e/%2e%2e/profiles.json', '/api/assets/../assets/chao.glb',
       '/api/assets/%2e%2e/assets/chao.glb', '/api/assets/chao.glb/../../profiles.json',
       '/api/assets/activities/race-normal.glb', '/api/assets/activities/../chao.glb',
       '/api/assets/unknown.json', '/api/assets/shadow-skate-motion.json/../profiles.json',
+      '/api/assets/chao-shadow-source.prs', '/api/assets/chao-shadow.json',
+      '/api/assets/chao-shadow.png.json', '/api/assets/CHAO-SHADOW.PNG',
+      '/api/assets/imports/chao-shadow.png', '/api/assets/chao-shadow.png/../profiles.json',
     ]) assert.equal((await request(port, path)).status, 404, path);
     assert.equal((await request(port, '/api/assets/chao.glb', { origin: 'https://example.com' })).status, 403);
   } finally {
