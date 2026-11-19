@@ -63,11 +63,22 @@ Configuration:
 | `GAME_PORT` | `3001` | Listener port; `0` selects an available port |
 | `CHAO_OWNER_BOOTSTRAP` | disabled | `1` or `true` grants the first profile owner powers; loopback only |
 | `CHAO_ALLOWED_ORIGINS` | empty | Comma-separated HTTP(S) browser origins |
+| `CHAO_CARE_AUDIT_DIR` | disabled | Ignored local animal/drive audit directory; requires the executable below |
+| `CHAO_CARE_EXECUTABLE` | disabled | Read-only audited Steam executable used to verify native signed care rows |
 | `CHAO_SHUTDOWN_STDIN` | disabled | `1` accepts a `shutdown` line (or launcher EOF) on stdin for a clean save and exit |
 
 Owner bootstrap must be explicitly enabled for a new private development data
 directory. Existing owner profiles retain their server-stored role with bootstrap
 disabled. Request fields never grant ownership.
+
+Authoritative inventory, feeding, needs, signed item effects and retry/persistence
+behavior are described in [CARE.md](CARE.md), including the Tiny Garden UI
+contract. Native rows require both care paths and source verification; there
+is no guessed native fallback. Item-to-point/need conversion and mission drops
+are labeled MMO adaptations. Native learned behavior, parts and evolution
+conditions remain disabled/unknown. Existing earned forms remain intact.
+Legacy `feed` and consumable `buy` actions now refuse effects; clients must
+send the versioned care requests. Integrate the UI contract before deployment.
 
 The development launcher enables stdin shutdown when starting the Rust binary,
 so Windows restarts flush pending progression before the process exits. A direct
