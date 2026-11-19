@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod gba;
+pub mod native_growth;
 pub mod native_save;
 pub mod shop;
 pub mod training;
