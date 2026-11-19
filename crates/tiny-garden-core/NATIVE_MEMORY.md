@@ -92,9 +92,14 @@ are modeled. Native RNG and software arithmetic execute as original code.
 The final local corpus passed 4,101 boards and shuffle initializations, 4,096
 matching frame cases, 4,096 traversal frame cases, 32 complete 270-frame reveal
 traces and 48 complete result traces comprising 14,190 original result frames.
-These are CPU comparisons of each constituent operation; complete-round
-assembly is covered by the Rust public-play test, not claimed as a full CPU
-trace or integrated MMO service test.
+The separate `tools/native_memory_round_probe.rs` also plays solely from the
+public peek, visible pushes and button inputs. Forty complete rounds compare
+79,755 actual native frames through result completion: phase, score,
+mistakes/pairs, all 30 occupied cells and legally visible faces, matching
+cursor, Chao and pushed-card positions. The corpus covers ordinary wins,
+horizontal trips, one/two mistake wins and third-mistake losses. This proves
+phase assembly and the compared public view; it does not prove pause,
+uncompared graphics/audio, an MMO adapter or durable rewards.
 
 ```powershell
 cargo test --manifest-path crates/tiny-garden-core/Cargo.toml --test native_memory

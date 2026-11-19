@@ -46,7 +46,8 @@ def compile_harness(output, cargo):
     (output / "src").mkdir()
     (output / "Cargo.toml").write_text(
         '[package]\nname="native-memory-proof"\nversion="0.0.0"\nedition="2024"\n'
-        '[workspace]\n[dependencies]\ntiny-garden-core={path=' + json.dumps(str(crate).replace("\\", "/")) + '}\n', encoding="utf-8",
+        '[workspace]\n[dependencies]\ntiny-garden-core={path=' + json.dumps(str(crate).replace("\\", "/")) + '}\n'
+        '[[bin]]\nname="native-memory-round-proof"\npath=' + json.dumps(str(crate / "tools" / "native_memory_round_probe.rs").replace("\\", "/")) + '\n', encoding="utf-8",
     )
     (output / "src" / "main.rs").write_text(
         '#![allow(dead_code)]\nuse tiny_garden_core::{native_growth,shop};\n'
@@ -207,6 +208,44 @@ class Oracle:
                 offsets=[off for off,(x,y)in enumerate(zip(native,actual))if x!=y]
                 raise AssertionError(f"result won{won} mistakes{mistakes} rings{rings} frame{frame} offsets{offsets} native{native.hex()} rust{actual.hex()}")
 
+    def round(self, seed, expected):
+        self.board(seed)
+        self.uc.mem_write(0x030019D8,struct.pack("<I",4))
+        self.uc.mem_write(0x030019E0,bytes(8))
+        self.uc.mem_write(0x03001986,struct.pack("<BBh",1,0,17))
+        frames=len(expected)//82
+        for frame in range(frames):
+            view=expected[frame*82:(frame+1)*82]
+            pressed,held=struct.unpack_from("<HH",view)
+            self.reset_registers()
+            self.uc.mem_write(0x030043F0,struct.pack("<H",held))
+            self.uc.mem_write(0x030043F4,struct.pack("<H",pressed))
+            self.execute(0x0200A8A4)
+            raw=bytes(self.uc.mem_read(0x03001970,RECORD_LEN))
+            phase=struct.unpack_from("<I",raw,0x68)[0]
+            public_phase=7 if phase in [8,9] else phase
+            if bytes([public_phase,raw[0x46],raw[0x88],raw[0]])!=view[4:8]:
+                raise AssertionError(f"round seed{seed} frame{frame} phase/stats native{[public_phase,raw[0x46],raw[0x88],raw[0]]} rust{list(view[4:8])}")
+            if phase==6 and raw[0x3e:0x40]!=view[8:10]:
+                raise AssertionError(f"round seed{seed} frame{frame} cursor differs")
+            for position,card in enumerate(raw[0x20:0x3e]):
+                occupied,face=view[10+position*2:12+position*2]
+                if occupied!=(card!=255):
+                    raise AssertionError(f"round seed{seed} frame{frame} cell{position} occupancy differs")
+                if card!=255:
+                    tile=struct.unpack("<H",bytes(self.uc.mem_read(0x07000004+(11+card)*8,2)))[0]&0x3ff
+                    native_face=255 if tile==0x6f else card>>1
+                    if native_face!=face:
+                        raise AssertionError(f"round seed{seed} frame{frame} phase{phase} cell{position} face native{native_face} rust{face},timer{struct.unpack_from('<I',raw,0x74)[0]}")
+            if view[70]:
+                native=raw[0x54:0x58]+bytes([struct.unpack_from("<I",raw,0x50)[0],raw[0x4f]])
+                if native!=view[71:77]:
+                    raise AssertionError(f"round seed{seed} frame{frame} walker differs")
+                if bool(view[77])!=(raw[0x58]!=255) or (view[77] and raw[0x5a:0x5e]!=view[78:82]):
+                    raise AssertionError(f"round seed{seed} frame{frame} moving card differs")
+        if not frames or expected[-78]!=0:
+            raise AssertionError("round did not reach native completion")
+
 
 def matching_cases(count):
     gen = random.Random(0xA2_B6_A4)
@@ -308,6 +347,10 @@ def main():
     endings=[(won,mistakes,rings,press)for won in[True,False]for mistakes in([0,1,2]if won else[3])for rings in[0,24,42]for press in[0,60,200,1000]]
     encoded_endings=b"".join(struct.pack("<BBBH",won,mistakes,rings,press)for won,mistakes,rings,press in endings)
     result_trace=subprocess.run([str(executable),str(a.payload.resolve()),"result"],input=encoded_endings,capture_output=True,check=True,timeout=60).stdout
+    round_executable=executable.with_name("native-memory-round-proof"+(".exe"if sys.platform=="win32"else""))
+    round_cases=[(seed,mode)for seed in seeds[:8]for mode in range(5)]
+    encoded_rounds=b"".join(struct.pack("<IB",seed,mode)for seed,mode in round_cases)
+    round_trace=subprocess.run([str(round_executable),str(a.payload.resolve())],input=encoded_rounds,capture_output=True,check=True,timeout=60).stdout
     if len(boards) != len(seeds)*36 or len(matches) != len(records)*RECORD_LEN or len(walk_result)!=len(walks)*(RECORD_LEN+4) or len(initial_result)!=len(initial_walks)*(RECORD_LEN+4) or len(reveal_result)!=270*36:
         raise RuntimeError("incomplete Rust output")
     oracle = Oracle(payload)
@@ -337,11 +380,19 @@ def main():
         if len(trace)!=frames*18:raise RuntimeError("truncated result trace")
         oracle.result(*case,trace);result_frames+=frames
     if end_offset!=len(result_trace):raise RuntimeError("surplus result bytes")
+    round_offset=0;round_frames=0
+    for seed,mode in round_cases:
+        frames=struct.unpack_from("<I",round_trace,round_offset)[0];round_offset+=4
+        trace=round_trace[round_offset:round_offset+frames*82];round_offset+=frames*82
+        if len(trace)!=frames*82:raise RuntimeError("truncated round trace")
+        oracle.round(seed,trace);round_frames+=frames
+    if round_offset!=len(round_trace):raise RuntimeError("surplus round bytes")
     source = Path(__file__).resolve().parents[1]/"src"/"native_memory.rs"
     result = {
         "result":"pass","board_cases":len(seeds),"matching_frame_cases":len(records),
         "shuffle_initial_cases":len(initial_walks),"shuffle_frame_cases":len(walks),"full_reveal_traces":min(32,len(seeds)),
         "full_result_traces":len(endings),"result_frames":result_frames,
+        "full_round_traces":len(round_cases),"full_round_frames":round_frames,
         "payload_sha1":PAYLOAD_SHA1,"board_native_entry":"0x0200A554","matching_dispatch_entry":"0x0200A8A4",
         "board_compared_bytes":36,"matching_compared_offsets":MATCH_MASK,
         "sound_calls_stubbed":oracle.sounds,"bios_graphic_copies_modeled":oracle.graphics_copies,
@@ -349,7 +400,8 @@ def main():
         "limits":["Matching excludes cursor interpolation and animated score display","No pause/instruction presentation, complete service integration or durable MMO reward transaction"],
         "source_sha256":hashlib.sha256(source.read_bytes()).hexdigest(),
         "verifier_sha256":hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        "corpus_sha256":hashlib.sha256(encoded_boards+encoded_matches+encoded_walks+encoded_initial+encoded_endings).hexdigest(),
+        "round_probe_sha256":hashlib.sha256((source.parents[1]/"tools"/"native_memory_round_probe.rs").read_bytes()).hexdigest(),
+        "corpus_sha256":hashlib.sha256(encoded_boards+encoded_matches+encoded_walks+encoded_initial+encoded_endings+encoded_rounds).hexdigest(),
         "elapsed_seconds":round(time.monotonic()-started,3),
     }
     (output/"result.json").write_text(json.dumps(result,indent=2)+"\n",encoding="utf-8")
