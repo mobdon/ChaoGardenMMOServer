@@ -120,6 +120,24 @@ impl AppState {
             * 1000.;
         let mut game =
             Game::new(profiles, terrains, config.owner_bootstrap, now).map_err(io::Error::other)?;
+        match (
+            env::var_os("CHAO_CARE_AUDIT_DIR"),
+            env::var_os("CHAO_CARE_EXECUTABLE"),
+        ) {
+            (None, None) => {}
+            (Some(audit), Some(executable)) => {
+                game.care_catalog = crate::care_catalog::CareCatalog::load(
+                    &PathBuf::from(audit),
+                    &PathBuf::from(executable),
+                )
+                .map_err(io::Error::other)?;
+            }
+            _ => {
+                return Err(io::Error::other(
+                    "Set both CHAO_CARE_AUDIT_DIR and CHAO_CARE_EXECUTABLE",
+                ));
+            }
+        }
         let read_catalog = |name: &str| -> io::Result<Value> {
             let path = config
                 .data_dir
@@ -247,6 +265,27 @@ impl AppState {
         Ok(
             json!({"type":"event","kind":"watch-saved","accepted":accepted,"watch":watch,"serverTime":game.time}),
         )
+    }
+    /// The WebSocket mutex serializes devices; success is visible only after durable commit.
+    pub fn care_action(&self, game: &mut Game, id: &str, message: &Value) -> io::Result<Value> {
+        let before = game
+            .players
+            .get(id)
+            .cloned()
+            .ok_or_else(|| io::Error::other("Missing profile"))?;
+        let was_dirty = game.dirty;
+        let event_count = game.events.len();
+        let response = crate::care::action(game, id, message);
+        if response["accepted"] == true
+            && response["replayed"] == false
+            && let Err(error) = self.persist(game)
+        {
+            game.players.insert(id.into(), before);
+            game.dirty = was_dirty;
+            game.events.truncate(event_count);
+            return Err(error);
+        }
+        Ok(response)
     }
 
     /// Opt-in and cancellation are acknowledged only after the profile transaction.
@@ -473,6 +512,7 @@ pub fn asset_filename(path: &str) -> Option<String> {
     let colors = ["red", "purple", "cyan", "green", "blue", "yellow", "white"];
     let pngs = [
         "chao-flame.png",
+        "chao-shadow.png",
         "emotion-flame.png",
         "emotion-flame-atlas.png",
         "emotion-sphere.png",
@@ -715,6 +755,13 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
                             match value["type"].as_str() {
                                 Some("input") => game.set_input(&id, &value),
                                 Some("tiny-input") => game.tiny_input(&id, &value),
+                                Some("care") => {
+                                    let result=match state.care_action(&mut game,&id,&value) {
+                                        Ok(result)=>result,
+                                        Err(error)=>{eprintln!("Could not save care: {error}");crate::care::failure(&game,&id,&value,"save-failed")}
+                                    };
+                                    response=Some(Message::Text(result.to_string().into()));
+                                }
                                 Some("action") if value["action"] == "save" => {
                                     let acknowledgement = if !game.request_save(&id) {
                                         json!({"type":"notice","kind":"error","text":"Please wait a moment before saving again."})

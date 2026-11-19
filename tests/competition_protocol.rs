@@ -299,6 +299,10 @@ fn rejected_intent_flushing_a_pending_result_is_not_acknowledged_as_accepted() {
         let id = session["player"]["id"].as_str().unwrap();
         game.connect(id);
         state.persist(&mut game).unwrap();
+        assert_eq!(
+            chao_game_server::care::public(&game, id)["eligibility"]["canCare"],
+            true
+        );
         let accepted = state
             .competition_action(
                 &mut game,
@@ -310,6 +314,17 @@ fn rejected_intent_flushing_a_pending_result_is_not_acknowledged_as_accepted() {
             )
             .unwrap();
         assert_eq!(accepted["accepted"], true);
+        let rejected_care = state
+            .care_action(
+                &mut game,
+                id,
+                &json!({"type":"care", "requestId":uuid::Uuid::new_v4().to_string(),
+                    "expectedRevision":0, "intent":{"kind":"purchase", "itemId":"garden-fruit"}}),
+            )
+            .unwrap();
+        assert_eq!(rejected_care["accepted"], false);
+        assert_eq!(rejected_care["code"], "activity-conflict");
+        assert_eq!(rejected_care["revision"], 0);
         let plan_id = competition::public(&game.players[id])["plan"]["id"].clone();
         let baseline = game.players[id].rings;
         let mut terminal = false;

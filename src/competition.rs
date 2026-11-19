@@ -277,12 +277,13 @@ pub fn reserved(player: &Player) -> bool {
 }
 
 pub fn training_conflict(player: &Player) -> bool {
-    player.activity_lease.is_some()
+    player.care.activity_lock.is_some()
+        || player.activity_lease.is_some()
         || ["training", "trainingJob", "trainingLedger"]
             .iter()
             .any(|key| {
                 player
-                    .extra_profile
+                    .profile_extra
                     .get(*key)
                     .is_some_and(|v| !v.is_null() && *v != false)
             })
