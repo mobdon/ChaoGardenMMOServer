@@ -38,7 +38,7 @@ class Oracle:
   from unicorn import arm_const as arm
   self.arm=arm;self.uc=Uc(UC_ARCH_ARM,UC_MODE_THUMB)
   for base,size in[(0x02000000,0x40000),(0x03000000,0x10000),(0x04000000,0x1000),(0x05000000,0x1000),(0x06000000,0x20000),(0x07000000,0x1000)]:self.uc.mem_map(base,size)
-  self.uc.mem_write(0x02000000,payload);self.calls={};self.sounds=0;self.graphics=0;self.vectors={};self.stopped=False;self.poses=set();self.submitted={};self.affines={};self.spring_pose_checks=0;self.affine_checks=0
+  self.uc.mem_write(0x02000000,payload);self.calls={};self.sounds=0;self.graphics=0;self.vectors={};self.stopped=False;self.poses=set();self.submitted={};self.affines={};self.spring_pose_checks=0;self.affine_checks=0;self.bumper_affine_checks=0
   for address in[RETURN,0x020104e0,0x02010678,0x02010614,0x0201064c,0x02001398,0x02001374,0x02001290]:self.uc.hook_add(UC_HOOK_CODE,self.code,begin=address,end=address)
   self.uc.hook_add(UC_HOOK_INTR,self.bios)
  def code(self,u,address,size,data):
@@ -151,7 +151,7 @@ class Oracle:
     continue # D538 has just allocated new tasks; callbacks initialize next frame.
    actors=[bytes(u.mem_read(chao_ptr,36)),bytes(u.mem_read(spring_ptr,36)),self.actor([0x0200deed,0x0200de99],rows)]
    at=29
-   for name,native,mask in zip(['chao','spring','master'],actors,[list(range(4))+list(range(7,16))+[20,21,25,26,29,30,31,32,33,34,35],list(range(4))+list(range(7,16))+[20,21,25,26,28,29,30,31,32,33,34,35],list(range(4))+list(range(8,16))+[25,26,34,35]]):
+   for name,native,mask in zip(['chao','spring','master'],actors,[list(range(4))+list(range(7,16))+[16,17,18,19,20,21,22,23,24,25,26,29,30,31,32,33,34,35],list(range(4))+list(range(7,16))+[20,21,25,26,28,29,30,31,32,33,34,35],list(range(4))+list(range(8,16))+[25,26,34,35]]):
     rust=actual[at:at+36];at+=36
     # Native Thumb function pointers carry bit0; core stores code addresses.
     native=bytes([native[0]&0xfe])+native[1:]
@@ -167,21 +167,27 @@ class Oracle:
     if bool(present)!=(native is not None):raise AssertionError(f"stage{stage} mode{mode} frame{frame} target{index} presence")
     if native:
      native=bytes([native[0]&0xfe])+native[1:]
-     mask=list(range(4))+list(range(8,16))+[25,26,29,31,32,33,34,35]
+     mask=list(range(4))+list(range(8,20))+[22,23,24,25,26,29,31,32,33,34,35]
      if (struct.unpack_from('<H',native,14)[0]+24)&0xffff<=224:mask+=[20,21]
      diffs=[i for i in mask if native[i]!=rust[i]]
      if diffs:raise AssertionError(f"stage{stage} mode{mode} frame{frame} target{index} offsets{diffs} native{native.hex()} rust{rust.hex()}")
    clouds={native[25]:native for _,native in rows if struct.unpack_from('<I',native)[0]==0x0200efa1}
    for index in range(3):
-    rust=actual[at:at+36];at+=36;native=clouds[index];mask=list(range(8,16))+[25,34,35]
+    rust=actual[at:at+36];at+=36;native=clouds[index];mask=list(range(8,25))+[25,34,35]
     if any(native[i]!=rust[i]for i in mask):raise AssertionError(f"stage{stage} mode{mode} frame{frame} cloud{index}")
    bumpers={native[28]:native for _,native in rows if struct.unpack_from('<I',native)[0]==0x0200f11d}
    for index in range(2):
     present=actual[at];rust=actual[at+1:at+37];at+=37;native=bumpers.get(index)
     if bool(present)!=(native is not None):raise AssertionError(f"stage{stage} mode{mode} frame{frame} bumper{index} presence")
     if native:
-     mask=[7]+list(range(8,16))+[25,26]+list(range(28,36));diffs=[i for i in mask if native[i]!=rust[i]]
+     mask=[7]+list(range(8,25))+[25,26]+list(range(28,36));diffs=[i for i in mask if native[i]!=rust[i]]
      if diffs:raise AssertionError(f"stage{stage} mode{mode} frame{frame} bumper{index} offsets{diffs}")
+   for index in range(2):
+    present=actual[at];affine=actual[at+1:at+7];at+=7;native=bumpers.get(index)
+    expected=self.affines.get(native[23])if native else None
+    if bool(present)!=(expected is not None):raise AssertionError(f'stage{stage} mode{mode} frame{frame} bumper{index} affine presence')
+    if present:self.bumper_affine_checks+=1
+    if present and affine!=expected:raise AssertionError(f'stage{stage} mode{mode} frame{frame} bumper{index} affine input')
    count=actual[at];at+=1
    if count!=10:raise AssertionError('native spring requires five parts plus five bottom copies')
    for callback in[0x0200e299,0x0200e241,0x0200f741,0x0200f6fd,0x0200e365]:
@@ -242,7 +248,7 @@ def main():
  if offset!=len(trace):raise RuntimeError('surplus Rust trace')
  vectors=list(oracle.vectors);request=''.join(f'{kind} {x} {y}\n'for kind,x,y in vectors);reference=subprocess.run([str(a.bios_reference.resolve())],input=request,text=True,capture_output=True,check=True,timeout=60).stdout.splitlines()
  if list(map(int,reference))!=[oracle.vectors[v]for v in vectors]:raise AssertionError('independent BIOS numerical mismatch')
- result={'result':'pass','full_task_traces':len(cases),'native_frames':total,'spring_pose_checks':oracle.spring_pose_checks,'spring_affine_input_checks':oracle.affine_checks,'submitted_native_poses':len(oracle.poses),'bios_calls':oracle.calls,'independent_bios_vectors':len(vectors),'payload_sha1':SHA1,'audio_callbacks_skipped':oracle.sounds,'render_bios_modeled':oracle.graphics,'source_sha256':hashlib.sha256((core/'src/native_bounce.rs').read_bytes()).hexdigest(),'probe_sha256':hashlib.sha256((core/'tools/native_bounce_probe.rs').read_bytes()).hexdigest(),'verifier_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'corpus_sha256':hashlib.sha256(encoded).hexdigest(),'elapsed_seconds':round(time.monotonic()-started,3),'limits':['Native graphics/audio output and authentic BIOS machine code not proven','No MMO adapter or durable reward transaction proven']}
+ result={'result':'pass','full_task_traces':len(cases),'native_frames':total,'spring_pose_checks':oracle.spring_pose_checks,'spring_affine_input_checks':oracle.affine_checks,'bumper_affine_input_checks':oracle.bumper_affine_checks,'submitted_native_poses':len(oracle.poses),'bios_calls':oracle.calls,'independent_bios_vectors':len(vectors),'payload_sha1':SHA1,'audio_callbacks_skipped':oracle.sounds,'render_bios_modeled':oracle.graphics,'source_sha256':hashlib.sha256((core/'src/native_bounce.rs').read_bytes()).hexdigest(),'probe_sha256':hashlib.sha256((core/'tools/native_bounce_probe.rs').read_bytes()).hexdigest(),'verifier_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'corpus_sha256':hashlib.sha256(encoded).hexdigest(),'elapsed_seconds':round(time.monotonic()-started,3),'limits':['Native graphics/audio output and authentic BIOS machine code not proven','No MMO adapter or durable reward transaction proven']}
  (output/'native_sprite_poses.json').write_text(json.dumps([{'descriptor_offset':f'0x{offset:x}','tile':tile,'flags16':f16,'flags17':f17,'packed_palette_layer':count}for offset,tile,f16,f17,count in sorted(oracle.poses)],indent=2)+'\n',encoding='utf-8')
  (output/'result.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8');print(json.dumps(result,indent=2))
 if __name__=='__main__':main()

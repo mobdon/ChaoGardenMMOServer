@@ -207,6 +207,7 @@ pub struct NativeBounceView {
     pub spring_parts: Vec<BounceSpringPartView>,
     pub targets: [Option<BounceActorView>; TARGETS],
     pub bumpers: [Option<BounceActorView>; 2],
+    pub bumper_affines: [Option<BounceAffineView>; 2],
     pub clouds: [BounceActorView; 3],
     pub compression: i8,
     pub power: i8,
@@ -298,6 +299,7 @@ pub struct NativeBounceRound {
     spring_affines: [Option<BounceAffineView>; 5],
     spring_parts: Vec<BounceSpringPartView>,
     affine_pool: AffinePool,
+    bumper_affines: [Option<BounceAffineView>; 2],
     cloud_generator_reuse: NativeBounceActor,
 }
 impl NativeBounceRound {
@@ -334,6 +336,7 @@ impl NativeBounceRound {
             spring_affines: [None; 5],
             spring_parts: Vec::new(),
             affine_pool: AffinePool::default(),
+            bumper_affines: [None; 2],
             cloud_generator_reuse: NativeBounceActor::default(),
         };
         result.initialize_actors();
@@ -341,6 +344,7 @@ impl NativeBounceRound {
     }
     fn initialize_actors(&mut self) {
         self.affine_pool = AffinePool::default();
+        self.bumper_affines = [None; 2];
         self.spring_parts.clear();
         self.chao = self.chao.reallocated();
         self.chao.set_callback(CHAO_INIT);
@@ -397,6 +401,7 @@ impl NativeBounceRound {
             spring_parts: self.spring_parts.clone(),
             targets: self.targets.map(|a| a.map(Into::into)),
             bumpers: self.bumpers.map(|a| a.map(Into::into)),
+            bumper_affines: self.bumper_affines,
             clouds: self.clouds.map(Into::into),
             compression: self.spring.raw[0x1f] as i8,
             power: self.spring.raw[0x1e] as i8,
@@ -416,6 +421,11 @@ impl NativeBounceRound {
                     1
                 }
             || self.pause_selection > 1
+            || self
+                .bumpers
+                .iter()
+                .flatten()
+                .any(|a| a.raw[0x1c] > 1 || ![0x0200_f4c0, 0x0200_f11c].contains(&a.callback()))
         {
             return Err(Error::InvalidState);
         }
@@ -734,6 +744,8 @@ impl NativeBounceRound {
                 } else {
                     let mut a = NativeBounceActor::default();
                     a.set_callback(TARGET_ADDRESS);
+                    a.set32(0x10, 0x0202_e4f8);
+                    a.raw[0x18] = 12;
                     a.set16(0xa, (i % 13) as i32 * 16 + 8);
                     a.raw[0x19] = (i / 13) as u8;
                     a.raw[0x1a] = (i % 13) as u8;
@@ -781,6 +793,9 @@ impl NativeBounceRound {
                         if a.raw[0x19] > 5 {
                             self.targets[index] = None;
                             continue;
+                        }
+                        if a.raw[0x19] > 1 {
+                            a.raw[0x17] = 16;
                         }
                     }
                     a.set16(
@@ -1376,6 +1391,8 @@ impl NativeBounceRound {
                 let x = index as i32 * 60 + i32::from(self.stage & 3) * 30 + 16;
                 cloud.set16(0xa, if x > 216 { x - 240 } else { x });
                 cloud.set16(0x22, heights[index]);
+                cloud.set32(0x10, 0x0202_e558);
+                cloud.raw[0x18] = 0x1c;
                 cloud.raw[0x19] = index as u8;
                 cloud.set16(0x14, 60);
                 cloud.set_callback(0x0200_efa0);
@@ -1461,6 +1478,23 @@ impl NativeBounceRound {
         );
         a.set16(0x22, i32::from(a.y()));
         a.add16(0xe, -i32::from(self.scroll));
+        let (scale_x, scale_y) = if a.flags() == 0 {
+            (256, 256)
+        } else {
+            // F11C computes its scale from the old recoil phase before the
+            // counter/collision updates below, even when it is offscreen.
+            let t = self.source.sin(a.raw[0x20]) * i32::from(a.raw[0x1d]) / 256;
+            let sign = if a.flags() == 1 { 1 } else { -1 };
+            (
+                native_div(8192, 32 + t * sign)?,
+                native_div(8192, 32 - t * sign)?,
+            )
+        };
+        self.bumper_affines[usize::from(a.raw[0x1c])] = Some(BounceAffineView {
+            scale_x: scale_x as i16,
+            scale_y: scale_y as i16,
+            rotation: 0,
+        });
         if a.flags() != 0 {
             a.add16(0x20, 9);
             if a.u16(0x20) > 255 {
@@ -1675,6 +1709,7 @@ mod tests {
         round.stage = 2;
         let mut bumper = NativeBounceActor::default();
         bumper.set_callback(0x0200_f11c);
+        bumper.raw[0x1c] = 0;
         bumper.set16(0x22, 152);
         bumper.raw[0x1e] = 1;
         round.bumpers[0] = Some(bumper);
@@ -1811,5 +1846,19 @@ mod tests {
         );
         assert_eq!(round.view(), before);
         assert_eq!(round.chao, chao);
+    }
+    #[test]
+    fn invalid_bumper_slot_is_rejected_before_advancing_or_indexing_affines() {
+        let mut round = synthetic();
+        let mut bumper = NativeBounceActor::default();
+        bumper.set_callback(0x0200_f11c);
+        round.bumpers[0] = Some(bumper);
+        let before = round.view();
+        assert_eq!(
+            round.step(NativeButtons::default(), &ReferenceBiosMath),
+            Err(Error::InvalidState)
+        );
+        assert_eq!(round.view(), before);
+        assert_eq!(round.bumpers[0], Some(bumper));
     }
 }

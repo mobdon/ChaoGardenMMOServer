@@ -129,6 +129,17 @@ fn main() {
                 trace.push(u8::from(a.is_some()));
                 trace.extend_from_slice(&a.unwrap_or_default().raw);
             }
+            for affine in round.view().bumper_affines {
+                trace.push(u8::from(affine.is_some()));
+                let a = affine.unwrap_or(BounceAffineView {
+                    scale_x: 0,
+                    scale_y: 0,
+                    rotation: 0,
+                });
+                trace.extend_from_slice(&a.scale_x.to_le_bytes());
+                trace.extend_from_slice(&a.scale_y.to_le_bytes());
+                trace.extend_from_slice(&a.rotation.to_le_bytes());
+            }
             let parts = round.view().spring_parts;
             trace.push(parts.len() as u8);
             for index in 0..10 {

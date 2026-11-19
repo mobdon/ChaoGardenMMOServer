@@ -78,6 +78,15 @@ offscreen main part can still have a submitted bottom copy. Bottom copies
 retain the original `style | 4` and `y - 160 + scroll`; no replacement sprite
 or estimated spring geometry is generated.
 
+Targets and clouds retain their source descriptor/palette assignments, and
+collection bursts flip at the original animation-frame boundary. Bumpers use
+their original descriptor (which itself specifies affine mode), source matrix
+pool IDs and `NativeBounceView.bumper_affines`, indexed alongside `bumpers`.
+The recoil scale is computed from the old native phase before counter and
+collision changes, including offscreen updates. A bumper's affine parameters
+remain absent until its first native affine update; initialization alone does
+not invent a transform.
+
 `BounceAffineView` carries original `ObjAffineSet` source inputs: signed 8.8
 `scale_x`/`scale_y` and a 16-bit binary `rotation`. They multiply the inverse
 sampling matrix; for zero rotation a forward browser renderer uses
@@ -105,7 +114,8 @@ floating-point trigonometry or another game's table.
 Rust tests cover the native allocator reset boundary, ten-ring once-only
 collection, exact result dismissal/fade completion, first-miss restart rather
 than game end, right-spring child lockout, child-before-body pose timing,
-bottom-copy gates/offsets and atomic BIOS/invalid-affine failure. An optional
+bottom-copy gates/offsets, invalid bumper-slot validation and atomic
+BIOS/invalid-affine failure. An optional
 owned-payload test exercises a complete local round and immutable completion.
 
 `tools/verify_native_bounce.py` executes the original native `D538` task setup
@@ -115,7 +125,9 @@ actor presence, fixed-point positions, native visible target tiles, counters,
 target kinds, pause/restart/result/return boundaries and original BIOS call
 arguments. It additionally compares every submitted spring child/copy pose,
 draw gate/priority, source descriptor, original packed render fields and
-`ObjAffineSet` scale/rotation input. Task-list IDs, suppressed duplicate memory,
+`ObjAffineSet` scale/rotation input. The extended checks also cover
+Chao/target/cloud/bumper descriptor and packed render inputs plus every
+initialized bumper affine input. Task-list IDs, suppressed duplicate memory,
 unused offscreen tile garbage, native raster/OAM affine-matrix output and
 unrelated Garden actors restored after return are excluded. A reachable zero
 divisor now fails the verifier; the Rust candidate frame also rejects invalid
@@ -123,7 +135,8 @@ affine division atomically.
 
 The complete corpus passes 32 traces and 48,503 native frames across all four
 starting stages, including 366,675 submitted spring-pose comparisons and
-73,695 original affine-input comparisons. Twenty-eight controller policies cover
+73,695 spring and 37,776 bumper affine-input comparisons. Twenty-eight
+controller policies cover
 launch, held boosts, fast movement, misses/restarts, pause/resume/quit and
 bumper collisions. Four controlled empty-target setups exercise all native
 clear/next-stage/final-result branches; those setups are explicitly fixtures,
