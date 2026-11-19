@@ -129,6 +129,36 @@ fn main() {
                 trace.push(u8::from(a.is_some()));
                 trace.extend_from_slice(&a.unwrap_or_default().raw);
             }
+            let parts = round.view().spring_parts;
+            trace.push(parts.len() as u8);
+            for index in 0..10 {
+                let Some(part) = parts.get(index) else {
+                    trace.extend_from_slice(&[0; 23]);
+                    continue;
+                };
+                let actor = part.actor;
+                trace.extend_from_slice(&actor.x.to_le_bytes());
+                trace.extend_from_slice(&actor.y.to_le_bytes());
+                trace.extend_from_slice(&actor.descriptor_offset.unwrap().to_le_bytes());
+                trace.extend_from_slice(&actor.tile.to_le_bytes());
+                trace.extend_from_slice(&[
+                    actor.style,
+                    actor.transform,
+                    actor.packed_palette_layer,
+                    u8::from(actor.visible),
+                    u8::from(part.bottom_copy),
+                    part.priority,
+                    u8::from(part.affine.is_some()),
+                ]);
+                let affine = part.affine.unwrap_or(BounceAffineView {
+                    scale_x: 0,
+                    scale_y: 0,
+                    rotation: 0,
+                });
+                trace.extend_from_slice(&affine.scale_x.to_le_bytes());
+                trace.extend_from_slice(&affine.scale_y.to_le_bytes());
+                trace.extend_from_slice(&affine.rotation.to_le_bytes());
+            }
             trace.extend_from_slice(&round.target_kind);
             trace.push(u8::from(round.finished().is_some()));
             count += 1;

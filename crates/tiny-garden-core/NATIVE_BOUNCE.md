@@ -26,7 +26,7 @@ does not silently replace its existing phone protocol or reward transaction.
 | `D958`, `DC6C` | Chao 16.16 position, gravity, wall reflection, original camera scroll and hitbox; miss/clear animations and life transitions. |
 | `DD60`, `DCC0`, `DE98`, `DEEC` | Moving target rows, alternating direction/wrap, inclusive collection bounds, once-only native ring addition and collection-burst lifetime. |
 | `E614`, `E710`, `E850`, `E964`, `EB14`, `ED00`, `EE7C` | Left/right movement; B speed; A launch/hold; exact compression markers, five contact zones, spring/right-platform launch, boost scale and child-controlled lockout. |
-| `E364` | The right spring child changes parent power and movement lockout. Those gameplay writes are retained; it is not treated as a disposable rendering callback. |
+| `E1C0`, `E240`, `E298`, `E364`, `F6FC`, `F740` | Five native spring child poses, original walk/compression/death/clear frames, affine scales, draw priority and camera-bottom duplicates. The right child also changes parent power and movement lockout. |
 | `EFA0`, `F048`, `F11C`, `F4C0` | Native cloud motion; later-stage moving bumpers, collision distance/reflection, recoil and cooldown. |
 | `D664`, `D814`, `DFF8`, `F58C`, `F5AC`, `F620` | Pause debounce/selection/resume/quit, native clear/loss/result counters, delayed restart dispatch and 16-frame return fade. |
 
@@ -64,13 +64,35 @@ Source offsets below are in the verified decoded program:
 | Timing/geometry | Trig at `1FB74`; target burst tiles `2EB5A`; spring walk tiles `2EB60`; spring contact heights `2EB64`. |
 
 `BounceActorView` carries source descriptor offset, original tile and packed
-sprite style/transform/palette inputs. The root spring record is a mechanical
-state, not a directly drawable sprite. It has several native child parts and
-an always-bottom duplicate when the camera follows the Chao. A renderer must
-use the original child descriptors and composition rather than treating its
-compression angle as an OBJ tile. Native graphics/audio output and the full
-composite spring presentation remain adapter work; the source-backed pose
-inventory emitted by the private verifier supports that work.
+sprite style/transform/palette inputs. Byte `18` is a packed palette/priority
+field, not a sprite count. The root spring record is a mechanical state, not a
+directly drawable sprite: its tile word is the compression angle.
+
+`NativeBounceView.spring_parts` exposes the five original drawable children,
+each immediately followed by its bottom copy, in native callback order:
+`E298`, `E240`, `F740`, `F6FC`, `E364`. `BounceSpringPartView` contains `actor`,
+`affine`, `bottom_copy` and native draw-sort `priority`. `actor.visible` is the
+original submission gate, including the parent-height gate for main parts and
+the initial-scroll/remaining-target/return gates for bottom copies. An
+offscreen main part can still have a submitted bottom copy. Bottom copies
+retain the original `style | 4` and `y - 160 + scroll`; no replacement sprite
+or estimated spring geometry is generated.
+
+`BounceAffineView` carries original `ObjAffineSet` source inputs: signed 8.8
+`scale_x`/`scale_y` and a 16-bit binary `rotation`. They multiply the inverse
+sampling matrix; for zero rotation a forward browser renderer uses
+`256 / scale`, not `scale / 256`. The affine pool preserves original FIFO
+matrix allocation/release (including later-stage bumper allocations). A
+renderer must preserve original descriptor anchoring, affine center, material
+and double-size behavior. The four simpler children update before `E364`, so
+their pose uses the compression before that body resets parent power. Pause
+retains the body pose; fade retains the last presentation until reinitialize.
+
+Native raster output/audio and browser composition remain adapter work.
+The private pose manifest contains only sprites actually submitted through
+original `1398`; control/initializer tasks with inherited descriptors and
+angle/tile garbage are excluded. The original 32-trace corpus reaches 85
+submitted descriptor/tile/style/transform/palette tuples.
 
 The shared `native_bios_math::ReferenceBiosMath` is an integer numerical
 reference checked against pinned mGBA 0.10.3 C. It does not claim authentic GBA
@@ -82,7 +104,8 @@ floating-point trigonometry or another game's table.
 
 Rust tests cover the native allocator reset boundary, ten-ring once-only
 collection, exact result dismissal/fade completion, first-miss restart rather
-than game end, right-spring child lockout and atomic BIOS failure. An optional
+than game end, right-spring child lockout, child-before-body pose timing,
+bottom-copy gates/offsets and atomic BIOS/invalid-affine failure. An optional
 owned-payload test exercises a complete local round and immutable completion.
 
 `tools/verify_native_bounce.py` executes the original native `D538` task setup
@@ -90,11 +113,17 @@ and `F5AC`/`F620` scene callbacks, including the actual linked task scheduler an
 child creation/removal. It compares all source-defined gameplay fields, active
 actor presence, fixed-point positions, native visible target tiles, counters,
 target kinds, pause/restart/result/return boundaries and original BIOS call
-arguments. Task-list IDs, unused offscreen tile garbage, native OAM/affine
-output and unrelated Garden actors restored after return are excluded.
+arguments. It additionally compares every submitted spring child/copy pose,
+draw gate/priority, source descriptor, original packed render fields and
+`ObjAffineSet` scale/rotation input. Task-list IDs, suppressed duplicate memory,
+unused offscreen tile garbage, native raster/OAM affine-matrix output and
+unrelated Garden actors restored after return are excluded. A reachable zero
+divisor now fails the verifier; the Rust candidate frame also rejects invalid
+affine division atomically.
 
-The initial complete corpus passes 32 traces and 48,503 native frames across
-all four starting stages. Twenty-eight ordinary controller policies cover
+The complete corpus passes 32 traces and 48,503 native frames across all four
+starting stages, including 366,675 submitted spring-pose comparisons and
+73,695 original affine-input comparisons. Twenty-eight controller policies cover
 launch, held boosts, fast movement, misses/restarts, pause/resume/quit and
 bumper collisions. Four controlled empty-target setups exercise all native
 clear/next-stage/final-result branches; those setups are explicitly fixtures,

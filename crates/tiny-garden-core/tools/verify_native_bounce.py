@@ -38,11 +38,22 @@ class Oracle:
   from unicorn import arm_const as arm
   self.arm=arm;self.uc=Uc(UC_ARCH_ARM,UC_MODE_THUMB)
   for base,size in[(0x02000000,0x40000),(0x03000000,0x10000),(0x04000000,0x1000),(0x05000000,0x1000),(0x06000000,0x20000),(0x07000000,0x1000)]:self.uc.mem_map(base,size)
-  self.uc.mem_write(0x02000000,payload);self.calls={};self.sounds=0;self.graphics=0;self.vectors={};self.stopped=False;self.poses=set()
-  for address in[RETURN,0x020104e0,0x02010678,0x02010614,0x0201064c]:self.uc.hook_add(UC_HOOK_CODE,self.code,begin=address,end=address)
+  self.uc.mem_write(0x02000000,payload);self.calls={};self.sounds=0;self.graphics=0;self.vectors={};self.stopped=False;self.poses=set();self.submitted={};self.affines={};self.spring_pose_checks=0;self.affine_checks=0
+  for address in[RETURN,0x020104e0,0x02010678,0x02010614,0x0201064c,0x02001398,0x02001374,0x02001290]:self.uc.hook_add(UC_HOOK_CODE,self.code,begin=address,end=address)
   self.uc.hook_add(UC_HOOK_INTR,self.bios)
  def code(self,u,address,size,data):
   if address==RETURN:self.stopped=True;u.emu_stop()
+  elif address==0x02001374:self.submitted={}
+  elif address==0x02001290:self.affines={};self.submitted={}
+  elif address==0x02001398:
+   # Only sprites submitted by original callbacks belong in the native pose
+   # catalog. Active control/initializer tasks can retain arbitrary descriptors
+   # and angle words in their tile field after native task-slot reuse.
+   index=u.reg_read(self.arm.UC_ARM_REG_R0)&0xff
+   if index>=72:raise RuntimeError('submitted task index escaped bound')
+   actor=bytes(u.mem_read(TASKS+index*36,36));descriptor=struct.unpack_from('<I',actor,16)[0]
+   self.submitted[index]=u.reg_read(self.arm.UC_ARM_REG_R1)&0xff
+   if 0x0202e4c8<=descriptor<=0x0202e560 and(descriptor-0x0202e4c8)%8==0:self.poses.add((descriptor-0x02000000,struct.unpack_from('<H',actor,20)[0],actor[22],actor[23],actor[24]))
   elif address in[0x020104e0,0x02010678,0x02010614,0x0201064c]:
    self.sounds+=1;u.reg_write(self.arm.UC_ARM_REG_PC,u.reg_read(self.arm.UC_ARM_REG_LR))
  def call(self,address,r0=0):
@@ -58,6 +69,7 @@ class Oracle:
   service=op[0];self.calls[service]=self.calls.get(service,0)+1
   x=u.reg_read(a.UC_ARM_REG_R0);y=u.reg_read(a.UC_ARM_REG_R1);n=u.reg_read(a.UC_ARM_REG_R2)
   if service==6:
+   if y==0:raise RuntimeError('reachable native division by zero requires explicit BIOS proof')
    quotient=div(signed(x),signed(y));u.reg_write(a.UC_ARM_REG_R0,quotient&0xffffffff);u.reg_write(a.UC_ARM_REG_R1,(signed(x)-quotient*signed(y))&0xffffffff);u.reg_write(a.UC_ARM_REG_R3,abs(quotient)&0xffffffff)
   elif service==8:
    value=math.isqrt(x);self.vectors[('S',x,0)]=value;u.reg_write(a.UC_ARM_REG_R0,value)
@@ -88,6 +100,8 @@ class Oracle:
    # OBJ affine output is a renderer-only buffer; gameplay never reads it.
    stride=u.reg_read(a.UC_ARM_REG_R3)
    if n!=1 or stride!=8:raise RuntimeError("unexpected affine shape")
+   if (y-0x03004e76)%16:raise RuntimeError('unaligned native affine destination')
+   self.affines[(y-0x03004e76)//16]=bytes(u.mem_read(x,6))
    for i,value in enumerate([256,0,0,256]):u.mem_write(y+i*stride,struct.pack('<h',value))
    self.graphics+=1
   else:raise RuntimeError(f"unsupported native BIOS service{service:#x}")
@@ -132,9 +146,6 @@ class Oracle:
     if actual[-1]!=1:raise AssertionError('native return was not acknowledged by Rust core')
     continue # The original restores the unrelated Garden actor list here.
    rows=self.tasks();chao_ptr=struct.unpack('<I',raw[12:16])[0];spring_ptr=struct.unpack('<I',raw[8:12])[0]
-   for _,native_actor in rows:
-    descriptor=struct.unpack_from('<I',native_actor,16)[0]
-    if 0x0202e4c8<=descriptor<=0x0202e560 and(descriptor-0x0202e4c8)%8==0:self.poses.add((descriptor-0x02000000,struct.unpack_from('<H',native_actor,20)[0],native_actor[22],native_actor[23],native_actor[24]))
    if actual[29:33]==struct.pack('<I',0x0200dc6c):
     self.target_ids={}
     continue # D538 has just allocated new tasks; callbacks initialize next frame.
@@ -171,6 +182,31 @@ class Oracle:
     if native:
      mask=[7]+list(range(8,16))+[25,26]+list(range(28,36));diffs=[i for i in mask if native[i]!=rust[i]]
      if diffs:raise AssertionError(f"stage{stage} mode{mode} frame{frame} bumper{index} offsets{diffs}")
+   count=actual[at];at+=1
+   if count!=10:raise AssertionError('native spring requires five parts plus five bottom copies')
+   for callback in[0x0200e299,0x0200e241,0x0200f741,0x0200f6fd,0x0200e365]:
+    matching=[(i,r)for i,r in rows if struct.unpack_from('<I',r)[0]==callback]
+    if len(matching)!=1:raise AssertionError('native spring child selection')
+    main_index,main_actor=matching[0]
+    duplicates=[(i,r)for i,r in rows if struct.unpack_from('<I',r)[0]==0x0200e1c1 and r[27]==main_index]
+    if len(duplicates)!=1:raise AssertionError('native spring bottom child selection')
+    for bottom,(index,native)in enumerate([(main_index,main_actor),duplicates[0]]):
+     rust=actual[at:at+23];at+=23
+     # Suppressed duplicates retain old task memory. Their presentation fields
+     # are intentionally irrelevant until the original submits them again.
+     visible=index in self.submitted
+     if visible!=bool(rust[13]):raise AssertionError(f'stage{stage} mode{mode} frame{frame} spring{callback:#x} bottom{bottom} draw gate')
+     if rust[14]!=bottom or rust[15]!=(0 if bottom else 79):raise AssertionError('spring ordering/priority projection differs')
+     if not visible:continue
+     pose=native[10:12]+native[14:16]+struct.pack('<I',struct.unpack_from('<I',native,16)[0]-0x02000000)+native[20:25]
+     if pose!=rust[:13]:raise AssertionError(f'stage{stage} mode{mode} frame{frame} spring{callback:#x} bottom{bottom} pose native{pose.hex()} rust{rust[:13].hex()} chao{actors[0].hex()} spring{actors[1].hex()} body{main_actor.hex()}')
+     if self.submitted[index]!=(0 if bottom else 79):raise AssertionError('native spring draw priority differs')
+     affine=bool(native[22]&1)
+     if affine!=bool(rust[16]):raise AssertionError('spring affine flag differs')
+     if affine:
+      if self.affines.get(native[23])!=rust[17:23]:raise AssertionError(f'stage{stage} mode{mode} frame{frame} spring{callback:#x} affine inputs native{self.affines.get(native[23])} rust{rust[17:23].hex()}')
+      self.affine_checks+=1
+     self.spring_pose_checks+=1
    if actual[at:at+26]!=raw[0x20:0x3a]:raise AssertionError(f"stage{stage} mode{mode} frame{frame} target kind differs")
    at+=26
    scene=struct.unpack('<I',bytes(u.mem_read(0x03003330,4)))[0]
@@ -206,7 +242,7 @@ def main():
  if offset!=len(trace):raise RuntimeError('surplus Rust trace')
  vectors=list(oracle.vectors);request=''.join(f'{kind} {x} {y}\n'for kind,x,y in vectors);reference=subprocess.run([str(a.bios_reference.resolve())],input=request,text=True,capture_output=True,check=True,timeout=60).stdout.splitlines()
  if list(map(int,reference))!=[oracle.vectors[v]for v in vectors]:raise AssertionError('independent BIOS numerical mismatch')
- result={'result':'pass','full_task_traces':len(cases),'native_frames':total,'bios_calls':oracle.calls,'independent_bios_vectors':len(vectors),'payload_sha1':SHA1,'audio_callbacks_skipped':oracle.sounds,'render_bios_modeled':oracle.graphics,'source_sha256':hashlib.sha256((core/'src/native_bounce.rs').read_bytes()).hexdigest(),'probe_sha256':hashlib.sha256((core/'tools/native_bounce_probe.rs').read_bytes()).hexdigest(),'verifier_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'corpus_sha256':hashlib.sha256(encoded).hexdigest(),'elapsed_seconds':round(time.monotonic()-started,3),'limits':['Native graphics/audio output and authentic BIOS machine code not proven','No MMO adapter or durable reward transaction proven']}
+ result={'result':'pass','full_task_traces':len(cases),'native_frames':total,'spring_pose_checks':oracle.spring_pose_checks,'spring_affine_input_checks':oracle.affine_checks,'submitted_native_poses':len(oracle.poses),'bios_calls':oracle.calls,'independent_bios_vectors':len(vectors),'payload_sha1':SHA1,'audio_callbacks_skipped':oracle.sounds,'render_bios_modeled':oracle.graphics,'source_sha256':hashlib.sha256((core/'src/native_bounce.rs').read_bytes()).hexdigest(),'probe_sha256':hashlib.sha256((core/'tools/native_bounce_probe.rs').read_bytes()).hexdigest(),'verifier_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'corpus_sha256':hashlib.sha256(encoded).hexdigest(),'elapsed_seconds':round(time.monotonic()-started,3),'limits':['Native graphics/audio output and authentic BIOS machine code not proven','No MMO adapter or durable reward transaction proven']}
  (output/'native_sprite_poses.json').write_text(json.dumps([{'descriptor_offset':f'0x{offset:x}','tile':tile,'flags16':f16,'flags17':f17,'packed_palette_layer':count}for offset,tile,f16,f17,count in sorted(oracle.poses)],indent=2)+'\n',encoding='utf-8')
  (output/'result.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8');print(json.dumps(result,indent=2))
 if __name__=='__main__':main()

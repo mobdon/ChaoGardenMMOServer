@@ -13,12 +13,21 @@ pub const MAX_NATIVE_RINGS: u16 = 113;
 pub const ACTOR_LEN: usize = 36;
 pub const TRIG_OFFSET: usize = 0x1fb74;
 pub const SPRING_OFFSETS: usize = 0x2eb64;
+pub const SPRING_WALK: usize = 0x2eb60;
 const CHAO_INIT: u32 = 0x0200_dc6c;
 const CHAO_LOSS: u32 = 0x0200_d814;
 const SPRING_INIT: u32 = 0x0200_ebb0;
 const SPRING_WAIT: u32 = 0x0200_eb14;
 const SPRING_CLEAR: u32 = 0x0200_dff8;
 const TARGET_BURST: u32 = 0x0200_dcc0;
+
+fn native_div(numerator: i32, denominator: i32) -> Result<i32, Error> {
+    // The proven native corpus has nonzero divisors. A corrupted trusted
+    // inspection state must not invent a replacement affine transform.
+    numerator
+        .checked_div(denominator)
+        .ok_or(Error::InvalidState)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -39,6 +48,7 @@ pub struct A2neBounceSource {
     trig: [i16; 256],
     spring_offsets: [u8; 5],
     burst_tiles: [u8; 6],
+    spring_walk: [u8; 4],
 }
 impl A2neBounceSource {
     pub fn from_verified_payload(payload: &[u8]) -> Result<Self, Error> {
@@ -55,6 +65,7 @@ impl A2neBounceSource {
                 .try_into()
                 .unwrap(),
             burst_tiles: payload[0x2eb5a..0x2eb60].try_into().unwrap(),
+            spring_walk: payload[SPRING_WALK..SPRING_WALK + 4].try_into().unwrap(),
         })
     }
     fn cos(&self, angle: u8) -> i32 {
@@ -191,12 +202,66 @@ pub struct NativeBounceView {
     pub scroll: i16,
     pub chao: BounceActorView,
     pub spring: BounceActorView,
+    /// Original child sprites in native callback order, each followed by its
+    /// always-bottom copy. The mechanical `spring` record is not an OBJ tile.
+    pub spring_parts: Vec<BounceSpringPartView>,
     pub targets: [Option<BounceActorView>; TARGETS],
     pub bumpers: [Option<BounceActorView>; 2],
     pub clouds: [BounceActorView; 3],
     pub compression: i8,
     pub power: i8,
     pub pause_selection: u8,
+}
+
+/// Original ObjAffineSet source parameters: signed 8.8 scale and binary angle.
+/// They scale the inverse sampling matrix. An unrotated forward renderer uses
+/// 256/scale, not scale/256, while preserving the native affine center.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BounceAffineView {
+    pub scale_x: i16,
+    pub scale_y: i16,
+    pub rotation: u16,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BounceSpringPartView {
+    pub actor: BounceActorView,
+    pub affine: Option<BounceAffineView>,
+    pub bottom_copy: bool,
+    pub priority: u8,
+}
+
+#[derive(Clone, Debug)]
+struct AffinePool {
+    slots: [u8; 32],
+    head: u8,
+    tail: u8,
+    used: u8,
+}
+impl Default for AffinePool {
+    fn default() -> Self {
+        Self {
+            slots: std::array::from_fn(|i| (i * 2) as u8),
+            head: 0,
+            tail: 0,
+            used: 0,
+        }
+    }
+}
+impl AffinePool {
+    fn allocate(&mut self) -> u8 {
+        if self.used > 31 {
+            return 255;
+        }
+        let slot = self.slots[usize::from(self.head)];
+        self.head = (self.head + 1) & 31;
+        self.used += 1;
+        slot
+    }
+    fn release(&mut self, slot: u8) {
+        self.slots[usize::from(self.tail)] = slot;
+        self.tail = (self.tail + 1) & 31;
+        self.used = self.used.wrapping_sub(1);
+    }
 }
 
 /// Server-owned original video-frame state. No trusted time/score from clients.
@@ -229,6 +294,10 @@ pub struct NativeBounceRound {
     won: bool,
     right_visual_flags: u8,
     right_visual_phase: u8,
+    spring_visuals: [NativeBounceActor; 5],
+    spring_affines: [Option<BounceAffineView>; 5],
+    spring_parts: Vec<BounceSpringPartView>,
+    affine_pool: AffinePool,
     cloud_generator_reuse: NativeBounceActor,
 }
 impl NativeBounceRound {
@@ -261,12 +330,18 @@ impl NativeBounceRound {
             won: false,
             right_visual_flags: 0,
             right_visual_phase: 0,
+            spring_visuals: [NativeBounceActor::default(); 5],
+            spring_affines: [None; 5],
+            spring_parts: Vec::new(),
+            affine_pool: AffinePool::default(),
             cloud_generator_reuse: NativeBounceActor::default(),
         };
         result.initialize_actors();
         result
     }
     fn initialize_actors(&mut self) {
+        self.affine_pool = AffinePool::default();
+        self.spring_parts.clear();
         self.chao = self.chao.reallocated();
         self.chao.set_callback(CHAO_INIT);
         self.spring = self.spring.reallocated();
@@ -319,6 +394,7 @@ impl NativeBounceRound {
             scroll: self.scroll,
             chao: self.chao.into(),
             spring: self.spring.into(),
+            spring_parts: self.spring_parts.clone(),
             targets: self.targets.map(|a| a.map(Into::into)),
             bumpers: self.bumpers.map(|a| a.map(Into::into)),
             clouds: self.clouds.map(Into::into),
@@ -423,7 +499,7 @@ impl NativeBounceRound {
         let mut spring = self.spring;
         self.spring_step(&mut spring, buttons)?;
         self.spring = spring;
-        self.spring_child_step();
+        self.spring_child_step()?;
         self.cloud_step();
         for index in (0..2).rev() {
             if let Some(mut actor) = self.bumpers[index] {
@@ -810,6 +886,20 @@ impl NativeBounceRound {
         if a.callback() == SPRING_INIT {
             self.right_visual_flags = 0;
             self.right_visual_phase = 0;
+            self.spring_affines = [None; 5];
+            let descriptors = [0x0202_e508, 0x0202_e500, 0, 0x0202_e530, 0x0202_e540];
+            for (index, visual) in self.spring_visuals.iter_mut().enumerate() {
+                *visual = visual.reallocated();
+                visual.set32(0x10, descriptors[index]);
+                visual.raw[0x18] = if index == 4 { 0x3c } else { 0x2c };
+                if index < 3 {
+                    visual.set16(0x14, 0);
+                }
+            }
+            self.spring_visuals[0].raw[0x16] = 1;
+            self.spring_visuals[0].raw[0x17] = self.affine_pool.allocate();
+            self.spring_visuals[4].raw[0x1c] = 0;
+            self.spring_visuals[4].raw[0x1d] = 0;
             a.set16(0xa, 128);
             a.raw[0x1d] = 1;
             a.raw[0x1e] = 255;
@@ -930,6 +1020,8 @@ impl NativeBounceRound {
         a.raw[0x1a] = 0;
         a.raw[0x1e] = 8;
         if !right && self.remaining == 0 {
+            self.right_visual_flags = 1;
+            self.spring_visuals[4].set16(0x14, 278);
             self.chao.set32(0x10, 0x0202_e4e8);
             a.raw[7] &= !2;
             a.raw[0x1c] = 0;
@@ -991,29 +1083,188 @@ impl NativeBounceRound {
             }
         }
     }
-    fn spring_child_step(&mut self) {
-        if self.flags & 0x80 != 0 || self.right_visual_flags & 1 == 0 {
-            return;
+    fn spring_child_step(&mut self) -> Result<(), Error> {
+        self.spring_parts.clear();
+        // The native linked scheduler runs these four children before E364.
+        // In particular their affine poses precede E364's parent power reset.
+        let x = i32::from(self.spring.x());
+        let y = i32::from(self.spring.y());
+        let compression = i32::from(self.spring.raw[0x1f] as i8);
+        let lifted = i32::from(self.spring.flags() & 2 != 0) * 5;
+        for index in 0..4 {
+            let a = &mut self.spring_visuals[index];
+            a.set16(0xa, x);
+            a.set16(0xe, y);
+            match index {
+                0 => {
+                    let (sx, sy) = if self.spring.flags() & 0x10 != 0 {
+                        (256, 256)
+                    } else {
+                        a.set16(0xe, y - compression / 2 - lifted);
+                        (
+                            if compression < 0 {
+                                256
+                            } else {
+                                256 + compression * 30
+                            },
+                            native_div(2048, compression + 8)?,
+                        )
+                    };
+                    self.spring_affines[index] = Some(BounceAffineView {
+                        scale_x: sx as i16,
+                        scale_y: sy as i16,
+                        rotation: 0,
+                    });
+                }
+                1 => a.set16(
+                    0xe,
+                    y - if self.spring.flags() & 0x10 != 0 {
+                        0
+                    } else {
+                        compression
+                    } - lifted,
+                ),
+                2 => a.set32(0x10, 0x0202_e510 + i32::from(self.spring.flags() & 2) * 8),
+                3 => a.set16(0x14, ((x >> 2) % 3) * 4),
+                _ => unreachable!(),
+            }
+            self.record_spring_part(index);
         }
-        if self.right_visual_phase != 0 {
-            if self.right_visual_flags & 2 == 0 {
-                self.right_visual_flags |= 2;
-                self.spring.raw[0x1e] = 255;
-                self.spring.raw[0x1f] = 0;
-            }
-            self.right_visual_phase = self.right_visual_phase.wrapping_add(6);
-            if (self.right_visual_phase as i8) < 0 {
-                self.right_visual_phase = 0;
-                self.right_visual_flags = 0;
-                self.spring.raw[7] &= !0x10;
-            }
-        } else if self.spring.flags() & 0x10 != 0 {
-            self.right_visual_flags |= 2;
-            if self.spring.raw[0x1f] as i8 > 0 && self.spring.flags() & 0x80 == 0 {
-                self.right_visual_flags &= !2;
-                self.right_visual_phase = 1;
+
+        if self.flags & 0x80 == 0 {
+            let a = &mut self.spring_visuals[4];
+            a.set16(0xa, x + 32);
+            a.set16(0xe, y);
+            if self.right_visual_flags & 1 == 0 {
+                if self.chao.flags() & 0x80 != 0 {
+                    a.set16(0x14, 246);
+                    if i32::from(self.chao.x()) > x + 40 {
+                        a.raw[0x17] = 0x10;
+                    }
+                    if self.chao.flags() & 0x40 != 0 {
+                        match self.chao.u16(0x14) {
+                            338 => {
+                                a.set16(0x14, 278);
+                                a.raw[0x17] = 0;
+                            }
+                            346 => {
+                                a.set16(0x14, 294);
+                                a.raw[0x17] = 0;
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        let old = a.raw[0x1d];
+                        a.add8(0x1d, 1);
+                        if a.raw[0x1d] > 12 {
+                            a.add16(0x14, 16);
+                            a.raw[0x1d] = old;
+                        }
+                    }
+                } else if self.spring.flags() & 2 != 0 || self.spring.flags() & 4 == 0 {
+                    a.set16(
+                        0x14,
+                        if self.spring.flags() & 2 != 0 {
+                            198
+                        } else {
+                            102
+                        },
+                    );
+                    a.raw[0x1a] = 12;
+                    a.raw[0x19] = 0;
+                } else {
+                    a.add8(0x1a, 1);
+                    if (self.spring.flags() & 8 != 0 && a.raw[0x1a] > 5) || a.raw[0x1a] > 11 {
+                        a.raw[0x1a] = 0;
+                        a.add8(0x19, 1);
+                    }
+                    let tile = i32::from(self.source.spring_walk[usize::from(a.raw[0x19] & 3)]);
+                    a.set16(
+                        0x14,
+                        tile + if self.spring.flags() & 1 != 0 {
+                            150
+                        } else {
+                            102
+                        },
+                    );
+                }
+            } else if self.right_visual_phase != 0 {
+                if self.right_visual_flags & 2 == 0 {
+                    self.right_visual_flags |= 2;
+                    self.affine_pool.release(a.raw[0x17]);
+                    a.set32(0x10, 0x0202_e540);
+                    a.raw[0x17] = 0;
+                    a.raw[0x16] = 0;
+                    self.spring_affines[4] = None;
+                    self.spring.raw[0x1e] = 255;
+                    self.spring.raw[0x1f] = 0;
+                }
+                self.right_visual_phase = self.right_visual_phase.wrapping_add(6);
+                a.set16(0xe, y - self.source.sin(self.right_visual_phase) / 51);
+                if (self.right_visual_phase as i8) < 0 {
+                    a.set16(0x14, 102);
+                    self.right_visual_phase = 0;
+                    self.right_visual_flags = 0;
+                    self.spring.raw[7] &= !0x10;
+                }
+            } else if self.spring.flags() & 0x10 != 0 {
+                if self.right_visual_flags & 2 == 0 {
+                    self.right_visual_flags |= 2;
+                    a.raw[0x17] = self.affine_pool.allocate();
+                }
+                let sy;
+                if compression <= 0 {
+                    a.set16(0x14, 214);
+                    a.raw[0x16] = 1;
+                    a.set16(0xe, y - (compression - 1) / 2);
+                    sy = native_div(6144, compression + 24)?;
+                } else {
+                    a.set32(0x10, 0x0202_e548);
+                    a.set16(0x14, 230);
+                    a.raw[0x16] = 3;
+                    a.set16(0xe, y + (8 - compression) / 2);
+                    sy = native_div(7424, compression + 27)?;
+                    if self.spring.flags() & 0x80 == 0 {
+                        self.right_visual_flags &= !2;
+                        self.right_visual_phase = 1;
+                    }
+                }
+                self.spring_affines[4] = Some(BounceAffineView {
+                    scale_x: 256,
+                    scale_y: sy as i16,
+                    rotation: 0,
+                });
             }
         }
+        self.record_spring_part(4);
+        Ok(())
+    }
+    fn record_spring_part(&mut self, index: usize) {
+        let mut actor: BounceActorView = self.spring_visuals[index].into();
+        actor.visible = self.spring.visible();
+        let affine = if actor.style & 1 != 0 {
+            self.spring_affines[index]
+        } else {
+            None
+        };
+        self.spring_parts.push(BounceSpringPartView {
+            actor,
+            affine,
+            bottom_copy: false,
+            priority: 0x4f,
+        });
+        actor.y = actor.y.wrapping_sub(160).wrapping_add(self.scroll);
+        actor.style |= 4;
+        actor.visible = !(self.flags & 2 != 0
+            && matches!(self.pending, None | Some(Return::Garden)))
+            && self.chao.flags() & 4 == 0
+            && self.remaining != 0;
+        self.spring_parts.push(BounceSpringPartView {
+            actor,
+            affine,
+            bottom_copy: true,
+            priority: 0,
+        });
     }
     fn spring_launch(&mut self, a: &NativeBounceActor) {
         let scale = if a.flags() & 0x10 != 0 {
@@ -1097,6 +1348,7 @@ impl NativeBounceRound {
         } else if a.raw[0x1e] as i8 >= 0 {
             self.spring_compress(a);
         } else if a.raw[0x1e] as i8 >= -4 {
+            self.spring_visuals[4].set16(0x14, 294);
             self.chao.set16(0x14, 346);
             a.raw[0x1a] = 0;
             a.raw[0x1e] = 248;
@@ -1153,6 +1405,9 @@ impl NativeBounceRound {
         bios: &impl BiosMath,
     ) -> Result<(), Error> {
         if a.callback() == 0x0200_f4c0 {
+            a.set32(0x10, 0x0202_e550);
+            a.set16(0x14, 0);
+            a.raw[0x17] = self.affine_pool.allocate();
             a.set16(
                 0xa,
                 if self.stage == 2 || a.raw[0x1c] != 0 {
@@ -1295,6 +1550,7 @@ mod tests {
             trig: [0; 256],
             spring_offsets: [0; 5],
             burst_tiles: [0; 6],
+            spring_walk: [0; 4],
         })
     }
     #[test]
@@ -1445,13 +1701,115 @@ mod tests {
         round.spring.raw[7] = 0x10;
         round.spring.raw[0x1e] = 8;
         round.spring.raw[0x1f] = 6;
-        round.spring_child_step();
+        round.spring_child_step().unwrap();
         assert_eq!((round.spring.raw[0x1e], round.spring.raw[0x1f]), (255, 0));
         assert_eq!(round.spring.flags() & 0x10, 0x10);
         for _ in 0..21 {
-            round.spring_child_step();
+            round.spring_child_step().unwrap();
         }
         assert_eq!(round.spring.flags() & 0x10, 0);
         assert_eq!(round.right_visual_flags, 0);
+    }
+    #[test]
+    fn original_child_poses_precede_the_right_body_parent_reset() {
+        let mut round = synthetic();
+        let mut spring = round.spring;
+        round
+            .spring_step(&mut spring, NativeButtons::default())
+            .unwrap();
+        round.spring = spring;
+        round.flags = 0;
+        round.spring.raw[0x1f] = 6;
+        round.spring.raw[0x1e] = 8;
+        round.right_visual_flags = 1;
+        round.right_visual_phase = 1;
+        round.spring_child_step().unwrap();
+        let parts = round.view().spring_parts;
+        assert_eq!(parts.len(), 10);
+        assert_eq!(parts[0].actor.descriptor_offset, Some(0x2e508));
+        assert_eq!(
+            parts[0].affine,
+            Some(BounceAffineView {
+                scale_x: 436,
+                scale_y: 146,
+                rotation: 0
+            })
+        );
+        assert_eq!(parts[0].actor.y, round.spring.y() - 3);
+        assert_eq!(parts[2].actor.descriptor_offset, Some(0x2e500));
+        assert_eq!(parts[2].actor.y, round.spring.y() - 6);
+        assert_eq!((round.spring.raw[0x1e], round.spring.raw[0x1f]), (255, 0));
+        assert_eq!(parts[8].actor.descriptor_offset, Some(0x2e540));
+        assert_eq!((parts[8].actor.style, parts[8].affine), (0, None));
+    }
+    #[test]
+    fn bottom_children_keep_native_camera_offset_and_exact_suppression_gates() {
+        let mut round = synthetic();
+        let mut spring = round.spring;
+        round
+            .spring_step(&mut spring, NativeButtons::default())
+            .unwrap();
+        round.spring = spring;
+        round.flags = 0;
+        round.chao.raw[7] = 0;
+        round.spring.set16(0xe, -80);
+        round.scroll = 320;
+        round.spring_child_step().unwrap();
+        for pair in round.view().spring_parts.as_chunks::<2>().0 {
+            assert!(!pair[0].actor.visible);
+            assert!(pair[1].actor.visible);
+            assert_eq!(pair[1].actor.y, pair[0].actor.y + 160);
+            assert_eq!(pair[1].actor.style, pair[0].actor.style | 4);
+            assert_eq!(pair[1].affine, pair[0].affine);
+        }
+        round.chao.raw[7] = 4;
+        round.spring_child_step().unwrap();
+        assert!(
+            round
+                .spring_parts
+                .iter()
+                .filter(|p| p.bottom_copy)
+                .all(|p| !p.actor.visible)
+        );
+        round.chao.raw[7] = 0;
+        round.remaining = 0;
+        round.spring_child_step().unwrap();
+        assert!(
+            round
+                .spring_parts
+                .iter()
+                .filter(|p| p.bottom_copy)
+                .all(|p| !p.actor.visible)
+        );
+        round.remaining = 26;
+        round.flags = 2;
+        round.pending = Some(Return::Garden);
+        round.spring_child_step().unwrap();
+        assert!(
+            round
+                .spring_parts
+                .iter()
+                .filter(|p| p.bottom_copy)
+                .all(|p| !p.actor.visible)
+        );
+    }
+    #[test]
+    fn invalid_affine_divisor_rejects_the_entire_candidate_frame() {
+        let mut round = synthetic();
+        round.flags = 0;
+        round.intro = 0;
+        round.chao.set_callback(CHAO_ADDRESS);
+        round.chao.raw[7] = 0x80;
+        round.chao.set16(0x22, 319);
+        round.spring.set_callback(SPRING_ADDRESS);
+        round.spring.raw[0x1f] = (-8_i8) as u8;
+        let before = round.view();
+        let chao = round.chao;
+        assert_eq!(
+            round.step(NativeButtons::default(), &ReferenceBiosMath),
+            Err(Error::InvalidState)
+        );
+        assert_eq!(round.view(), before);
+        assert_eq!(round.chao, chao);
     }
 }
