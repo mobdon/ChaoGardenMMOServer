@@ -33,6 +33,7 @@ pub struct Config {
     pub address: SocketAddr,
     pub owner_bootstrap: bool,
     pub allowed_origins: Vec<String>,
+    pub tiny_garden_payload: Option<PathBuf>,
 }
 impl Config {
     pub fn from_env() -> Result<Self, String> {
@@ -71,6 +72,7 @@ impl Config {
             address: SocketAddr::new(host, port),
             owner_bootstrap,
             allowed_origins,
+            tiny_garden_payload: env::var_os("CHAO_TINY_GARDEN_PAYLOAD").map(PathBuf::from),
         })
     }
     pub fn local(data_dir: PathBuf, owner_bootstrap: bool) -> Self {
@@ -79,6 +81,7 @@ impl Config {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             owner_bootstrap,
             allowed_origins: vec![],
+            tiny_garden_payload: None,
         }
     }
 }
@@ -118,6 +121,9 @@ impl AppState {
             * 1000.;
         let mut game =
             Game::new(profiles, terrains, config.owner_bootstrap, now).map_err(io::Error::other)?;
+        if let Some(path) = &config.tiny_garden_payload {
+            game.tiny_shop_catalog = Some(crate::care::load_tiny_shop(path)?);
+        }
         match (
             env::var_os("CHAO_CARE_AUDIT_DIR"),
             env::var_os("CHAO_CARE_EXECUTABLE"),
@@ -333,8 +339,8 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
     let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
     Json(
         json!({"ok": true, "mode": if state.config.address.ip().is_loopback() { "local-development" } else { "server" },
-        "online": game.online_connections(), "setup": setup,
-        "tinyGarden":{"games":["memory","rock_paper_scissors","bounce","ball","search"],"rules":"adapted","maxRingReward":crate::phone::MAX_RING_REWARD},
+        "online": game.online_connections(), "setup": setup,"capabilities":{"careMutations":true},
+        "tinyGarden":{"games":["memory","rock_paper_scissors","bounce","ball","search"],"rules":"adapted","maxRingReward":crate::phone::MAX_RING_REWARD,"shop":crate::care::tiny_shop_catalog(&game),"autoResident":true,"observerSockets":true},
         "terrain": {"loaded": game.terrains.keys().collect::<Vec<_>>(), "flatFallback": TERRAIN_ZONES.into_iter().filter(|zone| !game.terrains.contains_key(*zone)).collect::<Vec<_>>()}}),
     )
 }
@@ -570,12 +576,23 @@ async fn asset_or_missing(
 #[derive(Deserialize)]
 struct TokenQuery {
     token: Option<String>,
+    observe: Option<u8>,
+}
+fn connection_snapshot(game: &Game, id: &str, observer: bool) -> Value {
+    let mut snapshot = game.snapshot(id);
+    snapshot["connectionMode"] = json!(if observer { "observe" } else { "control" });
+    snapshot
 }
 async fn upgrade(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let observer = match query.observe {
+        None | Some(0) => false,
+        Some(1) => true,
+        _ => return error(StatusCode::BAD_REQUEST, "Invalid observation mode."),
+    };
     let id = query.token.as_deref().and_then(|token| {
         state
             .game
@@ -589,17 +606,18 @@ async fn upgrade(
     };
     ws.max_message_size(2048)
         .max_frame_size(2048)
-        .on_upgrade(move |socket| handle_socket(socket, state, id))
+        .on_upgrade(move |socket| handle_socket(socket, state, id, observer))
 }
-async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
+async fn handle_socket(socket: WebSocket, state: AppState, id: String, observer: bool) {
     let mut events = state.events.subscribe();
     let mut shutdown = state.shutdown.subscribe();
     let (mut writer, mut reader) = socket.split();
     let initial = {
         let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-        game.connect(&id);
-        let owner = game.players.get(&id).is_some_and(|p| p.admin);
-        game.notice(
+        if !observer {
+            game.connect(&id);
+            let owner = game.players.get(&id).is_some_and(|p| p.admin);
+            game.notice(
             &id,
             if owner {
                 "Welcome, owner! Your admin Chao has all S grades, level 99, and max hidden stats."
@@ -607,19 +625,22 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
                 "Welcome to the garden! Move with WASD and explore with other Chao."
             },
             "info",
-        );
-        game.snapshot(&id)
+            );
+        }
+        connection_snapshot(&game, &id, observer)
     };
     if writer
         .send(Message::Text(initial.to_string().into()))
         .await
         .is_err()
     {
-        state
-            .game
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .disconnect(&id);
+        if !observer {
+            state
+                .game
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .disconnect(&id);
+        }
         return;
     }
     let mut snapshots = tokio::time::interval(Duration::from_millis(100));
@@ -634,7 +655,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
     loop {
         let outgoing: Option<Message> = tokio::select! {
             _ = shutdown.changed() => break,
-            _ = snapshots.tick() => Some(Message::Text(state.game.lock().unwrap_or_else(|p| p.into_inner()).snapshot(&id).to_string().into())),
+            _ = snapshots.tick() => Some(Message::Text(connection_snapshot(&state.game.lock().unwrap_or_else(|p| p.into_inner()),&id,observer).to_string().into())),
             event = events.recv() => match event {
                 Ok(event) if event.target.as_deref().is_none_or(|target| target == id) => Some(Message::Text(event.message.to_string().into())),
                 Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => None, Err(_) => break,
@@ -648,7 +669,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
                         if window.elapsed() >= Duration::from_secs(1) { window = Instant::now(); count = 0; } count += 1;
                         if count > 80 { let _ = writer.send(Message::Close(Some(CloseFrame { code: 1008, reason: "Message rate exceeded.".into() }))).await; break; }
                         let mut response = None;
-                        if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
+                        if observer {
+                            response=Some(Message::Text(json!({"type":"notice","kind":"error","code":"observer-read-only","text":"This connection only observes your Chao. Open Tiny Garden for activities."}).to_string().into()));
+                        } else if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
                             let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
                             match value["type"].as_str() {
                                 Some("input") => game.set_input(&id, &value),
@@ -698,11 +721,13 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
             break;
         }
     }
-    state
-        .game
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .disconnect(&id);
+    if !observer {
+        state
+            .game
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .disconnect(&id);
+    }
 }
 
 pub fn spawn_simulation(state: AppState) -> tokio::task::JoinHandle<()> {

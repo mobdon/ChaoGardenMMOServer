@@ -323,6 +323,7 @@ pub const SHOP_CATALOG: [ShopItem; 1] = [ShopItem {
 
 pub struct Game {
     pub care_catalog: crate::care_catalog::CareCatalog,
+    pub tiny_shop_catalog: Option<tiny_garden_core::shop::TinyShopCatalog>,
     pub activities: ActivityCatalog,
     pub time: f64,
     pub allow_owner_bootstrap: bool,
@@ -380,6 +381,7 @@ impl Game {
         }
         let mut game = Self {
             care_catalog: crate::care_catalog::CareCatalog::default(),
+            tiny_shop_catalog: None,
             activities: ActivityCatalog::default(),
             time: now,
             allow_owner_bootstrap,
@@ -526,6 +528,7 @@ impl Game {
         self.teleport(&mut player, "hub", 0., 6.)?;
         player.update_form();
         watch::restore(self, &mut player, &data["resident"]);
+        watch::maintain_tiny(self, &mut player);
         Ok(player)
     }
 
@@ -567,7 +570,12 @@ impl Game {
     pub fn disconnect(&mut self, id: &str) {
         if let Some(mut player) = self.players.remove(id) {
             player.connections = player.connections.saturating_sub(1);
-            if player.connections == 0 && player.watch.is_none() {
+            if player.connections == 0 && player.care.tiny_resident {
+                if !player.tiny_game.as_ref().is_some_and(TinyRun::saving) {
+                    player.tiny_game = None;
+                }
+                watch::maintain_tiny(self, &mut player);
+            } else if player.connections == 0 && player.watch.is_none() {
                 let _ = self.teleport(&mut player, "hub", 0., 6.);
                 if !player.tiny_game.as_ref().is_some_and(TinyRun::saving) {
                     player.tiny_game = None;
@@ -580,6 +588,7 @@ impl Game {
         if let Some(player) = self.players.get_mut(id).filter(|p| p.connections > 0) {
             if player.tiny_game.is_some()
                 || player.watch.is_some()
+                || player.care.tiny_resident
                 || player.care.activity_lock.is_some()
             {
                 return;
@@ -758,6 +767,10 @@ impl Game {
         }
         if action.starts_with("watch-") {
             watch::action(self, p, message);
+            return;
+        }
+        if p.care.tiny_resident && matches!(action, "tiny-start" | "tiny-stop") {
+            phone::action(self, p, message);
             return;
         }
         if p.watch.is_some() {
@@ -1311,6 +1324,7 @@ impl Game {
         let ids: Vec<_> = self.players.keys().cloned().collect();
         for id in ids {
             let mut p = self.players.remove(&id).unwrap();
+            watch::maintain_tiny(self, &mut p);
             if p.connections == 0 && p.watch.is_none() {
                 self.players.insert(id, p);
                 continue;

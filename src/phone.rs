@@ -1,6 +1,9 @@
 //! Adapted Tiny Garden games: input-only control, one run per profile and a
 //! staged reward whose ring credit and receipt share one atomic profile write.
-use crate::game::{Event, Game, Input, Player};
+use crate::{
+    game::{Event, Game, Input, Player},
+    watch,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -100,6 +103,8 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
             }
             if player.race.is_some()
                 || player.karate.is_some()
+                || player.care.activity_lock.is_some()
+                || (player.care.tiny_resident && player.vehicle.is_some())
                 || !["hub", "garden", "hero", "dark"].contains(&player.zone.as_str())
             {
                 game.notice(&player.id, "Finish your current activity and return to a garden before starting a Tiny Garden game.", "error");
@@ -123,6 +128,9 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
             }
             if player.vehicle.take().is_some() {
                 game.dirty = true;
+            }
+            if player.care.tiny_resident {
+                player.watch = None;
             }
             player.tiny_game = Some(TinyRun {
                 id: Uuid::new_v4().to_string(),
@@ -158,6 +166,7 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
             }
             player.tiny_game = None;
             player.input = Input::default();
+            watch::maintain_tiny(game, player);
         }
         _ => {}
     }
@@ -301,8 +310,9 @@ pub fn commit_rewards(game: &mut Game) {
             target: Some(player.id.clone()),
             message,
         });
-        if player.connections == 0 {
+        if player.connections == 0 || player.care.tiny_resident {
             player.tiny_game = None;
         }
     }
+    watch::maintain_all(game);
 }

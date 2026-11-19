@@ -7,13 +7,17 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::{fs, io, io::Read, path::Path};
 use uuid::Uuid;
 
 pub const RULES: &str = "adapted-care-v1";
+pub const TINY_SHOP_RULES: &str = "adapted-tiny-shop-v1";
+pub const TINY_FRUIT_RULES: &str = "adapted-tiny-fruit-care-v1";
 pub const MAX_RECEIPTS: usize = 4096;
 pub const MAX_QUANTITY: u32 = 99;
 pub const MAX_PICKUPS: usize = 100;
 const EFFECT_COOLDOWN_MS: f64 = 1500.;
+const GARDEN_FRUIT_PRICE: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
@@ -26,6 +30,13 @@ pub enum Intent {
         #[serde(rename = "itemId")]
         item_id: String,
     },
+    #[serde(rename = "tiny_purchase")]
+    TinyPurchase {
+        #[serde(rename = "itemId")]
+        item_id: String,
+    },
+    #[serde(rename = "tiny_enter")]
+    TinyEnter,
     Pickup {
         #[serde(rename = "pickupId")]
         pickup_id: String,
@@ -74,6 +85,9 @@ pub struct CareState {
     pub last_effect_at: Option<f64>,
     /// A server-owned integration hook for durable training / device activity leases.
     pub activity_lock: Option<String>,
+    /// Durable, explicit Tiny Garden residency opt-in. Legacy profiles stay manual.
+    #[serde(default)]
+    pub tiny_resident: bool,
 }
 
 impl Default for CareState {
@@ -88,6 +102,7 @@ impl Default for CareState {
             receipts: BTreeMap::new(),
             last_effect_at: None,
             activity_lock: None,
+            tiny_resident: false,
         }
     }
 }
@@ -97,16 +112,22 @@ fn native_id(item_id: &str) -> Option<u8> {
     (id < 25 && item_id == format!("sa2:{id}")).then_some(id)
 }
 fn valid_item(item_id: &str) -> bool {
-    item_id == "garden-fruit" || native_id(item_id).is_some()
+    item_id == "garden-fruit" || native_id(item_id).is_some() || tiny_fruit_id(item_id).is_some()
+}
+fn tiny_fruit_id(item_id: &str) -> Option<usize> {
+    let id = item_id.strip_prefix("tiny-fruit:")?.parse::<usize>().ok()?;
+    (id < 7 && item_id == format!("tiny-fruit:{id}")).then_some(id)
 }
 fn valid_request(r: &Request) -> bool {
     r.message_type == "care"
         && Uuid::parse_str(&r.request_id)
             .is_ok_and(|id| id.hyphenated().to_string() == r.request_id)
         && match &r.intent {
-            Intent::Consume { item_id } | Intent::Purchase { item_id } => valid_item(item_id),
+            Intent::Consume { item_id }
+            | Intent::Purchase { item_id }
+            | Intent::TinyPurchase { item_id } => valid_item(item_id),
             Intent::Pickup { pickup_id } => !pickup_id.is_empty() && pickup_id.len() <= 128,
-            Intent::Pet => true,
+            Intent::Pet | Intent::TinyEnter => true,
         }
 }
 
@@ -120,7 +141,7 @@ impl CareState {
             serde_json::from_value(value.clone()).map_err(|_| "Invalid saved care state")?;
         if state.version != 1
             || !state.evidence.valid()
-            || state.inventory.len() > 26
+            || state.inventory.len() > 33
             || state
                 .inventory
                 .iter()
@@ -199,7 +220,7 @@ pub fn failure(game: &Game, id: &str, message: &Value, code: &str) -> Value {
 fn conflict(p: &Player, pickup: bool) -> bool {
     p.connections == 0
         || p.care.activity_lock.is_some()
-        || p.watch.is_some()
+        || p.watch.is_some() && !p.care.tiny_resident
         || p.tiny_game.is_some()
         || p.race.is_some()
         || p.karate.is_some()
@@ -211,16 +232,87 @@ fn conflict(p: &Player, pickup: bool) -> bool {
         }
 }
 
+/// This inventory offer is an explicit adaptation, not an audited native fruit table.
+pub fn tiny_shop_catalog(game: &Game) -> Value {
+    let mut items = vec![
+        json!({"itemId":"garden-fruit","name":"Garden Fruit","price":GARDEN_FRUIT_PRICE,
+        "enabled":true,"maxQuantity":MAX_QUANTITY}),
+    ];
+    let native = if let Some(catalog) = &game.tiny_shop_catalog {
+        for fruit in &catalog.fruits {
+            let name = ["Orange", "Blue", "Pink", "Green", "Purple", "Yellow", "Red"]
+                [usize::from(fruit.id)];
+            items.push(json!({"itemId":format!("tiny-fruit:{}",fruit.id),"name":format!("{name} Fruit"),
+                "price":fruit.price,"enabled":true,"maxQuantity":MAX_QUANTITY,"source":"native-a2ne",
+                "effectRules":TINY_FRUIT_RULES,"rawEffects":{"units":"signed-native-tiny-fruit-bytes",
+                    "fields":["mood","belly","swim","fly","run","power","stamina"],"values":fruit.raw}}));
+        }
+        json!({"enabled":true,"payloadSha1":tiny_garden_core::gba::REFERENCE_GARDEN_SHA1,
+            "effectsOffset":tiny_garden_core::shop::EFFECTS_OFFSET,"pricesOffset":tiny_garden_core::shop::PRICES_OFFSET,
+            "effectsSha256":tiny_garden_core::shop::EFFECTS_SHA256,"pricesSha256":tiny_garden_core::shop::PRICES_SHA256,
+            "applicationRules":TINY_FRUIT_RULES,"nativeLevelUpPorted":false})
+    } else {
+        json!({"enabled":false,"reason":"native-data-unavailable"})
+    };
+    json!({"rulesVersion":TINY_SHOP_RULES,"enabled":true,"items":items,"nativeCatalog":native})
+}
+
+pub fn load_tiny_shop(path: &Path) -> io::Result<tiny_garden_core::shop::TinyShopCatalog> {
+    let metadata = fs::metadata(path)?;
+    let expected = tiny_garden_core::gba::REFERENCE_GARDEN_LEN;
+    if !metadata.is_file() || metadata.len() != expected as u64 {
+        return Err(io::Error::other(
+            "Tiny Garden payload length is unsupported",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(expected);
+    fs::File::open(path)?
+        .take(expected as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    tiny_garden_core::shop::TinyShopCatalog::from_verified_payload(&bytes).map_err(io::Error::other)
+}
+
+fn tiny_purchase_block(game: &Game, p: &Player) -> Option<&'static str> {
+    if conflict(p, false) {
+        Some("activity-conflict")
+    } else if p.care.receipts.len() >= MAX_RECEIPTS || p.care.revision == u64::MAX {
+        Some("receipt-capacity")
+    } else {
+        let mut offers = vec![("garden-fruit".to_owned(), GARDEN_FRUIT_PRICE)];
+        if let Some(catalog) = &game.tiny_shop_catalog {
+            offers.extend(
+                catalog
+                    .fruits
+                    .iter()
+                    .map(|fruit| (format!("tiny-fruit:{}", fruit.id), fruit.price)),
+            );
+        }
+        if !offers.iter().any(|(_, price)| p.rings >= *price) {
+            Some("insufficient-rings")
+        } else if !offers.iter().any(|(id, price)| {
+            p.rings >= *price && p.care.inventory.get(id).copied().unwrap_or(0) < MAX_QUANTITY
+        }) {
+            Some("inventory-full")
+        } else {
+            None
+        }
+    }
+}
+
 pub fn public(game: &Game, id: &str) -> Value {
     let Some(p) = game.players.get(id) else {
         return Value::Null;
     };
     let native = game.care_catalog.public();
+    let mut tiny_shop = tiny_shop_catalog(game);
+    let blocked = tiny_purchase_block(game, p);
+    tiny_shop["eligibility"] = json!({"canPurchase":blocked.is_none(),"reason":blocked});
     json!({"rulesVersion":RULES,"revision":p.care.revision,"inventory":p.care.inventory,
         "needs":{"energy":p.energy,"satiety":p.hunger,"happiness":p.happiness,"units":"adapted-0-to-100"},
         "evidence":p.care.evidence.public(),"rawTotals":p.care.raw_totals,
         "rawUnits":crate::care_catalog::RAW_UNITS,"pointPolicy":"adapted-one-raw-unit-to-one-point-clamp-0-9999-no-level-or-grade-change",
-        "pickups":p.care.pickups.values().collect::<Vec<_>>(),"catalog":native,
+        "pickups":p.care.pickups.values().collect::<Vec<_>>(),"catalog":native,"tinyShop":tiny_shop,
+        "tinyResident":crate::watch::tiny_public(p),
         "shop":[{"itemId":"garden-fruit","price":3,"enabled":true,"rules":"adapted"},{"itemId":"sa2:22","price":12,"enabled":game.care_catalog.enabled(),"rules":"adapted"},{"itemId":"sa2:23","price":12,"enabled":game.care_catalog.enabled(),"rules":"adapted"}],
         "eligibility":{"canCare":!conflict(p,false),"canPickup":!conflict(p,true),"activityLock":p.care.activity_lock,
             "effectReadyAt":p.care.last_effect_at.map(|at|at+EFFECT_COOLDOWN_MS),"receiptCapacityRemaining":MAX_RECEIPTS.saturating_sub(p.care.receipts.len())}})
@@ -274,10 +366,35 @@ fn points(p: &mut Player, name: &str, delta: i16) -> i64 {
 
 fn apply(game: &Game, p: &mut Player, request: &Request, now: f64) -> Result<Value, &'static str> {
     let catalog = &game.care_catalog;
-    if conflict(p, matches!(request.intent, Intent::Pickup { .. })) {
+    if !matches!(request.intent, Intent::TinyEnter)
+        && conflict(p, matches!(request.intent, Intent::Pickup { .. }))
+    {
         return Err("activity-conflict");
     }
     match &request.intent {
+        Intent::TinyEnter => {
+            crate::watch::enter_tiny(game, p)?;
+            Ok(json!({"tinyResident":crate::watch::tiny_public(p)}))
+        }
+        Intent::TinyPurchase { item_id } => {
+            let price = if item_id == "garden-fruit" {
+                GARDEN_FRUIT_PRICE
+            } else if let Some(id) = tiny_fruit_id(item_id) {
+                game.tiny_shop_catalog
+                    .as_ref()
+                    .ok_or("native-data-unavailable")?
+                    .fruits[id]
+                    .price
+            } else {
+                return Err("not-for-sale");
+            };
+            if p.rings < price {
+                return Err("insufficient-rings");
+            }
+            add_quantity(p, item_id)?;
+            p.rings -= price;
+            Ok(json!({"rings":-(i64::from(price)),"inventory":{item_id:1}}))
+        }
         Intent::Purchase { item_id } => {
             let price = match item_id.as_str() {
                 "garden-fruit" => 3,
@@ -332,7 +449,27 @@ fn apply(game: &Game, p: &mut Player, request: &Request, now: f64) -> Result<Val
             effect_ready(p, now)?;
             let (energy, hunger, happiness) = (p.energy, p.hunger, p.happiness);
             let mut delta = BTreeMap::new();
-            let raw = if item_id == "garden-fruit" {
+            let raw = if let Some(id) = tiny_fruit_id(item_id) {
+                let fruit = &game
+                    .tiny_shop_catalog
+                    .as_ref()
+                    .ok_or("native-data-unavailable")?
+                    .fruits[id];
+                take_quantity(p, item_id)?;
+                // Native needs use signed-byte ×20 in a 0..200 range. Map to
+                // this host's 0..100 needs explicitly; native experience-bar
+                // level-up behavior is not copied into our canonical skills.
+                p.happiness = (p.happiness + f64::from(fruit.raw[0]) * 10.).clamp(0., 100.);
+                p.hunger = (p.hunger + f64::from(fruit.raw[1]) * 10.).clamp(0., 100.);
+                for (name, value) in ["swim", "fly", "run", "power", "stamina"]
+                    .into_iter()
+                    .zip(fruit.raw[2..].iter())
+                {
+                    delta.insert(name, points(p, name, i16::from(*value) * 10));
+                }
+                json!({"source":"native-a2ne","fruitId":fruit.id,"fields":["mood","belly","swim","fly","run","power","stamina"],
+                    "values":fruit.raw,"units":"signed-native-tiny-fruit-bytes","applicationRules":TINY_FRUIT_RULES,"nativeLevelUpPorted":false})
+            } else if item_id == "garden-fruit" {
                 take_quantity(p, item_id)?;
                 p.energy = (p.energy + 35.).min(100.);
                 p.hunger = (p.hunger + 30.).min(100.);
