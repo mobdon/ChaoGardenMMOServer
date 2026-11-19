@@ -8,5 +8,7 @@ pub mod gba;
 pub mod native_growth;
 pub mod native_hatching;
 pub mod native_save;
+pub mod native_shop_state;
+pub mod native_weeds;
 pub mod shop;
 pub mod training;
