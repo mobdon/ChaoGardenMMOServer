@@ -27,6 +27,15 @@ use tokio::{
     time::{Instant, MissedTickBehavior},
 };
 
+/// Trusted wall time for persisted AFK deadlines, independent of skipped simulation ticks.
+pub fn trusted_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub data_dir: PathBuf,
@@ -246,6 +255,26 @@ impl AppState {
     }
     /// The WebSocket mutex serializes devices; success is visible only after durable commit.
     pub fn care_action(&self, game: &mut Game, id: &str, message: &Value) -> io::Result<Value> {
+        self.care_action_at(game, id, message, trusted_unix_ms())
+    }
+    /// Host/test clock injection only; there is no client clock field or endpoint.
+    pub fn care_action_at(
+        &self,
+        game: &mut Game,
+        id: &str,
+        message: &Value,
+        now: u64,
+    ) -> io::Result<Value> {
+        self.care_action_inner(game, id, message, now, false)
+    }
+    fn care_action_inner(
+        &self,
+        game: &mut Game,
+        id: &str,
+        message: &Value,
+        now: u64,
+        automatic: bool,
+    ) -> io::Result<Value> {
         let before = game
             .players
             .get(id)
@@ -253,7 +282,7 @@ impl AppState {
             .ok_or_else(|| io::Error::other("Missing profile"))?;
         let was_dirty = game.dirty;
         let event_count = game.events.len();
-        let response = crate::care::action(game, id, message);
+        let response = crate::care::action_at(game, id, message, now, automatic);
         if response["accepted"] == true
             && response["replayed"] == false
             && let Err(error) = self.persist(game)
@@ -264,6 +293,25 @@ impl AppState {
             return Err(error);
         }
         Ok(response)
+    }
+    /// Closes ready jobs under the same mutex and atomic store as explicit care.
+    pub fn settle_ready_training_at(&self, game: &mut Game, now: u64) -> io::Result<usize> {
+        let ready: Vec<_> = game
+            .players
+            .iter()
+            .filter_map(|(id, p)| crate::training::ready_job(p, now).map(|job| (id.clone(), job)))
+            .collect();
+        let mut count = 0;
+        for (id, job) in ready {
+            let revision = game.players[&id].care.revision;
+            let request = json!({"type":"care","requestId":uuid::Uuid::new_v4().to_string(),"expectedRevision":revision,"intent":{"kind":"training_settle","jobId":job}});
+            let result = self.care_action_inner(game, &id, &request, now, true)?;
+            if result["accepted"] == true && result["replayed"] == false {
+                count += 1;
+                game.events.push(Event{target:Some(id),message:json!({"type":"event","kind":"training-result","revision":result["revision"],"result":result["effects"]["training"],"rulesVersion":crate::training::RULES})});
+            }
+        }
+        Ok(count)
     }
 }
 
@@ -340,7 +388,7 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
     Json(
         json!({"ok": true, "mode": if state.config.address.ip().is_loopback() { "local-development" } else { "server" },
         "online": game.online_connections(), "setup": setup,"capabilities":{"careMutations":true},
-        "tinyGarden":{"games":["memory","rock_paper_scissors","bounce","ball","search"],"rules":"adapted","maxRingReward":crate::phone::MAX_RING_REWARD,"shop":crate::care::tiny_shop_catalog(&game),"autoResident":true,"observerSockets":true},
+        "tinyGarden":{"games":["memory","rock_paper_scissors","bounce","ball","search"],"rules":"adapted","maxRingReward":crate::phone::MAX_RING_REWARD,"shop":crate::care::tiny_shop_catalog(&game),"autoResident":true,"observerSockets":true,"training":crate::training::capability()},
         "terrain": {"loaded": game.terrains.keys().collect::<Vec<_>>(), "flatFallback": TERRAIN_ZONES.into_iter().filter(|zone| !game.terrains.contains_key(*zone)).collect::<Vec<_>>()}}),
     )
 }
@@ -742,6 +790,7 @@ pub fn spawn_simulation(state: AppState) -> tokio::task::JoinHandle<()> {
                 _ = shutdown.changed() => break,
                 _ = simulation.tick() => {
                     let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner()); game.tick(0.05);
+                    if let Err(error)=state.settle_ready_training_at(&mut game,trusted_unix_ms()) { eprintln!("Could not settle ready training: {error}"); }
                     if crate::phone::has_pending(&game) && game.time >= game.tiny_save_retry_at
                         && let Err(value)=state.persist(&mut game) {
                         eprintln!("Could not save Tiny Garden result: {value}");

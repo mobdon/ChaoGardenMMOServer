@@ -5,6 +5,7 @@ pub mod evolution;
 pub mod game;
 pub mod phone;
 pub mod service;
+pub mod training;
 pub mod watch;
 
 #[cfg(test)]

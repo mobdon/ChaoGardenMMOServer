@@ -14,6 +14,7 @@ pub const RULES: &str = "adapted-care-v1";
 pub const TINY_SHOP_RULES: &str = "adapted-tiny-shop-v1";
 pub const TINY_FRUIT_RULES: &str = "adapted-tiny-fruit-care-v1";
 pub const MAX_RECEIPTS: usize = 4096;
+pub const MAX_HISTORY: usize = 64;
 pub const MAX_QUANTITY: u32 = 99;
 pub const MAX_PICKUPS: usize = 100;
 const EFFECT_COOLDOWN_MS: f64 = 1500.;
@@ -37,6 +38,22 @@ pub enum Intent {
     },
     #[serde(rename = "tiny_enter")]
     TinyEnter,
+    #[serde(rename = "training_start")]
+    TrainingStart {
+        stat: tiny_garden_core::training::Stat,
+        #[serde(rename = "durationMs")]
+        duration_ms: u64,
+    },
+    #[serde(rename = "training_cancel")]
+    TrainingCancel {
+        #[serde(rename = "jobId")]
+        job_id: u64,
+    },
+    #[serde(rename = "training_settle")]
+    TrainingSettle {
+        #[serde(rename = "jobId")]
+        job_id: u64,
+    },
     Pickup {
         #[serde(rename = "pickupId")]
         pickup_id: String,
@@ -72,6 +89,43 @@ pub struct Receipt {
     pub effects: Value,
 }
 
+/// A bounded display log of actual accepted care transactions. The receipt
+/// ledger remains complete and authoritative when older display rows expire.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryEntry {
+    pub id: String,
+    /// Trusted host Unix time, never the browser or simulation clock.
+    pub at: u64,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    pub result: Value,
+}
+
+impl HistoryEntry {
+    fn from_receipt(receipt: &Receipt, at: u64) -> Self {
+        let (kind, item_id) = match &receipt.request.intent {
+            Intent::Consume { item_id } => ("consume", Some(item_id.clone())),
+            Intent::Purchase { item_id } => ("purchase", Some(item_id.clone())),
+            Intent::TinyPurchase { item_id } => ("tiny_purchase", Some(item_id.clone())),
+            Intent::TinyEnter => ("tiny_enter", None),
+            Intent::TrainingStart { .. } => ("training_start", None),
+            Intent::TrainingCancel { .. } => ("training_cancel", None),
+            Intent::TrainingSettle { .. } => ("training_settle", None),
+            Intent::Pickup { .. } => ("pickup", None),
+            Intent::Pet => ("pet", None),
+        };
+        Self {
+            id: receipt.request.request_id.clone(),
+            at,
+            kind: kind.into(),
+            item_id,
+            result: receipt.effects.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CareState {
@@ -82,12 +136,17 @@ pub struct CareState {
     pub raw_totals: BTreeMap<String, i64>,
     pub pickups: BTreeMap<String, Pickup>,
     pub receipts: BTreeMap<String, Receipt>,
+    /// Legacy profiles begin empty: never invent activities from old receipts.
+    #[serde(default)]
+    pub history: Vec<HistoryEntry>,
     pub last_effect_at: Option<f64>,
     /// A server-owned integration hook for durable training / device activity leases.
     pub activity_lock: Option<String>,
     /// Durable, explicit Tiny Garden residency opt-in. Legacy profiles stay manual.
     #[serde(default)]
     pub tiny_resident: bool,
+    #[serde(default)]
+    pub training: Option<crate::training::TrainingState>,
 }
 
 impl Default for CareState {
@@ -100,9 +159,11 @@ impl Default for CareState {
             raw_totals: BTreeMap::new(),
             pickups: BTreeMap::new(),
             receipts: BTreeMap::new(),
+            history: Vec::new(),
             last_effect_at: None,
             activity_lock: None,
             tiny_resident: false,
+            training: None,
         }
     }
 }
@@ -128,6 +189,12 @@ fn valid_request(r: &Request) -> bool {
             | Intent::TinyPurchase { item_id } => valid_item(item_id),
             Intent::Pickup { pickup_id } => !pickup_id.is_empty() && pickup_id.len() <= 128,
             Intent::Pet | Intent::TinyEnter => true,
+            Intent::TrainingStart { duration_ms, .. } => {
+                *duration_ms >= 60000
+                    && *duration_ms <= 28800000
+                    && duration_ms.is_multiple_of(60000)
+            }
+            Intent::TrainingCancel { job_id } | Intent::TrainingSettle { job_id } => *job_id > 0,
         }
 }
 
@@ -140,6 +207,10 @@ impl CareState {
         let state: Self =
             serde_json::from_value(value.clone()).map_err(|_| "Invalid saved care state")?;
         if state.version != 1
+            || state
+                .training
+                .as_ref()
+                .is_some_and(|training| training.validate(None).is_err())
             || !state.evidence.valid()
             || state.inventory.len() > 33
             || state
@@ -147,6 +218,16 @@ impl CareState {
                 .iter()
                 .any(|(key, n)| !valid_item(key) || *n == 0 || *n > MAX_QUANTITY)
             || state.receipts.len() > MAX_RECEIPTS
+            || state.history.len() > MAX_HISTORY
+            || state.history.iter().any(|entry| {
+                state
+                    .receipts
+                    .get(&entry.id)
+                    .is_none_or(|receipt| *entry != HistoryEntry::from_receipt(receipt, entry.at))
+            })
+            || state.history.windows(2).any(|pair| {
+                state.receipts[&pair[0].id].revision >= state.receipts[&pair[1].id].revision
+            })
             || state.pickups.len() > MAX_PICKUPS
             || state
                 .last_effect_at
@@ -313,6 +394,8 @@ pub fn public(game: &Game, id: &str) -> Value {
         "rawUnits":crate::care_catalog::RAW_UNITS,"pointPolicy":"adapted-one-raw-unit-to-one-point-clamp-0-9999-no-level-or-grade-change",
         "pickups":p.care.pickups.values().collect::<Vec<_>>(),"catalog":native,"tinyShop":tiny_shop,
         "tinyResident":crate::watch::tiny_public(p),
+        "training":crate::training::public(p,crate::service::trusted_unix_ms()),
+        "history":p.care.history,
         "shop":[{"itemId":"garden-fruit","price":3,"enabled":true,"rules":"adapted"},{"itemId":"sa2:22","price":12,"enabled":game.care_catalog.enabled(),"rules":"adapted"},{"itemId":"sa2:23","price":12,"enabled":game.care_catalog.enabled(),"rules":"adapted"}],
         "eligibility":{"canCare":!conflict(p,false),"canPickup":!conflict(p,true),"activityLock":p.care.activity_lock,
             "effectReadyAt":p.care.last_effect_at.map(|at|at+EFFECT_COOLDOWN_MS),"receiptCapacityRemaining":MAX_RECEIPTS.saturating_sub(p.care.receipts.len())}})
@@ -364,14 +447,39 @@ fn points(p: &mut Player, name: &str, delta: i16) -> i64 {
     i64::from(stat.points) - i64::from(before)
 }
 
-fn apply(game: &Game, p: &mut Player, request: &Request, now: f64) -> Result<Value, &'static str> {
+fn apply(
+    game: &Game,
+    p: &mut Player,
+    request: &Request,
+    now: f64,
+    training_now: u64,
+    automatic: bool,
+) -> Result<Value, &'static str> {
     let catalog = &game.care_catalog;
+    if matches!(
+        request.intent,
+        Intent::TrainingStart { .. }
+            | Intent::TrainingCancel { .. }
+            | Intent::TrainingSettle { .. }
+    ) {
+        return crate::training::apply(
+            game,
+            p,
+            &request.intent,
+            training_now,
+            &request.request_id,
+            automatic,
+        );
+    }
     if !matches!(request.intent, Intent::TinyEnter)
         && conflict(p, matches!(request.intent, Intent::Pickup { .. }))
     {
         return Err("activity-conflict");
     }
     match &request.intent {
+        Intent::TrainingStart { .. }
+        | Intent::TrainingCancel { .. }
+        | Intent::TrainingSettle { .. } => unreachable!("training is dispatched above"),
         Intent::TinyEnter => {
             crate::watch::enter_tiny(game, p)?;
             Ok(json!({"tinyResident":crate::watch::tiny_public(p)}))
@@ -510,7 +618,23 @@ fn apply(game: &Game, p: &mut Player, request: &Request, now: f64) -> Result<Val
 }
 
 /// Mutates only one canonical profile. The host commits it before returning success.
+#[cfg(test)]
 pub(crate) fn action(game: &mut Game, id: &str, message: &Value) -> Value {
+    action_at(
+        game,
+        id,
+        message,
+        game.time.max(0.).min(u64::MAX as f64) as u64,
+        false,
+    )
+}
+pub(crate) fn action_at(
+    game: &mut Game,
+    id: &str,
+    message: &Value,
+    training_now: u64,
+    automatic: bool,
+) -> Value {
     let Ok(request) = serde_json::from_value::<Request>(message.clone()) else {
         return failure(game, id, message, "invalid-request");
     };
@@ -541,20 +665,33 @@ pub(crate) fn action(game: &mut Game, id: &str, message: &Value) -> Value {
         return failure(game, id, message, "receipt-capacity");
     }
     let mut next = p.clone();
-    let effects = match apply(game, &mut next, &request, game.time) {
+    let effects = match apply(
+        game,
+        &mut next,
+        &request,
+        game.time,
+        training_now,
+        automatic,
+    ) {
         Ok(e) => e,
         Err(code) => return failure(game, id, message, code),
     };
     next.care.revision += 1;
     let revision = next.care.revision;
-    next.care.receipts.insert(
-        request.request_id.clone(),
-        Receipt {
-            request: request.clone(),
-            revision,
-            effects: effects.clone(),
-        },
-    );
+    let receipt = Receipt {
+        request: request.clone(),
+        revision,
+        effects: effects.clone(),
+    };
+    next.care
+        .history
+        .push(HistoryEntry::from_receipt(&receipt, training_now));
+    if next.care.history.len() > MAX_HISTORY {
+        next.care.history.remove(0);
+    }
+    next.care
+        .receipts
+        .insert(request.request_id.clone(), receipt);
     game.players.insert(id.into(), next);
     game.dirty = true;
     result(&request.request_id, true, false, "ok", revision, effects)

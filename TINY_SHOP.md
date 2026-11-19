@@ -5,6 +5,10 @@ canonical Rust care transaction, shared wallet/inventory, revisions and UUID
 receipts. It does not replace the live server, migrate its saves or implement
 all original Tiny Garden systems.
 
+The next isolated Rust slice connects durable AFK jobs and actual bounded care
+history through this same canonical transaction; see [TRAINING.md](TRAINING.md)
+for its exact wire, trusted time, atomic closure and transport evidence.
+
 ## Actual service contract
 
 `GET /api/status` advertises `capabilities.careMutations:true`,

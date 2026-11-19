@@ -470,3 +470,190 @@ async fn tiny_enter_minigame_and_passive_widget_keep_one_resident_without_a_take
     }
     widget.close(None).await.unwrap();
 }
+
+#[tokio::test]
+async fn real_sockets_start_cancel_training_once_show_epoch_history_and_replay_committed_result() {
+    let (server, owner, visitor) = TestServer::start().await;
+    let id = owner["player"]["id"].as_str().unwrap();
+    let mut first = server.socket(&owner).await;
+    let mut second = server.socket(&owner).await;
+    let mut visitor_socket = server.socket(&visitor).await;
+    let earliest = chao_game_server::service::trusted_unix_ms();
+    let enter = request(0, json!({"kind":"tiny_enter"}));
+    send(&mut first, &enter).await;
+    assert_eq!(care_result(&mut first, &enter).await["accepted"], true);
+    let begin = request(
+        1,
+        json!({"kind":"training_start","stat":"run","durationMs":60_000}),
+    );
+    tokio::join!(send(&mut first, &begin), send(&mut second, &begin));
+    let (one, two) = tokio::join!(
+        care_result(&mut first, &begin),
+        care_result(&mut second, &begin)
+    );
+    assert_eq!(one["accepted"], true);
+    assert_eq!(two["accepted"], true);
+    assert_ne!(one["replayed"], two["replayed"]);
+    let snapshot = receive(&mut first, |v| {
+        v["type"] == "snapshot" && v["care"]["revision"] == 2
+    })
+    .await;
+    assert_eq!(snapshot["care"]["training"]["job"]["phase"], "training");
+    assert_eq!(snapshot["care"]["training"]["job"]["projectedPoints"], 0);
+    assert_eq!(snapshot["care"]["tinyResident"]["mode"], "paused");
+    assert_eq!(snapshot["care"]["history"].as_array().unwrap().len(), 2);
+    let at = snapshot["care"]["history"][1]["at"].as_u64().unwrap();
+    assert!(at >= earliest && at <= chao_game_server::service::trusted_unix_ms());
+    assert_eq!(snapshot["care"]["history"][1]["id"], begin["requestId"]);
+    let private = receive(&mut visitor_socket, |v| v["type"] == "snapshot").await;
+    assert_eq!(private["care"]["history"], json!([]));
+    for p in private["players"].as_array().unwrap() {
+        assert!(p.get("history").is_none() && p.get("training").is_none());
+    }
+    let mut observer = connect_async(format!(
+        "{}/ws?token={}&observe=1",
+        server.url,
+        owner["token"].as_str().unwrap()
+    ))
+    .await
+    .unwrap()
+    .0;
+    receive(&mut observer, |v| v["type"] == "snapshot").await;
+    let cancel = request(2, json!({"kind":"training_cancel","jobId":1}));
+    send(&mut observer, &cancel).await;
+    assert_eq!(
+        receive(&mut observer, |v| v["code"] == "observer-read-only").await["kind"],
+        "error"
+    );
+    tokio::join!(send(&mut first, &cancel), send(&mut second, &cancel));
+    let (one, two) = tokio::join!(
+        care_result(&mut first, &cancel),
+        care_result(&mut second, &cancel)
+    );
+    assert_eq!(one["accepted"], true);
+    assert_eq!(two["accepted"], true);
+    assert_ne!(one["replayed"], two["replayed"]);
+    assert_eq!(one["effects"]["training"]["outcome"], "canceled");
+    assert_eq!(one["effects"]["training"]["appliedPoints"], 0);
+    let snapshot = receive(&mut first, |v| {
+        v["type"] == "snapshot" && v["care"]["revision"] == 3
+    })
+    .await;
+    assert_eq!(snapshot["care"]["tinyResident"]["active"], true);
+    assert_eq!(snapshot["care"]["training"]["job"]["phase"], "canceled");
+    assert_eq!(
+        saved_profile(&server, id)["care"]["history"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    let restored =
+        AppState::load(Config::local(server.directory.path().to_owned(), false)).unwrap();
+    let mut game = restored.game.lock().unwrap();
+    assert_eq!(
+        restored.care_action(&mut game, id, &cancel).unwrap()["replayed"],
+        true
+    );
+    assert_eq!(game.players[id].care.history.len(), 3);
+    assert_eq!(game.players[id].stats["run"].points, 0);
+}
+
+#[tokio::test]
+async fn ready_training_settles_over_real_websocket_and_reconnect_cannot_award_again() {
+    let (server, owner, _) = TestServer::start().await;
+    let id = owner["player"]["id"].as_str().unwrap();
+    let mut socket = server.socket(&owner).await;
+    receive(&mut socket, |v| v["type"] == "snapshot").await;
+    let enter = request(0, json!({"kind":"tiny_enter"}));
+    send(&mut socket, &enter).await;
+    assert_eq!(care_result(&mut socket, &enter).await["accepted"], true);
+    // Host fixture begins a ready job with a trusted clock. The actual WS
+    // close below uses production wall time and accepts no client timestamp.
+    {
+        let mut game = server.state.game.lock().unwrap();
+        let started = chao_game_server::service::trusted_unix_ms() - 60_001;
+        let begin = request(
+            1,
+            json!({"kind":"training_start","stat":"fly","durationMs":60_000}),
+        );
+        assert_eq!(
+            server
+                .state
+                .care_action_at(&mut game, id, &begin, started)
+                .unwrap()["accepted"],
+            true
+        );
+    }
+    let settle = request(2, json!({"kind":"training_settle","jobId":1}));
+    send(&mut socket, &settle).await;
+    let result = care_result(&mut socket, &settle).await;
+    assert_eq!(result["accepted"], true);
+    assert_eq!(result["effects"]["training"]["appliedPoints"], 1);
+    assert_eq!(result["effects"]["points"]["fly"], 1);
+    let snapshot = receive(&mut socket, |v| {
+        v["type"] == "snapshot" && v["care"]["revision"] == 3
+    })
+    .await;
+    assert_eq!(
+        snapshot["care"]["training"]["lastResult"]["receiptId"],
+        settle["requestId"]
+    );
+    assert_eq!(snapshot["care"]["history"][2]["result"], result["effects"]);
+    assert_eq!(saved_profile(&server, id)["stats"]["fly"]["points"], 1);
+    socket.close(None).await.unwrap();
+    let mut reconnect = server.socket(&owner).await;
+    send(&mut reconnect, &settle).await;
+    assert_eq!(care_result(&mut reconnect, &settle).await["replayed"], true);
+    let disk = saved_profile(&server, id);
+    assert_eq!(disk["care"]["receipts"].as_object().unwrap().len(), 3);
+    assert_eq!(disk["care"]["history"].as_array().unwrap().len(), 3);
+    assert_eq!(disk["stats"]["fly"]["points"], 1);
+}
+
+#[tokio::test]
+async fn running_service_automatically_commits_ready_training_before_announcing_reward() {
+    let (server, owner, _) = TestServer::start().await;
+    let id = owner["player"]["id"].as_str().unwrap();
+    let mut socket = server.socket(&owner).await;
+    receive(&mut socket, |v| v["type"] == "snapshot").await;
+    {
+        let mut game = server.state.game.lock().unwrap();
+        let at = chao_game_server::service::trusted_unix_ms() - 60_001;
+        let enter = request(0, json!({"kind":"tiny_enter"}));
+        assert_eq!(
+            server
+                .state
+                .care_action_at(&mut game, id, &enter, at)
+                .unwrap()["accepted"],
+            true
+        );
+        let begin = request(
+            1,
+            json!({"kind":"training_start","stat":"power","durationMs":60_000}),
+        );
+        assert_eq!(
+            server
+                .state
+                .care_action_at(&mut game, id, &begin, at)
+                .unwrap()["accepted"],
+            true
+        );
+    }
+    let simulation = chao_game_server::service::spawn_simulation(server.state.clone());
+    let result = receive(&mut socket, |v| v["kind"] == "training-result").await;
+    assert_eq!(result["result"]["appliedPoints"], 1);
+    let disk = saved_profile(&server, id);
+    assert_eq!(disk["stats"]["power"]["points"], 1);
+    assert_eq!(
+        disk["care"]["training"]["lastResult"]["receiptId"],
+        result["result"]["receiptId"]
+    );
+    assert_eq!(
+        disk["care"]["history"][2]["id"],
+        result["result"]["receiptId"]
+    );
+    assert_eq!(disk["care"]["revision"], 3);
+    simulation.abort();
+    let _ = simulation.await;
+}

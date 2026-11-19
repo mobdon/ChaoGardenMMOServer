@@ -526,6 +526,7 @@ impl Game {
             race: None,
         };
         self.teleport(&mut player, "hub", 0., 6.)?;
+        crate::training::validate_player(&player)?;
         player.update_form();
         watch::restore(self, &mut player, &data["resident"]);
         watch::maintain_tiny(self, &mut player);

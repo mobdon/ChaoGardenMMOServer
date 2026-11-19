@@ -83,6 +83,9 @@ are:
 | `purchase` | `itemId` string | Buy one server-catalog item at the authoritative price. |
 | `tiny_purchase` | `itemId` string | Buy one Tiny shop fruit in an eligible safe garden without the desktop shop/grove proximity requirement. |
 | `tiny_enter` | none | Durably opt into automatic Tiny residency; existing resident Watch may convert without a Take control step. |
+| `training_start` | `stat`, `durationMs` | Start one explicitly adapted server-timed Tiny AFK job. See TRAINING.md. |
+| `training_cancel` | `jobId` | Close an unfinished AFK job with zero gains. |
+| `training_settle` | `jobId` | Settle a ready job using trusted time and actual bounded points. |
 | `pet` | none | Request a bounded server-validated pet interaction. |
 | `pickup` | `pickupId` string | Claim one available server-created nearby pickup. |
 
@@ -110,6 +113,8 @@ The owner-only top-level `snapshot.care` contains:
 | `shop` | Render server prices and the explicit per-item `enabled` state. |
 | `tinyShop` | Render the actual Tiny catalog, source availability, prices and `eligibility.canPurchase`. See TINY_SHOP.md. |
 | `tinyResident` | Render the durable automatic-resident choice and current server activity mode. |
+| `training` | Render the frozen policy, server-timed job, actual closing result and per-action eligibility. See TRAINING.md. |
+| `history` | Render at most 64 actual durable care transactions, including buy/feed and AFK results, with trusted Unix timestamps. Legacy history starts empty. |
 | `eligibility` | Enable only server-permitted care actions and display the conflict reason. |
 
 Do not read inventory or request receipts from the public `players` list.
