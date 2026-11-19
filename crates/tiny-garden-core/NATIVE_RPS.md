@@ -2,8 +2,10 @@
 
 November 18, 2026. `native_rps.rs` ports a bounded original Sonic Advance Tiny
 Chao Garden rock-paper-scissors/Janken subsystem into Rust. This is genuine
-source behavior, not the existing MMO-adapted five-game rules. It is **not yet
-the complete native minigame or a connected service**.
+source behavior, not the existing MMO-adapted five-game rules. The follow-on
+active/finish rules now live in `native_rps_game.rs`, `native_rps_finish.rs`
+and [NATIVE_RPS_GAME.md](NATIVE_RPS_GAME.md). The proof below records the first
+clock/target-wave checkpoint; it does not establish a connected service.
 
 The supplied decoded ASOE payload is 138,752 bytes, SHA-1
 `e2a1beec8519d36eae6478cbf3732942ac692023`, SHA-256
@@ -82,19 +84,14 @@ OAM is mapped so the original writes execute, but its values are not compared.
 This proves bounded state/sound-count parity, not rendering or task scheduling.
 Ignored evidence: client `.local/reviews/native-rps-thumb-first/result.json`.
 
-Remaining full-game work is explicit:
+The first checkpoint's gaps are now closed in the follow-on rules: `0200A528`
+is the autonomous actor, while `0200B3EC` is actual lane/fire input;
+`0200ABE8/0200ACCC` initialize/update projectiles and collisions; original
+`02007FB4` trig uses the source table; BIOS ArcTan2 has an explicit independent
+integer numerical reference boundary. Native active controller order and full
+result wait/fade preserve scoring until the original exit. The collision port
+owns `unhit_targets` decrements. No client may claim hits or gains.
 
-- Port original cannon/input callback `0200A528` after tracing its fields.
-- Port projectile creation/shot accounting `0200ABE8` and update/collision
-  `0200ACCC`; retain original card gestures and collision table `02011F84`.
-- Port native reflection/defeat velocity through `0200DB00` (BIOS ArcTan2)
-  and `02007FB4` trig. A floating-point replacement is not native parity.
-- Trace original gesture sprite table `02011F78`, effects `0200B3EC`, complete
-  controller transitions, clock/shot finish rules and actual native art/UI.
-- Test complete native rounds before choosing a separately labeled MMO
-  durable once-only reward policy and Rust/WASM/browser service integration.
-
-`unhit_targets` is presently an input from trusted source state: the missing
-native collision callback owns its decrements. It must never accept a client
-claim that a target was hit. No production service, save or runtime rollout
-was changed by this port.
+Original scene entry, pause menu, gesture art/OAM renderer and authoritative
+MMO service integration remain separate acceptance work. No production
+service, save or runtime rollout was changed by these core ports.
