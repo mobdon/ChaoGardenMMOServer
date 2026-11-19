@@ -198,7 +198,8 @@ pub fn failure(game: &Game, id: &str, message: &Value, code: &str) -> Value {
 
 fn conflict(p: &Player, pickup: bool) -> bool {
     p.connections == 0
-        || p.care.activity_lock.is_some()
+        || crate::competition::training_conflict(p)
+        || crate::competition::reserved(p)
         || p.watch.is_some()
         || p.tiny_game.is_some()
         || p.race.is_some()
