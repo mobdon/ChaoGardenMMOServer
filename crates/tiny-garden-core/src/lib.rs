@@ -7,6 +7,7 @@
 pub mod gba;
 pub mod native_ball;
 pub mod native_bios_math;
+pub mod native_bounce;
 pub mod native_growth;
 pub mod native_hatching;
 pub mod native_memory;
