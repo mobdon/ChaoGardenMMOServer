@@ -1,6 +1,7 @@
 pub mod activities;
 pub mod care;
 pub mod care_catalog;
+pub mod collection;
 pub mod evolution;
 pub mod game;
 pub mod phone;

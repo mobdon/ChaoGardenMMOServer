@@ -23,8 +23,13 @@ struct TestServer {
 
 impl TestServer {
     async fn start() -> (Self, Value, Value) {
+        Self::start_with_native(None).await
+    }
+    async fn start_with_native(payload: Option<std::path::PathBuf>) -> (Self, Value, Value) {
         let directory = tempfile::tempdir().unwrap();
-        let state = AppState::load(Config::local(directory.path().to_owned(), false)).unwrap();
+        let mut config = Config::local(directory.path().to_owned(), false);
+        config.tiny_garden_payload = payload;
+        let state = AppState::load(config).unwrap();
         let (owner, visitor) = {
             let mut game = state.game.lock().unwrap();
             let owner = game.create_session(&json!({"name":"Care owner"})).unwrap();
@@ -656,4 +661,124 @@ async fn running_service_automatically_commits_ready_training_before_announcing_
     assert_eq!(disk["care"]["revision"], 3);
     simulation.abort();
     let _ = simulation.await;
+}
+
+#[tokio::test]
+#[ignore = "Requires explicitly configured owned CHAO_TINY_GARDEN_PAYLOAD"]
+async fn real_native_egg_shop_purchase_and_hatch_add_one_owned_chao_after_durable_ack() {
+    let payload = std::path::PathBuf::from(
+        std::env::var_os("CHAO_TINY_GARDEN_PAYLOAD").expect("Set explicit owned native payload"),
+    );
+    let (server, owner, visitor) = TestServer::start_with_native(Some(payload)).await;
+    let id = owner["player"]["id"].as_str().unwrap();
+    {
+        let mut game = server.state.game.lock().unwrap();
+        game.players.get_mut(id).unwrap().rings = 999_999;
+        game.dirty = true;
+        server.state.persist(&mut game).unwrap();
+    }
+    let mut first = server.socket(&owner).await;
+    let mut second = server.socket(&owner).await;
+    let mut guest = server.socket(&visitor).await;
+    let enter = request(0, json!({"kind":"tiny_enter"}));
+    send(&mut first, &enter).await;
+    assert_eq!(care_result(&mut first, &enter).await["accepted"], true);
+    let snapshot = receive(&mut first, |v| {
+        v["type"] == "snapshot" && v["care"]["revision"] == 1
+    })
+    .await;
+    assert_eq!(snapshot["care"]["tinyEggShop"]["enabled"], true);
+    assert_eq!(snapshot["care"]["tinyCollection"]["activeChaoId"], id);
+    let shop = &snapshot["care"]["tinyEggShop"];
+    let buy = request(
+        1,
+        json!({"kind":"tiny_egg_purchase","eggId":shop["offers"][0]["eggId"],"stockEpoch":shop["epoch"]}),
+    );
+    tokio::join!(send(&mut first, &buy), send(&mut second, &buy));
+    let (one, two) = tokio::join!(
+        care_result(&mut first, &buy),
+        care_result(&mut second, &buy)
+    );
+    assert_eq!(one["accepted"], true);
+    assert_eq!(two["accepted"], true);
+    assert_ne!(one["replayed"], two["replayed"]);
+    assert_eq!(one["effects"]["egg"]["id"], two["effects"]["egg"]["id"]);
+    let egg_id = one["effects"]["egg"]["id"].as_str().unwrap();
+    assert_eq!(
+        saved_profile(&server, id)["tinyCollection"]["pendingEgg"]["id"],
+        egg_id
+    );
+    let hatch = request(2, json!({"kind":"tiny_egg_hatch","ownedEggId":egg_id}));
+    tokio::join!(send(&mut first, &hatch), send(&mut second, &hatch));
+    let (one, two) = tokio::join!(
+        care_result(&mut first, &hatch),
+        care_result(&mut second, &hatch)
+    );
+    assert_eq!(one["accepted"], true);
+    assert_eq!(two["accepted"], true);
+    assert_ne!(one["replayed"], two["replayed"]);
+    let child = one["effects"]["chao"]["id"].as_str().unwrap();
+    assert_ne!(child, id);
+    let snapshot = receive(&mut first, |v| {
+        v["type"] == "snapshot" && v["care"]["revision"] == 3
+    })
+    .await;
+    assert_eq!(
+        snapshot["care"]["tinyCollection"]["chao"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(snapshot["care"]["tinyCollection"]["activeChaoId"], id);
+    assert_eq!(
+        snapshot["care"]["tinyCollection"]["selection"]["enabled"],
+        false
+    );
+    assert!(snapshot["care"]["tinyCollection"]["pendingEgg"].is_null());
+    let text = snapshot.to_string();
+    for secret in ["nativeRecord", "hatchRng", "stockSeed", "tokenHash"] {
+        assert!(!text.contains(secret), "{secret}");
+    }
+    let disk = saved_profile(&server, id);
+    assert_eq!(disk["tinyCollection"]["chao"][0]["id"], child);
+    assert_eq!(
+        disk["tinyCollection"]["chao"][0]["nativeRecord"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2136
+    );
+    assert_eq!(disk["care"]["history"][2]["kind"], "tiny_egg_hatch");
+    let guest_snapshot = receive(&mut guest, |v| v["type"] == "snapshot").await;
+    assert_eq!(
+        guest_snapshot["care"]["tinyCollection"]["chao"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    for player in guest_snapshot["players"].as_array().unwrap() {
+        assert!(player.get("tinyCollection").is_none());
+    }
+    first.close(None).await.unwrap();
+    second.close(None).await.unwrap();
+    let restored = AppState::load((*server.state.config).clone()).unwrap();
+    let mut game = restored.game.lock().unwrap();
+    for command in [&buy, &hatch] {
+        assert_eq!(
+            restored.care_action(&mut game, id, command).unwrap()["replayed"],
+            true
+        );
+    }
+    assert_eq!(
+        game.players[id]
+            .tiny_collection
+            .as_ref()
+            .unwrap()
+            .chao
+            .len(),
+        1
+    );
+    assert_eq!(game.players[id].id, id);
 }

@@ -82,6 +82,7 @@ pub struct Player {
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
     pub care: crate::care::CareState,
+    pub tiny_collection: Option<crate::collection::CollectionState>,
     pub boosting: bool,
     pub boost_energy: f64,
     pub happiness: f64,
@@ -174,7 +175,7 @@ impl Player {
         let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
-            "energy":self.energy,"hunger":self.hunger,"care":self.care,
+            "energy":self.energy,"hunger":self.hunger,"care":self.care,"tinyCollection":self.tiny_collection,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
@@ -193,7 +194,15 @@ fn merge_profile(preserved: &mut Value, canonical: Value) {
             for (key, value) in current {
                 // Strict/normalized ledgers are complete canonical replacements.
                 // Merging an empty inventory would resurrect consumed stacks.
-                if ["care", "tinyRecords", "raceRecords", "karateRecords"].contains(&key.as_str()) {
+                if [
+                    "care",
+                    "tinyCollection",
+                    "tinyRecords",
+                    "raceRecords",
+                    "karateRecords",
+                ]
+                .contains(&key.as_str())
+                {
                     existing.insert(key, value);
                 } else if let Some(previous) = existing.get_mut(&key) {
                     merge_profile(previous, value);
@@ -324,6 +333,7 @@ pub const SHOP_CATALOG: [ShopItem; 1] = [ShopItem {
 pub struct Game {
     pub care_catalog: crate::care_catalog::CareCatalog,
     pub tiny_shop_catalog: Option<tiny_garden_core::shop::TinyShopCatalog>,
+    pub tiny_egg_source: Option<crate::collection::EggSource>,
     pub activities: ActivityCatalog,
     pub time: f64,
     pub allow_owner_bootstrap: bool,
@@ -382,6 +392,7 @@ impl Game {
         let mut game = Self {
             care_catalog: crate::care_catalog::CareCatalog::default(),
             tiny_shop_catalog: None,
+            tiny_egg_source: None,
             activities: ActivityCatalog::default(),
             time: now,
             allow_owner_bootstrap,
@@ -501,6 +512,9 @@ impl Game {
             tiny_result: None,
             watch: None,
             care: crate::care::CareState::restore(data.get("care"))?,
+            tiny_collection: crate::collection::CollectionState::restore(
+                data.get("tinyCollection"),
+            )?,
             happiness: number(&data["happiness"], 65., 0., 100.),
             energy: number(&data["energy"], 100., 0., 100.),
             hunger: number(&data["hunger"], 100., 0., 100.),
@@ -527,6 +541,7 @@ impl Game {
         };
         self.teleport(&mut player, "hub", 0., 6.)?;
         crate::training::validate_player(&player)?;
+        crate::collection::validate_player(&player)?;
         player.update_form();
         watch::restore(self, &mut player, &data["resident"]);
         watch::maintain_tiny(self, &mut player);

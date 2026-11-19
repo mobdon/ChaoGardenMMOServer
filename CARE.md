@@ -86,6 +86,8 @@ are:
 | `training_start` | `stat`, `durationMs` | Start one explicitly adapted server-timed Tiny AFK job. See TRAINING.md. |
 | `training_cancel` | `jobId` | Close an unfinished AFK job with zero gains. |
 | `training_settle` | `jobId` | Settle a ready job using trusted time and actual bounded points. |
+| `tiny_egg_purchase` | `eggId`, `stockEpoch` | Buy the server's current native egg offer into the owner's single held slot. See TINY_EGGS.md. |
+| `tiny_egg_hatch` | `ownedEggId` | Explicitly hatch the owned egg into an additional inactive owned Chao, preserving the active canonical Chao. |
 | `pet` | none | Request a bounded server-validated pet interaction. |
 | `pickup` | `pickupId` string | Claim one available server-created nearby pickup. |
 
@@ -115,6 +117,8 @@ The owner-only top-level `snapshot.care` contains:
 | `tinyResident` | Render the durable automatic-resident choice and current server activity mode. |
 | `training` | Render the frozen policy, server-timed job, actual closing result and per-action eligibility. See TRAINING.md. |
 | `history` | Render at most 64 actual durable care transactions, including buy/feed and AFK results, with trusted Unix timestamps. Legacy history starts empty. |
+| `tinyEggShop` | Render source-backed hourly egg stock, prices, server epoch and purchase eligibility. See TINY_EGGS.md. |
+| `tinyCollection` | Render the original active Chao, real additional owned hatchlings and the one persistent held egg. Active selection remains disabled. |
 | `eligibility` | Enable only server-permitted care actions and display the conflict reason. |
 
 Do not read inventory or request receipts from the public `players` list.

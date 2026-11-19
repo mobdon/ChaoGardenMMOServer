@@ -201,6 +201,13 @@ fn unsafe_activity(player: &Player) -> bool {
         || !["hub", "garden", "hero", "dark"].contains(&player.zone.as_str())
 }
 fn capacity(player: &Player, reserve: usize) -> bool {
+    let reserve = reserve
+        + usize::from(
+            player
+                .tiny_collection
+                .as_ref()
+                .is_some_and(|state| state.pending_egg.is_some()),
+        );
     player.care.receipts.len() <= MAX_RECEIPTS.saturating_sub(reserve)
         && player.care.revision <= u64::MAX - reserve as u64
 }

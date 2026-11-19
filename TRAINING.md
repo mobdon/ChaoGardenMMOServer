@@ -123,7 +123,9 @@ AFK award is distinct from the resident AI, which does not simulate invented
 garden actions during server downtime.
 
 Start reserves both a revision and receipt slot for its later closure. The
-complete receipt ledger remains capped at 4096, with no receipt eviction. Exact
+owned-egg integration additionally preserves the pending egg's final hatch
+slot when starting and closing training; ordinary care cannot consume it.
+The complete receipt ledger remains capped at 4096, with no receipt eviction. Exact
 UUID/payload retries return the saved outcome before activity checks; changing
 the payload under a UUID fails. The same mutex serializes multiple devices.
 There is no separate training wallet, Chao record or profile writer.
@@ -146,7 +148,8 @@ The example abbreviates `result.training`; real rows retain the full committed
 effect shown above. `id` is the actual care request/receipt UUID. `at` is trusted
 host Unix milliseconds. `kind` is `consume`, `purchase`, `tiny_purchase`,
 `tiny_enter`, `pet`, `pickup`, `training_start`, `training_cancel` or
-`training_settle`. Buy/feed rows additionally have `itemId`. `result` is exactly
+`training_settle`, plus `tiny_egg_purchase` and `tiny_egg_hatch` from the owned
+collection integration. Buy/feed item rows additionally have `itemId`. `result` is exactly
 that receipt's committed `effects`, including actual bounded deltas.
 
 History appends in the same transaction as its receipt and canonical state.

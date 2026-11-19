@@ -8,6 +8,9 @@ all original Tiny Garden systems.
 The next isolated Rust slice connects durable AFK jobs and actual bounded care
 history through this same canonical transaction; see [TRAINING.md](TRAINING.md)
 for its exact wire, trusted time, atomic closure and transport evidence.
+The native egg shop, single durable held egg and additive owned collection are
+specified in [TINY_EGGS.md](TINY_EGGS.md), with explicit hourly rotation and
+online hatching through this same care transaction.
 
 ## Actual service contract
 

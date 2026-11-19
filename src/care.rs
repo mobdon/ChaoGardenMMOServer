@@ -38,6 +38,18 @@ pub enum Intent {
     },
     #[serde(rename = "tiny_enter")]
     TinyEnter,
+    #[serde(rename = "tiny_egg_purchase")]
+    TinyEggPurchase {
+        #[serde(rename = "eggId")]
+        egg_id: u8,
+        #[serde(rename = "stockEpoch")]
+        stock_epoch: u64,
+    },
+    #[serde(rename = "tiny_egg_hatch")]
+    TinyEggHatch {
+        #[serde(rename = "ownedEggId")]
+        owned_egg_id: String,
+    },
     #[serde(rename = "training_start")]
     TrainingStart {
         stat: tiny_garden_core::training::Stat,
@@ -110,6 +122,8 @@ impl HistoryEntry {
             Intent::Purchase { item_id } => ("purchase", Some(item_id.clone())),
             Intent::TinyPurchase { item_id } => ("tiny_purchase", Some(item_id.clone())),
             Intent::TinyEnter => ("tiny_enter", None),
+            Intent::TinyEggPurchase { .. } => ("tiny_egg_purchase", None),
+            Intent::TinyEggHatch { .. } => ("tiny_egg_hatch", None),
             Intent::TrainingStart { .. } => ("training_start", None),
             Intent::TrainingCancel { .. } => ("training_cancel", None),
             Intent::TrainingSettle { .. } => ("training_settle", None),
@@ -189,6 +203,9 @@ fn valid_request(r: &Request) -> bool {
             | Intent::TinyPurchase { item_id } => valid_item(item_id),
             Intent::Pickup { pickup_id } => !pickup_id.is_empty() && pickup_id.len() <= 128,
             Intent::Pet | Intent::TinyEnter => true,
+            Intent::TinyEggPurchase { egg_id, .. } => *egg_id < 12,
+            Intent::TinyEggHatch { owned_egg_id } => Uuid::parse_str(owned_egg_id)
+                .is_ok_and(|id| id.hyphenated().to_string() == *owned_egg_id),
             Intent::TrainingStart { duration_ms, .. } => {
                 *duration_ms >= 60000
                     && *duration_ms <= 28800000
@@ -339,6 +356,12 @@ pub fn tiny_shop_catalog(game: &Game) -> Value {
 }
 
 pub fn load_tiny_shop(path: &Path) -> io::Result<tiny_garden_core::shop::TinyShopCatalog> {
+    let bytes = load_tiny_payload(path)?;
+    tiny_garden_core::shop::TinyShopCatalog::from_verified_payload(&bytes).map_err(io::Error::other)
+}
+
+/// Shared bounded local-source read; each reader still verifies its exact spans.
+pub fn load_tiny_payload(path: &Path) -> io::Result<Vec<u8>> {
     let metadata = fs::metadata(path)?;
     let expected = tiny_garden_core::gba::REFERENCE_GARDEN_LEN;
     if !metadata.is_file() || metadata.len() != expected as u64 {
@@ -350,7 +373,7 @@ pub fn load_tiny_shop(path: &Path) -> io::Result<tiny_garden_core::shop::TinySho
     fs::File::open(path)?
         .take(expected as u64 + 1)
         .read_to_end(&mut bytes)?;
-    tiny_garden_core::shop::TinyShopCatalog::from_verified_payload(&bytes).map_err(io::Error::other)
+    Ok(bytes)
 }
 
 fn tiny_purchase_block(game: &Game, p: &Player) -> Option<&'static str> {
@@ -395,6 +418,8 @@ pub fn public(game: &Game, id: &str) -> Value {
         "pickups":p.care.pickups.values().collect::<Vec<_>>(),"catalog":native,"tinyShop":tiny_shop,
         "tinyResident":crate::watch::tiny_public(p),
         "training":crate::training::public(p,crate::service::trusted_unix_ms()),
+        "tinyEggShop":crate::collection::shop_public(game,p,crate::service::trusted_unix_ms()),
+        "tinyCollection":crate::collection::public(game,p,crate::service::trusted_unix_ms()),
         "history":p.care.history,
         "shop":[{"itemId":"garden-fruit","price":3,"enabled":true,"rules":"adapted"},{"itemId":"sa2:22","price":12,"enabled":game.care_catalog.enabled(),"rules":"adapted"},{"itemId":"sa2:23","price":12,"enabled":game.care_catalog.enabled(),"rules":"adapted"}],
         "eligibility":{"canCare":!conflict(p,false),"canPickup":!conflict(p,true),"activityLock":p.care.activity_lock,
@@ -480,6 +505,9 @@ fn apply(
         Intent::TrainingStart { .. }
         | Intent::TrainingCancel { .. }
         | Intent::TrainingSettle { .. } => unreachable!("training is dispatched above"),
+        Intent::TinyEggPurchase { .. } | Intent::TinyEggHatch { .. } => {
+            crate::collection::apply(game, p, &request.intent, training_now, &request.request_id)
+        }
         Intent::TinyEnter => {
             crate::watch::enter_tiny(game, p)?;
             Ok(json!({"tinyResident":crate::watch::tiny_public(p)}))
@@ -661,7 +689,22 @@ pub(crate) fn action_at(
     if request.expected_revision != p.care.revision {
         return failure(game, id, message, "stale-revision");
     }
-    if p.care.receipts.len() >= MAX_RECEIPTS || p.care.revision == u64::MAX {
+    let closes_egg = matches!(request.intent, Intent::TinyEggHatch { .. });
+    let pending_egg = p
+        .tiny_collection
+        .as_ref()
+        .is_some_and(|state| state.pending_egg.is_some());
+    let reserve = if matches!(
+        request.intent,
+        Intent::TrainingStart { .. } | Intent::TinyEggPurchase { .. }
+    ) {
+        2
+    } else {
+        1
+    } + usize::from(pending_egg && !closes_egg);
+    if p.care.receipts.len() > MAX_RECEIPTS.saturating_sub(reserve)
+        || p.care.revision > u64::MAX - reserve as u64
+    {
         return failure(game, id, message, "receipt-capacity");
     }
     let mut next = p.clone();
@@ -707,7 +750,15 @@ pub(crate) fn mission_drop(
     x: f64,
     z: f64,
 ) {
-    if !catalog.enabled() || p.care.pickups.len() >= MAX_PICKUPS || p.care.revision == u64::MAX {
+    let reserved_hatch = u64::from(
+        p.tiny_collection
+            .as_ref()
+            .is_some_and(|state| state.pending_egg.is_some()),
+    );
+    if !catalog.enabled()
+        || p.care.pickups.len() >= MAX_PICKUPS
+        || p.care.revision >= u64::MAX - reserved_hatch
+    {
         return;
     }
     let id = format!("{mission_id}:{enemy_id}");

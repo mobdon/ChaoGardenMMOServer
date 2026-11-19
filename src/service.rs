@@ -131,7 +131,15 @@ impl AppState {
         let mut game =
             Game::new(profiles, terrains, config.owner_bootstrap, now).map_err(io::Error::other)?;
         if let Some(path) = &config.tiny_garden_payload {
-            game.tiny_shop_catalog = Some(crate::care::load_tiny_shop(path)?);
+            let bytes = crate::care::load_tiny_payload(path)?;
+            game.tiny_shop_catalog = Some(
+                tiny_garden_core::shop::TinyShopCatalog::from_verified_payload(&bytes)
+                    .map_err(io::Error::other)?,
+            );
+            game.tiny_egg_source = Some(
+                crate::collection::EggSource::from_verified_payload(&bytes)
+                    .map_err(io::Error::other)?,
+            );
         }
         match (
             env::var_os("CHAO_CARE_AUDIT_DIR"),
@@ -388,7 +396,7 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
     Json(
         json!({"ok": true, "mode": if state.config.address.ip().is_loopback() { "local-development" } else { "server" },
         "online": game.online_connections(), "setup": setup,"capabilities":{"careMutations":true},
-        "tinyGarden":{"games":["memory","rock_paper_scissors","bounce","ball","search"],"rules":"adapted","maxRingReward":crate::phone::MAX_RING_REWARD,"shop":crate::care::tiny_shop_catalog(&game),"autoResident":true,"observerSockets":true,"training":crate::training::capability()},
+        "tinyGarden":{"games":["memory","rock_paper_scissors","bounce","ball","search"],"rules":"adapted","maxRingReward":crate::phone::MAX_RING_REWARD,"shop":crate::care::tiny_shop_catalog(&game),"autoResident":true,"observerSockets":true,"training":crate::training::capability(),"ownedEggs":{"enabled":game.tiny_egg_source.is_some(),"rulesVersion":crate::collection::RULES,"rotationMs":crate::collection::ROTATION_MS,"maxHeldEggs":1,"maxChao":crate::collection::MAX_CHAO,"selectionEnabled":false}},
         "terrain": {"loaded": game.terrains.keys().collect::<Vec<_>>(), "flatFallback": TERRAIN_ZONES.into_iter().filter(|zone| !game.terrains.contains_key(*zone)).collect::<Vec<_>>()}}),
     )
 }
