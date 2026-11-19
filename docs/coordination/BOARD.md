@@ -1,6 +1,6 @@
 # Repository coordination board
 
-Updated November 18, 2026. This is the server-repository coordination layer for
+Updated November 19, 2026. This is the server-repository coordination layer for
 the twelve implementation workstreams and the original integration chat. Read
 the [complete briefs](WORKSTREAMS.md) and [proposed protocol contract](PROTOCOL.md)
 before starting. The Vibe-generated release documents arrived in server commit
@@ -13,9 +13,50 @@ The user authorized useful-only PR integration. [The November 18 integration
 record](VIBE-MERGES-2026-11-18.md) records exact incoming heads and useful-only
 decisions. PRs #5/#6/#10/#12/#19/#20 are closed without merging; useful Rust
 build/CI PR #8, corrected architecture PR #9 and operating-document repair #11
-merged after green CI. The latest pass leaves only independent Rust PRs 14–18
-open. No client/Rust feature PR is accepted
-implicitly, and no runtime or save migration follows from these source merges.
+merged after green CI. The November 19 source integration below supersedes
+the earlier merge status. Runtime acceptance and save migration have separate
+gates.
+
+## November 19 source integration
+
+Server source baseline `1c5d9dd25fd64f857d6fcbad83cdcaff901d4c3a` includes
+the Rust care, away-competition and measured-capacity changes. The isolated
+12-client/12-resident smoke passed on a 30-second repeat after an initial
+failure. Sustained 100–500-player capacity remains unverified.
+
+- Client goal-ring replay was integrated in order. Each candidate passed Rust
+  formatting, strict all-target Clippy, the 113 ordinary SA2 tests and eight
+  installed-game goal and campaign tests. The changes are offline tooling.
+  External game-service results remain caller-supplied. There are no server
+  protocol dependencies.
+  - [Client #187](https://github.com/mobdon/ChaoGardenMMOClient/pull/187)
+    adds the pre-contact range gate in `goal_ring.rs` and its Rust, mounted
+    campaign and PowerPC tests. Base `2691298e1c28c41ad464e46774215d16b51c3035`,
+    merge `621980829b990707b66b6b83b59eb6bce45410f2`.
+  - [Client #188](https://github.com/mobdon/ChaoGardenMMOClient/pull/188)
+    adds the shadow-query cache replay in `goal_ring.rs`, `fan_stage_local.rs`
+    and `goal_ring_ppc.py`. Base `621980829b990707b66b6b83b59eb6bce45410f2`,
+    merge `b0d4719c18b79ed2f6c0f0e37298a4cb92e7cc6c`.
+  - [Client #189](https://github.com/mobdon/ChaoGardenMMOClient/pull/189)
+    adds alternate-animation and sound observations in `goal_ring.rs` and
+    its Rust, mounted campaign and PowerPC tests. Base
+    `b0d4719c18b79ed2f6c0f0e37298a4cb92e7cc6c`, merge
+    `af0c41d5791478a1e8e024a4035bd8932369f1d3`. Playback and mission results
+    are outside the replay.
+- [Client #14](https://github.com/mobdon/ChaoGardenMMOClient/pull/14) was closed
+  as superseded and its branch retained. The shared desktop/WASM runtime
+  landed in `e816c10cd2558bdbd9aa8b1b8dd736b04cd3fc71`. The full release Rust
+  suite passed with the local ASOE ROM at `6219808`, including the handoff
+  regression for settled Y, the original spindash digest and both pickups.
+- [Client #3](https://github.com/mobdon/ChaoGardenMMOClient/pull/3) remains
+  a draft. APK and isolated service evidence exist. A read-only software
+  emulator stayed offline in ADB, so on-device widget, Keystore, pairing,
+  resize, reboot and Doze checks remain open.
+- [Server #15](https://github.com/mobdon/ChaoGardenMMOServer/pull/15) remains
+  a draft pending desktop, Tiny Garden and widget authentication and
+  ownership acceptance together under [the v2 protocol gates](PROTOCOL.md).
+
+The live preview and canonical save were outside this integration.
 
 ## Incoming Vibe source — review blocked
 
@@ -84,7 +125,7 @@ review and real snapshot-driven proof before merge.
 | 9 | Chao care, animals and evolution / server | READY — activity unverified | LOCAL TESTED: current bounded prototype care/shop/evolution rules, audited animal/drive records and explicit Watch pet. PLANNED: canonical animal/inventory/life-system slices and deeper original-rule fidelity. | 4 transaction/ownership; 5–8 source-backed records; publish UI contract for 1/2 and distinguish native curves from MMO tuning. |
 | 10 | Native movement and 3D presentation / client | ACTIVE — reported isolated work; unmerged | Integration already published native Run helper/scene hooks/tools/tests at client279a7b7 and recorded Walk → Run → Skate. Movement chat reports codex/native-chao-movement; consume the existing helper rather than duplicate it. Wider transitions/contact/multi-client acceptance remains. | Shared scene.js only a small reviewed patch. Preserve rigs/alpha/grounding/depth-occluded bloom. Exact locomotion route works in the current runtime but its source patch remains separately unpublished while server build is blocked. |
 | 11 | AI races and Karate while away / server | LOCAL TESTED — isolated PR review | `codex/ai-competitions`, local implementation `7830ae7`, rebased onto `0226dc9` (initial base `282f6ab`). One adapted race and one Karate bout proven with local rosters: 25/50 durable rings, restart/replay and duplicate/save-failure coverage. 102 server + 43 Tiny crate + 49 Node tests passed; explicit local-catalog proof passed; format/Clippy/release build passed. [Changed paths, protocol dependencies and limits](COMPETE-01.md). All 62 native courses remain unavailable for manual play. | Integration review required; 4 must authorize the strict competition intents and share the canonical reservation with 3 training; 9 capabilities/source catalogs. Watch wandering grants no competition rewards. No deployment/live-save change. |
-| 12 | Capacity and deployment / server | LOCAL TESTED — [draft PR #18](https://github.com/mobdon/ChaoGardenMMOServer/pull/18), unmerged; capacity gates failed | Branch `codex/measured-capacity`, implementation `096bfdc` (measured base `282f6ab`, rebased over documentation/scaffolding head `0226dc9`). Rust room filtering, transport bounds, metrics, real-protocol measurements and private deployment/backup artifacts. [Measured report](../CAPACITY.md): 100/0 short timing slice passed, but 120-second lag p95 603 ms failed; extra residents and 250/500 failed. 90 host + 21 core + 22 Tiny-game tests, 11 negative gate tests and five backup tests passed; candidate 12/12 gated smoke passed. No sustained 100–500 capacity or public hosting claim. | [Shared-hook handoff](CAPACITY-HANDOFF.md) coordinates game/service/protocol tests with 4 and 13. Preserve v2 ownership/transaction guards and locomotion route patch; no merge, runtime rollout, migration, public exposure, service purchase or live restart authorized by publication. |
+| 12 | Capacity and deployment / server | LOCAL TESTED — [PR #18](https://github.com/mobdon/ChaoGardenMMOServer/pull/18) merged; sustained capacity gates failed | Branch `codex/measured-capacity`, implementation `096bfdc` (measured base `282f6ab`, rebased over documentation/scaffolding head `0226dc9`). Rust room filtering, transport bounds, metrics, real-protocol measurements and private deployment/backup artifacts. [Measured report](../CAPACITY.md): 100/0 short timing slice passed, but 120-second lag p95 603 ms failed; extra residents and 250/500 failed. 90 host + 21 core + 22 Tiny-game tests, 11 negative gate tests and five backup tests passed; candidate 12/12 gated smoke passed. No sustained 100–500 capacity or public hosting claim. | [Shared-hook handoff](CAPACITY-HANDOFF.md) coordinates game/service/protocol tests with 4 and 13. Preserve v2 ownership/transaction guards and locomotion route patch; no merge, runtime rollout, migration, public exposure, service purchase or live restart authorized by publication. |
 | 13 | Original chat — integration and release QA / both repositories | ACTIVE — verified | Owns cross-repository contracts, canonical owner/save protection, playable preview, merge order, release evidence and this coordination layer. Source publication is verified; later changes need their own audited release. | Reviews every shared-file/protocol change, resolves conflicts and performs coordinated client/server rollout. |
 
 ## Current implementation evidence
