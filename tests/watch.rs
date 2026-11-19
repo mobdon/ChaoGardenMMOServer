@@ -41,6 +41,15 @@ fn resident_routine_is_visible_and_active_while_away_without_passive_rewards() {
     g.rings[0].z = g.players[&id].z;
     g.disconnect(&id);
     assert!(g.players[&id].watch.is_some());
+    let visitor = g
+        .create_session(&json!({"name":"Same garden observer"}))
+        .unwrap();
+    let visitor_id = visitor["player"]["id"].as_str().unwrap().to_owned();
+    g.connect(&visitor_id);
+    let observer = g.players.get_mut(&visitor_id).unwrap();
+    observer.zone = "garden".into();
+    observer.x = 12.;
+    observer.z = 12.;
     let mut states = BTreeSet::new();
     let mut moved = false;
     for _ in 0..500 {
@@ -48,10 +57,16 @@ fn resident_routine_is_visible_and_active_while_away_without_passive_rewards() {
         let p = &g.players[&id];
         states.insert(p.watch.as_ref().unwrap().activity);
         moved |= p.x.hypot(p.z - 6.) > 0.1;
-        let visible = g.snapshot("spectator");
-        assert_eq!(visible["players"].as_array().unwrap().len(), 1);
-        assert_eq!(visible["players"][0]["connected"], false);
-        assert_eq!(visible["players"][0]["watch"]["ownerOnline"], false);
+        let visible = g.snapshot(&visitor_id);
+        assert_eq!(visible["players"].as_array().unwrap().len(), 2);
+        let resident = visible["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap();
+        assert_eq!(resident["connected"], false);
+        assert_eq!(resident["watch"]["ownerOnline"], false);
     }
     assert!(moved);
     assert!(states.contains("idle") && states.contains("wander") && states.contains("rest"));
@@ -61,7 +76,7 @@ fn resident_routine_is_visible_and_active_while_away_without_passive_rewards() {
     assert_eq!(g.rings[0].available_at, 0.);
     g.connect(&id);
     g.connect(&id);
-    assert_eq!(g.snapshot(&id)["players"].as_array().unwrap().len(), 1);
+    assert_eq!(g.snapshot(&id)["players"].as_array().unwrap().len(), 2);
     g.disconnect(&id);
     assert!(g.players[&id].watch.is_some());
 }
