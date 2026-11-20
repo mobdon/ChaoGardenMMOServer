@@ -184,7 +184,7 @@ impl Player {
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed,
             "bestRaceMs": self.best_race_ms, "evolution": self.evolution(), "body": self.body.public(),
             "life": crate::life::public_summary(self),
-            "animalParts": self.care.animal_parts,
+            "animalParts": self.care.animal_parts, "hat": self.care.hat,
         })
     }
     pub fn profile(&self) -> Value {

@@ -18,7 +18,8 @@ and body (`claude/project-thread-bhz10h`) branches. Mission drops stay the
 existing adapted v1. Care save version 2; profile key `garden` version 2.
 Contract and the list of untraced rules left out are in
 [CARE.md](../../CARE.md). Seeds and fruit are sold by the native Black Market
-(seed and fruit stock only; eggs, hats and themes are not ported).
+(seeds, fruit, eggs, hats and themes with native emblem gates; the emblem
+record in `src/emblems.rs` awaits native stage, race, karate and kart sources).
 
 ## Vibe merge repair
 

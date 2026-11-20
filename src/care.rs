@@ -46,6 +46,14 @@ thread_local! {
 pub fn seed_groves(p: &mut Player, now: f64) {
     with_rand(|rand| p.garden.seed_groves(garden::frame_at(now), rand));
 }
+/// GardenID, set once (native: OSGetTick and chRandomU32 at garden creation).
+fn garden_id() -> [u32; 2] {
+    let b = *uuid::Uuid::new_v4().as_bytes();
+    [
+        u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+        u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
+    ]
+}
 fn with_rand<T>(f: impl FnOnce(&mut dyn Rand) -> T) -> T {
     #[cfg(test)]
     if let Some(mut scripted) = SCRIPTED.with(|s| s.borrow_mut().take()) {
@@ -96,6 +104,18 @@ pub enum Intent {
     /// Entering the Black Market: rebuilds the stock if its timer ran out.
     Market,
     Sell {
+        #[serde(rename = "itemId")]
+        item_id: String,
+    },
+    /// Put a carried Black Market egg down in a garden (into the nest).
+    #[serde(rename = "place-egg")]
+    PlaceEgg {
+        #[serde(rename = "itemId")]
+        item_id: String,
+    },
+    /// Put a carried hat down by the Chao for it to pick up.
+    #[serde(rename = "give-hat")]
+    GiveHat {
         #[serde(rename = "itemId")]
         item_id: String,
     },
@@ -154,6 +174,12 @@ pub struct CareState {
     /// Native Black Market stock and restock timer.
     #[serde(default)]
     pub market: crate::black_market::Market,
+    /// Native emblem record (the Black Market's emblem gates).
+    #[serde(default)]
+    pub emblems: crate::emblems::EmblemState,
+    /// Worn hat id, native Chao param +0xD5 (0 = none).
+    #[serde(default)]
+    pub hat: Option<u8>,
 }
 
 impl Default for CareState {
@@ -172,6 +198,8 @@ impl Default for CareState {
             flag_d3: false,
             flag_d6: false,
             market: crate::black_market::Market::default(),
+            emblems: crate::emblems::EmblemState::default(),
+            hat: None,
         }
     }
 }
@@ -189,6 +217,8 @@ fn valid_item(item_id: &str) -> bool {
         || native_id(item_id).is_some()
         || fruit_id(item_id).is_some()
         || garden::seed_item(item_id).is_some()
+        || crate::black_market::egg_id(item_id).is_some()
+        || crate::black_market::hat_id(item_id).is_some()
 }
 fn valid_place(id: &str) -> bool {
     garden::position(id).is_some()
@@ -198,10 +228,15 @@ fn valid_request(r: &Request) -> bool {
         && Uuid::parse_str(&r.request_id)
             .is_ok_and(|id| id.hyphenated().to_string() == r.request_id)
         && match &r.intent {
-            Intent::Consume { item_id } | Intent::Purchase { item_id } => valid_item(item_id),
+            Intent::Consume { item_id } => valid_item(item_id),
+            Intent::Purchase { item_id } => {
+                valid_item(item_id) || crate::black_market::theme_index(item_id).is_some()
+            }
             Intent::Pickup { pickup_id } => !pickup_id.is_empty() && pickup_id.len() <= 128,
             Intent::Pet | Intent::Market => true,
             Intent::Sell { item_id } => crate::black_market::prices(item_id).is_some(),
+            Intent::PlaceEgg { item_id } => crate::black_market::egg_id(item_id).is_some(),
+            Intent::GiveHat { item_id } => crate::black_market::hat_id(item_id).is_some(),
             Intent::Plant { item_id, plot_id } => {
                 garden::seed_item(item_id).is_some() && garden::plot(plot_id).is_some()
             }
@@ -227,6 +262,10 @@ impl CareState {
                 .any(|(k, id)| !PART_CATEGORIES.contains(&k.as_str()) || *id > 20)
             || !state.evidence.valid()
             || !state.market.valid()
+            || !state.emblems.valid()
+            || state
+                .hat
+                .is_some_and(|h| crate::black_market::hat(h).is_none())
             || state.inventory.len() > 64
             || state
                 .inventory
@@ -361,11 +400,27 @@ pub fn public(game: &Game, id: &str) -> Value {
         "animalParts":{"rules":PART_RULES,"categories":PART_CATEGORIES,"shown":p.care.animal_parts,
             "flagD3":p.care.flag_d3,"flagD6":p.care.flag_d6},
         "garden":p.garden.public(),
-        "shop":shop(game),"market":p.care.market.public(),
+        "shop":shop(game),"market":market_view(p),"emblems":p.care.emblems.public(),"hat":p.care.hat,
         "eligibility":{"canCare":!conflict(p,false),"canPickup":!conflict(p,true),"activityLock":p.care.activity_lock,
             "effectReadyAt":p.care.last_effect_at.map(|at|at+EFFECT_COOLDOWN_MS),"receiptCapacityRemaining":MAX_RECEIPTS.saturating_sub(p.care.receipts.len())}})
 }
 
+/// The Black Market view plus native sell prices for what this profile carries.
+fn market_view(p: &Player) -> Value {
+    let mut view = p.care.market.public();
+    let sell: BTreeMap<&String, u32> = p
+        .care
+        .inventory
+        .keys()
+        .filter_map(|id| {
+            crate::black_market::prices(id)
+                .filter(|(_, s)| *s > 0)
+                .map(|(_, s)| (id, s))
+        })
+        .collect();
+    view["sellPrices"] = json!(sell);
+    view
+}
 fn shop(game: &Game) -> Value {
     let native = game.care_catalog.enabled();
     let offers = vec![
@@ -558,6 +613,35 @@ fn apply(
     }
     p.garden.advance(garden::frame_at(now), rand);
     match &request.intent {
+        Intent::PlaceEgg { item_id } => {
+            if !["garden", "hero", "dark"].contains(&p.zone.as_str()) {
+                return Err("out-of-range");
+            }
+            let egg = crate::black_market::egg_id(item_id).ok_or("invalid-request")?;
+            take_quantity(p, item_id)?;
+            let egg_id = crate::life::lay_bought_egg(p, egg, now)?;
+            Ok(json!({"inventory":{item_id:-1},"eggId":egg_id,
+                "rules":"native-gc-item-egg-createegg-v1"}))
+        }
+        Intent::GiveHat { item_id } => {
+            effect_ready(p, now)?;
+            let hat = crate::black_market::hat_id(item_id).ok_or("invalid-request")?;
+            if !p.care.inventory.contains_key(item_id) {
+                return Err("item-not-owned");
+            }
+            if p.care.hat.is_some() {
+                return Err("already-wearing");
+            }
+            // fn_60_40DFC: a Chao puts on a loose hat only with MinimalFlag
+            // bit 16 (Skeleton Dog) set; otherwise the hat stays carried.
+            if p.care.evidence.species_history & (1 << u32::from(SKELETON_DOG)) == 0 {
+                return Err("chao-wont-wear");
+            }
+            take_quantity(p, item_id)?;
+            p.care.hat = Some(hat);
+            p.care.last_effect_at = Some(now);
+            Ok(json!({"inventory":{item_id:-1},"hat":hat,"rules":"native-gc-hat-pickup-v1"}))
+        }
         Intent::Purchase { item_id } if crate::black_market::prices(item_id).is_some() => {
             if !catalog.fruits_enabled() {
                 return Err("native-data-unavailable");
@@ -576,7 +660,12 @@ fn apply(
             if p.rings < buy {
                 return Err("insufficient-rings");
             }
-            add_quantity(p, item_id)?;
+            if let Some(theme) = crate::black_market::theme_index(item_id) {
+                // A bought theme sets its owned flag; it never goes to the carry list.
+                p.care.market.themes[theme] = true;
+            } else {
+                add_quantity(p, item_id)?;
+            }
             p.rings -= buy;
             if crate::black_market::removed_when_bought(item_id) {
                 p.care.market.stock.remove(index);
@@ -593,8 +682,12 @@ fn apply(
             }
             let frame = garden::frame_at(now);
             let restocked = p.care.market.due(frame);
+            if p.care.market.garden_id.is_none() {
+                p.care.market.garden_id = Some(garden_id());
+            }
             if restocked {
-                p.care.market.restock(frame, rand);
+                let emblems = p.care.emblems.count();
+                p.care.market.restock(frame, emblems, rand);
             }
             Ok(json!({"restocked":restocked,"market":p.care.market.public()}))
         }
@@ -606,6 +699,9 @@ fn apply(
                 return Err("out-of-range");
             }
             let (_, sell) = crate::black_market::prices(item_id).ok_or("not-for-sale")?;
+            if sell == 0 {
+                return Err("not-sellable");
+            }
             take_quantity(p, item_id)?;
             let before = p.rings;
             p.rings = p.rings.saturating_add(sell).min(999_999);
