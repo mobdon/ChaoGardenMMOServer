@@ -127,7 +127,7 @@ impl Default for Policy {
     fn default() -> Self {
         Self {
             death: false,
-            resident_needs: true,
+            resident_needs: false,
             native_bugs: true,
             garden_limit: true,
         }

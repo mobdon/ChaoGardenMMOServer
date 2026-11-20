@@ -53,10 +53,9 @@ or left out.
 - **Owner = the one character.** The native knowledge keeps one record per
   playable character (Sonic, Shadow and so on). Here the Chao's owner is its only
   character, so there is one owner record.
-- **Aging needs a connected owner.** The life tick (age, lifespan, illness onset)
-  runs only while the owner is connected. With `residentNeeds` (default on),
-  Watch residents keep their needs, moods, illness recovery and knowledge ticks
-  running. Pending mob's choice; see the coordination board.
+- **Frozen while offline** (mob's decision, November 20, 2026). Needs, moods,
+  illness and aging only run while the owner is connected; Watch residents and
+  offline profiles are frozen. `residentNeeds` stays off.
 - **Death switch.** `CHAO_LIFE_DEATH` unset or `disabled` (default): a grey
   cocoon keeps checking and turns pink once `like > 50` and stress < 700.
   `enabled`: a grey cocoon ends the Chao, like native `KillChao`. Any other value
