@@ -819,8 +819,7 @@ fn tick_illness(p: &mut Player, dt: f64) {
         // Satiety falls in once-a-minute steps so short interactions stay exact.
         p.hunger = (p.hunger - SATIETY_DECAY_PER_SEC * ILL_CHECK_SECONDS * glutton).max(0.);
         let regain = i32::from(p.life.emotion.personality[7]);
-        for slot in 0..6 {
-            let level = &mut p.life.emotion.ill_state[slot];
+        for level in &mut p.life.emotion.ill_state {
             if *level > 0 {
                 let change: i32 = if condition > 6000 {
                     -10 - regain / 20
