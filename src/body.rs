@@ -2,7 +2,7 @@
 //!
 //! Field meanings, enum values and the 6-model-per-type `AL_RootObject` layout are
 //! native (SA2Structs.h, SA2Enums.h, SA Tools `PC_SA2/Chao_DLL.ini`). Every rate and
-//! threshold marked `TUNED` is our own MMO tuning: the native shape and evolution
+//! threshold marked PLACEHOLDER is temporary MMO tuning to be replaced by values traced from the GameCube executable: the native shape and evolution
 //! formulas have not been traced yet, and the public view says so.
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -18,15 +18,15 @@ pub mod chao_type {
     pub const DARK_CHAOS: u8 = 0x16;
 }
 
-/// TUNED: hero/dark class boundary on APos for evolution and child model family.
+/// PLACEHOLDER (tuned until the native value is traced): hero/dark class boundary on APos for evolution and child model family.
 pub const ALIGN_CLASS: f32 = 0.6;
-/// TUNED: adults stay Normal unless one shape axis has moved at least this far.
+/// PLACEHOLDER (tuned until the native value is traced): adults stay Normal unless one shape axis has moved at least this far.
 pub const NORMAL_LIMIT: f32 = 0.3;
-/// TUNED: Aim axis movement per native Exp unit (100 Exp = one level, life.rs units).
+/// PLACEHOLDER (tuned until the native value is traced): Aim axis movement per native Exp unit (100 Exp = one level, life.rs units).
 pub const SHAPE_PER_EXP: f32 = 0.0005;
-/// TUNED: visible axes ease toward their Aim targets at this many units per second.
+/// PLACEHOLDER (tuned until the native value is traced): visible axes ease toward their Aim targets at this many units per second.
 pub const EASE_PER_SECOND: f32 = 0.01;
-/// TUNED: seconds of connected play for growth (child or adult morph depth) to reach 1.
+/// PLACEHOLDER (tuned until the native value is traced): seconds of connected play for growth (child or adult morph depth) to reach 1.
 pub const GROWTH_SECONDS: f32 = 3.0 * 3600.0;
 /// Native SA2BColour runs 0 (Normal) ..= 13 (Black); SA2BTexture 0 (None) ..= 16 (Moon).
 pub const MAX_COLOR: u8 = 13;
@@ -218,7 +218,7 @@ impl BodyState {
         }
     }
 
-    /// TUNED morph weights relative to the `z` model: `n` is reached as growth rises and
+    /// PLACEHOLDER morph weights relative to the `z` model: `n` is reached as growth rises and
     /// the axes pull toward `s`/`f`/`r`/`p`. Native blend formula not yet traced.
     pub fn morph_weights(&self) -> [f32; 5] {
         if self.is_chaos() {
@@ -241,7 +241,7 @@ impl BodyState {
             "morph":{"targets":["n","s","f","r","p"],"weights":self.morph_weights()},
             "look":self.look,
             "rules":{"fields":"native AL_BODY_INFO","models":"native AL_RootObject layout",
-                "evolution":"tuned-body-evolution-v1","morph":"tuned-body-morph-v1",
+                "evolution":"placeholder-body-evolution-v1","morph":"placeholder-body-morph-v1",
                 "nativeFormulas":"unknown"}})
     }
 }
@@ -277,7 +277,7 @@ pub fn apply_shape_delta(body: &mut BodyState, run_power: f32, swim_fly: f32, he
     body.aim_a_pos = axis(body.aim_a_pos + finite(hero_dark));
 }
 
-/// Cocoon finished: choose the adult type from the axes (TUNED rule), reset morph depth.
+/// Cocoon finished: choose the adult type from the axes (PLACEHOLDER rule), reset morph depth.
 /// Chaos and existing adults are unchanged (this module has no second evolution yet).
 pub fn evolve(body: &mut BodyState) -> u8 {
     if !body.is_child() {
