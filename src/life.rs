@@ -1654,12 +1654,12 @@ pub fn apply_events(game: &mut Game, id: &str) {
                 continue;
             }
             LifeEvent::EvolutionDecision(inputs) => {
-                // The animals module does not publish PartsBTL MinimalFlag yet, so the
-                // all-21-animals Chaos condition cannot be met here.
+                // PartsBTL MinimalFlag: every one of the 21 animal species eaten.
+                let all_animals = crate::care::all_species_eaten(p);
                 crate::body::evolve(
                     &mut p.body,
                     crate::body::ChaosInputs {
-                        all_animals: false,
+                        all_animals,
                         user_like: i32::from(inputs.user_like),
                         param_142: i32::from(inputs.reincarnations),
                     },
@@ -1675,6 +1675,8 @@ pub fn apply_events(game: &mut Game, id: &str) {
             }
             LifeEvent::Reincarnated => {
                 crate::body::reincarnate(&mut p.body);
+                // AL_SucceedGeneParam: MinimalFlag and animal parts.
+                crate::care::rebirth(p);
                 p.update_form();
                 ("life-reincarnated", "Your Chao was reborn.")
             }

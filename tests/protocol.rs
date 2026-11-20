@@ -1126,3 +1126,39 @@ async fn phone_socket_result_waits_for_durable_receipt_and_retries_without_dupli
     );
     socket.close(None).await.unwrap();
 }
+
+#[test]
+fn care_model_routes_are_exact_allowlisted_names() {
+    for (path, local) in [
+        (
+            "/api/assets/animal-part-penguin-child-leftArm.glb",
+            "care/animal-part-penguin-child-leftArm.glb",
+        ),
+        (
+            "/api/assets/animal-part-phoenix-adult-tail.glb",
+            "care/animal-part-phoenix-adult-tail.glb",
+        ),
+        (
+            "/api/assets/tree-hero-mature.glb",
+            "care/tree-hero-mature.glb",
+        ),
+        (
+            "/api/assets/fruit-chao-garden.glb",
+            "care/fruit-chao-garden.glb",
+        ),
+    ] {
+        assert_eq!(asset_filename(path).as_deref(), Some(local), "{path}");
+    }
+    for path in [
+        "/api/assets/animal-part-yellow-chaos-drive-child-tail.glb",
+        "/api/assets/animal-part-penguin-teen-tail.glb",
+        "/api/assets/animal-part-penguin-child-hat.glb",
+        "/api/assets/tree-banana-mature.glb",
+        "/api/assets/tree-hero-seed.glb",
+        "/api/assets/fruit-../profiles.json",
+        "/api/assets/fruit-chao-garden.png",
+        "/api/assets/care/tree-hero-mature.glb",
+    ] {
+        assert!(asset_filename(path).is_none(), "{path}");
+    }
+}

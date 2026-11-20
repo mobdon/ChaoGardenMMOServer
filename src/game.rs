@@ -84,6 +84,7 @@ pub struct Player {
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
     pub care: crate::care::CareState,
+    pub garden: crate::garden::GardenState,
     pub body: crate::body::BodyState,
     pub life: crate::life::LifeState,
     pub competition: CompetitionState,
@@ -183,13 +184,14 @@ impl Player {
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed,
             "bestRaceMs": self.best_race_ms, "evolution": self.evolution(), "body": self.body.public(),
             "life": crate::life::public_summary(self),
+            "animalParts": self.care.animal_parts,
         })
     }
     pub fn profile(&self) -> Value {
         let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
-            "energy":self.energy,"hunger":self.hunger,"care":self.care,"body":self.body,"life":self.life,
+            "energy":self.energy,"hunger":self.hunger,"care":self.care,"body":self.body,"life":self.life,"garden":self.garden,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
@@ -211,6 +213,7 @@ fn merge_profile(preserved: &mut Value, canonical: Value) {
                 // Merging an empty inventory would resurrect consumed stacks.
                 if [
                     "care",
+                    "garden",
                     "body",
                     "life",
                     "competition",
@@ -538,6 +541,7 @@ impl Game {
             tiny_result: None,
             watch: None,
             care: crate::care::CareState::restore(data.get("care"))?,
+            garden: crate::garden::GardenState::restore(data.get("garden"))?,
             body: crate::body::BodyState::restore(
                 data.get("body"),
                 data["form"].as_str().unwrap_or("normal"),
@@ -637,6 +641,10 @@ impl Game {
         if let Some(player) = self.players.get_mut(id) {
             player.connections += 1;
             player.input = Input::default();
+            if player.garden.groves.is_empty() {
+                crate::care::seed_groves(player, self.time);
+                self.dirty = true;
+            }
             true
         } else {
             false

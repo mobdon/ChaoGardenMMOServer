@@ -9,8 +9,92 @@ pub const RAW_UNITS: &str = "signed-native-item-table-units";
 pub const AUDITED_EXECUTABLE_SHA256: &str =
     "4b1e09d782a2d919cbed2324ba2c0c78ef5fbe1677d400edab39608191f12c16";
 const STATS_ADDRESS: u32 = 0x008a6240;
+const FRUIT_STATS_ADDRESS: u32 = 0x008a6448;
+pub const FRUIT_COUNT: u8 = 24;
+/// Native fruit enum order 0x00-0x17 (client docs/MECHANICS.md, CAT-FOOD-01).
+pub const FRUIT_KEYS: [&str; 24] = [
+    "chao-garden",
+    "hero-garden",
+    "dark-garden",
+    "strong",
+    "tasty",
+    "hero",
+    "dark",
+    "round",
+    "triangle",
+    "square",
+    "heart",
+    "chao",
+    "smart",
+    "orange",
+    "blue",
+    "pink",
+    "green",
+    "purple",
+    "yellow",
+    "red",
+    "mushroom",
+    "mushroom-alt",
+    "mint-candy",
+    "grapes",
+];
+const FRUIT_NAMES: [&str; 24] = [
+    "Chao Garden Fruit",
+    "Hero Garden Fruit",
+    "Dark Garden Fruit",
+    "Strong Fruit",
+    "Tasty Fruit",
+    "Hero Fruit",
+    "Dark Fruit",
+    "Round Fruit",
+    "Triangle Fruit",
+    "Square Fruit",
+    "Heart Fruit",
+    "Chao Fruit",
+    "Smart Fruit",
+    "Orange Fruit",
+    "Blue Fruit",
+    "Pink Fruit",
+    "Green Fruit",
+    "Purple Fruit",
+    "Yellow Fruit",
+    "Red Fruit",
+    "Mushroom",
+    "Alternate Mushroom",
+    "Mint Candy",
+    "Grapes",
+];
+/// The eight persistent native `MinimalParts` categories. Each expands to the
+/// thirteen render sockets named by the client audit.
+pub const PART_CATEGORIES: [&str; 8] = [
+    "arms", "ears", "forehead", "horns", "legs", "tail", "wings", "tongue",
+];
+fn part_category(slot: &str) -> Option<usize> {
+    let category = match slot {
+        "leftArm" | "rightArm" => "arms",
+        "leftEar" | "rightEar" => "ears",
+        "forehead" => "forehead",
+        "leftHorn" | "rightHorn" => "horns",
+        "leftLeg" | "rightLeg" => "legs",
+        "tail" => "tail",
+        "leftWing" | "rightWing" => "wings",
+        "tongue" => "tongue",
+        _ => return None,
+    };
+    PART_CATEGORIES.iter().position(|c| *c == category)
+}
 const MAX_AUDIT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_EXECUTABLE_BYTES: u64 = 64 * 1024 * 1024;
+/// Native animal species keys 0-20 (drives excluded).
+pub const ANIMAL_KEYS: [&str; 21] = {
+    let mut keys = [""; 21];
+    let mut i = 0;
+    while i < 21 {
+        keys[i] = KEYS[i];
+        i += 1;
+    }
+    keys
+};
 const KEYS: [&str; 25] = [
     "penguin",
     "seal",
@@ -99,12 +183,27 @@ pub struct NativeItem {
     pub name: String,
     pub kind: NativeItemKind,
     pub raw: NativeItemStats,
+    /// Part kinds this animal has a model for in the native child and adult
+    /// lists. `None` when that list is not fully resolved by the local audit, in
+    /// which case no part change is applied rather than a partial one.
+    pub child_parts: Option<Vec<&'static str>>,
+    pub adult_parts: Option<Vec<&'static str>>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeFruit {
+    pub id: u8,
+    pub key: &'static str,
+    pub name: &'static str,
+    pub raw: NativeItemStats,
 }
 
 /// Empty by default: unconfigured/invalid local evidence must never mint guessed effects.
 #[derive(Clone, Debug, Default)]
 pub struct CareCatalog {
     items: BTreeMap<u8, NativeItem>,
+    fruits: BTreeMap<u8, NativeFruit>,
     source_sha256: Option<String>,
 }
 
@@ -191,12 +290,42 @@ impl CareCatalog {
                             NativeItemKind::Drive
                         },
                         raw,
+                        // Synthetic: animals have ears and tail models; Rabbit (3)
+                        // has an unresolved list; Half Fish (15) has none.
+                        child_parts: match index {
+                            3 => None,
+                            15 => Some(vec![]),
+                            0..=20 => Some(vec!["ears", "tail"]),
+                            _ => Some(vec![]),
+                        },
+                        adult_parts: Some(vec![]),
+                    },
+                )
+            })
+            .collect();
+        // Made-up fruit rows: mood +2, belly +40, stamina +id, intelligence -1.
+        let fruits = (0..FRUIT_COUNT)
+            .map(|id| {
+                (
+                    id,
+                    NativeFruit {
+                        id,
+                        key: FRUIT_KEYS[id as usize],
+                        name: FRUIT_NAMES[id as usize],
+                        raw: NativeItemStats {
+                            mood: 2,
+                            belly: 40,
+                            stamina: i16::from(id),
+                            intelligence: -1,
+                            ..Default::default()
+                        },
                     },
                 )
             })
             .collect();
         Self {
             items,
+            fruits,
             source_sha256: None,
         }
     }
@@ -317,6 +446,14 @@ impl CareCatalog {
                     "Chaos Drives must not grant species history or animal parts",
                 ));
             }
+            let (child_parts, adult_parts) = if index < 21 {
+                (
+                    list_categories(&row["parts"]["child"])?,
+                    list_categories(&row["parts"]["adult"])?,
+                )
+            } else {
+                (Some(vec![]), Some(vec![]))
+            };
             items.insert(
                 id as u8,
                 NativeItem {
@@ -329,13 +466,47 @@ impl CareCatalog {
                         NativeItemKind::Drive
                     },
                     raw,
+                    child_parts,
+                    adult_parts,
+                },
+            );
+        }
+        let fruit_rows = audit["fruitStats"]
+            .as_array()
+            .filter(|rows| rows.len() == usize::from(FRUIT_COUNT))
+            .ok_or_else(|| invalid("Native fruit table must contain 24 rows"))?;
+        let mut fruits = BTreeMap::new();
+        for (index, row) in fruit_rows.iter().enumerate() {
+            let raw: NativeItemStats = serde_json::from_value(row["values"].clone())
+                .map_err(|_| invalid("Native fruit row must contain ten signed 16-bit fields"))?;
+            let expected_address = FRUIT_STATS_ADDRESS + index as u32 * 20;
+            if row["index"].as_u64() != Some(index as u64)
+                || row["address"].as_str().and_then(parse_hex) != Some(expected_address)
+                || decode_fields(executable, expected_address)? != raw.fields()
+            {
+                return Err(invalid(
+                    "Native fruit row differs from original executable bytes",
+                ));
+            }
+            fruits.insert(
+                index as u8,
+                NativeFruit {
+                    id: index as u8,
+                    key: FRUIT_KEYS[index],
+                    name: FRUIT_NAMES[index],
+                    raw,
                 },
             );
         }
         Ok(Self {
             items,
+            fruits,
             source_sha256: Some(digest),
         })
+    }
+
+    pub fn fruit(&self, id: u8) -> Option<&NativeFruit> {
+        self.fruits.get(&id)
     }
 
     pub fn item(&self, id: u8) -> Option<&NativeItem> {
@@ -347,6 +518,9 @@ impl CareCatalog {
     pub fn enabled(&self) -> bool {
         self.items.len() == 25
     }
+    pub fn fruits_enabled(&self) -> bool {
+        self.fruits.len() == usize::from(FRUIT_COUNT)
+    }
     pub fn source_sha256(&self) -> Option<&str> {
         self.source_sha256.as_deref()
     }
@@ -355,8 +529,51 @@ impl CareCatalog {
             "classification":"verified-native-data","units":RAW_UNITS,
             "sourceSha256":self.source_sha256,"items":self.items.values().collect::<Vec<_>>(),
             "nativeApplicationFormula":"unknown","nativeBehaviorAcquisition":"unknown",
-            "nativeEvolutionCriteria":"unknown","reservedRow25Enabled":false})
+            "nativeEvolutionCriteria":"unknown","reservedRow25Enabled":false,
+            "fruits":self.fruits.values().collect::<Vec<_>>(),"fruitsEnabled":self.fruits_enabled(),
+            "fruitSpecialEffects":"unknown-not-applied","partCategories":PART_CATEGORIES,
+            "partSelection":"native-gc-albhv-capture-v1"})
     }
+}
+
+/// Part kinds with a model in one native list. Empty lists (absent pointer or
+/// a zero-initialised list, as for Half Fish, Skeleton Dog and Bat) have none.
+/// Any unresolved slot makes the whole list `None`.
+fn list_categories(list: &Value) -> Result<Option<Vec<&'static str>>, CatalogError> {
+    let status = list["status"]
+        .as_str()
+        .ok_or_else(|| invalid("Missing native part list status"))?;
+    let slots = list["slots"]
+        .as_array()
+        .ok_or_else(|| invalid("Missing native part slots"))?;
+    if status == "absent" {
+        return Ok(Some(vec![]));
+    }
+    if slots.len() != 13 {
+        return Ok(None);
+    }
+    let mut present = [false; 8];
+    for slot in slots {
+        let name = slot["slot"]
+            .as_str()
+            .ok_or_else(|| invalid("Missing native part slot name"))?;
+        let category = part_category(name).ok_or_else(|| invalid("Unknown native part slot"))?;
+        if slot["pointer"].is_null() {
+            continue;
+        }
+        if slot["mapped"] != true || !slot["model"].is_object() {
+            return Ok(None);
+        }
+        present[category] = true;
+    }
+    Ok(Some(
+        PART_CATEGORIES
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| present[*i])
+            .map(|(_, c)| *c)
+            .collect(),
+    ))
 }
 
 fn parse_hex(value: &str) -> Option<u32> {
@@ -498,6 +715,70 @@ mod tests {
         assert!(CareCatalog::from_verified_bytes(b"{}", b"{}", b"{}", &fixture()).is_err());
         assert_eq!(catalog.public()["nativeApplicationFormula"], "unknown");
     }
+    fn slots(missing: &[&str], unmapped: &[&str]) -> Value {
+        let names = [
+            "leftArm",
+            "rightArm",
+            "leftEar",
+            "rightEar",
+            "forehead",
+            "leftHorn",
+            "rightHorn",
+            "leftLeg",
+            "rightLeg",
+            "tail",
+            "leftWing",
+            "rightWing",
+            "tongue",
+        ];
+        Value::Array(
+            names
+                .iter()
+                .map(|n| {
+                    if missing.contains(n) {
+                        json!({"slot":n,"pointer":null,"model":null,"mapped":true})
+                    } else if unmapped.contains(n) {
+                        json!({"slot":n,"pointer":"0x1","model":null,"mapped":false})
+                    } else {
+                        json!({"slot":n,"pointer":"0x1","model":{"name":"m"},"mapped":true})
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn part_lists_resolve_fully_or_not_at_all() {
+        let none = [
+            "leftArm",
+            "rightArm",
+            "forehead",
+            "leftHorn",
+            "rightHorn",
+            "leftLeg",
+            "rightLeg",
+            "leftWing",
+            "rightWing",
+            "tongue",
+        ];
+        let ok = json!({"status":"file-backed-models-mapped","slots":slots(&none,&[])});
+        assert_eq!(list_categories(&ok).unwrap(), Some(vec!["ears", "tail"]));
+        // One unresolved slot (the old Rabbit ear) makes the list unusable.
+        let broken = json!({"status":"file-backed-model-mappings-incomplete","slots":slots(&none,&["rightEar"])});
+        assert_eq!(list_categories(&broken).unwrap(), None);
+        let runtime = json!({"status":"runtime-list-not-file-backed","slots":[]});
+        assert_eq!(list_categories(&runtime).unwrap(), None);
+        let zero = json!({"status":"zero-initialized-empty-list","slots":slots(&[
+            "leftArm","rightArm","leftEar","rightEar","forehead","leftHorn","rightHorn",
+            "leftLeg","rightLeg","tail","leftWing","rightWing","tongue"],&[])});
+        assert_eq!(list_categories(&zero).unwrap(), Some(vec![]));
+        assert_eq!(
+            list_categories(&json!({"status":"absent","slots":[]})).unwrap(),
+            Some(vec![])
+        );
+        assert!(list_categories(&json!({})).is_err());
+    }
+
     #[test]
     fn signed_stats_reject_missing_unsigned_overflow_and_claimed_fields() {
         let raw = NativeItemStats {

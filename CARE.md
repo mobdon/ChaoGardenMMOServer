@@ -156,6 +156,108 @@ item remains in inventory and is not substituted or discarded. Adapted Garden
 Fruit remains available. The UI must use each `shop` entry's `enabled` state
 instead of assuming that a listed native offer is usable.
 
+## Fruit, seeds, trees, animal parts and drops (care save v2)
+
+Added November 20, 2026, under the standing rule that care and garden rules are
+native ports only. Where no native rule has been traced, the feature is left
+out (fails closed) rather than filled with a tuned value. Native sources are
+the GameCube GSNE8P `main.dol` and `ChaoMain` module (addresses are
+section-relative; times are 60 fps frames).
+
+**Native fruit rows.** The loader also requires the audit's 24 `fruitStats`
+rows and checks each against the pinned executable at `0x008A6448 + 20 × id`.
+Fruit IDs follow the native enum 0x00–0x17 (Chao Garden, Hero Garden, Dark
+Garden, Strong, Tasty, Hero, Dark, Round, Triangle, Square, Heart, Chao, Smart,
+Orange, Blue, Pink, Green, Purple, Yellow, Red, Mushroom, alternate Mushroom,
+Mint Candy, Grapes). Inventory IDs are `sa2-fruit:N` (N 0–23). Eating one is
+four native bites through the life module (`life::eat_fruit_bite`): each bite
+adds a quarter of the row's seven skills as native Exp (remainder on the last
+bite), hunger −2400, life +3 and, for a child, LifeMax +5. Points change only
+when Exp passes 99 (one level-up per stat per call). A fruit handed over by
+the owner adds like +1; a Heart Fruit adds breed +10000 on the last bite. The
+Mood and Belly columns are never read natively. Other special effects (Chao
+Fruit, Mushrooms, colour fruit) are not traced and not applied. Animals and
+drives apply their row once through `life::capture_animal` (Exp, like +1).
+Petting adds like +1 (`life::pet`) beside the existing adapted happiness +2.
+Without verified rows every fruit, seed, plant, water
+and harvest action returns `native-data-unavailable`.
+
+**Trees** (`native-gc-chaomain-tree-v1`). Each garden has the native seven tree
+spots (fn_60_D3A8, `.data 0x2878`): three permanent trees
+(`<garden>-grove-1..3`, kind 8, never die, bearing that garden's fruit 0/1/2)
+and four plantable plots (`<garden>-1..4`), at the native positions. Rules, all
+traced (see the header of `src/garden.rs` for addresses):
+
+- Seed: growth +100 every 60 frames to 10,000 (watering sets it to 10,000),
+  then 380 frames sprouting.
+- Young: water 10,000 draining 14 every 15 frames; size +5e-5 per frame while
+  water > 5,000, else +2e-5; adult at size 1.0.
+- Adult: life 6,000 (Strong 15,000); every 110 frames life −1/−2/−3 by water
+  (> 5,000 / > 2,000 / else) and water −14. Then dying 100 frames, dead
+  18,000, shrinking 100, and the plot is empty again.
+- Fruit: three slots growing +5e-5 per frame up to 2.0. A slot above 0.9 is
+  ripe and needs 11 + rand × 14 shakes; then it drops and restarts at
+  −0.3 × rand. Watering an adult raises each slot by 0.6 (capped at 1.0).
+  Fruit kind = tree kind + 2.
+
+| Intent | Fields | Meaning |
+| --- | --- | --- |
+| `plant` | `itemId` (`seed:*`), `plotId` | Use one owned seed on an empty plot within 2 m. |
+| `water` | `plotId` | Water a seed, young or adult tree (plots or groves). |
+| `harvest` | `plotId` | Shake the tree once; any fruit that drops goes to inventory (`effects.dropped`). |
+
+Growth is computed from server time in frames, so it continues offline and is
+identical however often the server looks. Permanent trees are planted when a
+profile first connects. Not ported (absent, not substituted): fruit falling on
+its own above 1.9, the 10-fruit garden cap and object count, random starting
+fruit growth of permanent trees, and seed prices. Seeds are therefore not sold;
+owned seeds can still be planted. The pre-existing adapted `garden-fruit`
+purchase stays for compatibility.
+
+**Animal parts** (`native-gc-albhv-capture-v1`, ALBHV_Capture 0x33388).
+`care.animalParts` mirrors native `MinimalParts` (category → species ID). For
+each part category, 50% take the animal's part if it has a model for it, else
+20% clear it. Dragon or Sheep horns clear other ears; clearing legs from a
+non-Bat clears flag D6. 20% (not Half Fish) clear flag D3. Half Fish: 50%
+species history and D3 = 1 for a child. Skeleton Dog: history. Bat: 50%
+history and D6 = 1. Others: history always. All 21 species' child and adult
+part lists resolve natively (Half Fish, Skeleton Dog and Bat have empty lists;
+the Rabbit right ear is at 0xED8C3C). Drives never grant parts. Each public
+player record carries `animalParts`. At rebirth the life module calls
+`care::rebirth` (AL_SucceedGeneParam): species history (MinimalFlag) clears and
+each part is lost with probability 0.3. D3/D6 at rebirth are not traced and
+stay. `care::all_species_eaten` reports MinimalFlag for all 21 species.
+
+**Body changes.** Giving an animal or drive and eating fruit change body axes
+only through the body module (`body::apply_capture`, `body::apply_fruit`).
+An animal or drive reports `"body":"applied"` or `"unchanged"` (untraced kinds).
+Fruit growth and the native Hero/Dark Fruit alignment (±0.15, ALO_FruitHeldC
+0x2B6A4) apply per bite from the life module's `FruitBite` events, so fruit
+effects report `"body":"per-bite-life-event"`. Evolution's all-21-animals
+Chaos condition reads `care::all_species_eaten`.
+
+**Mission drops** (`adapted-mission-drop-v1`, unchanged). Native drops come from
+per-stage animal lists (main.dol 0x80195B54) and enemy classes in native stages.
+The server's missions are adapted, not native stages, so the existing adapted
+pick (SHA-256 byte mod 25) stays and no new weights are added. The 100-drop and
+99-per-item limits remain.
+
+**Local models.** Converted native care models stay in the ignored data
+directory under `imports/care/` and are served only by exact allowlisted
+names: `animal-part-<species>-<child|adult>-<socket>.glb` (21 species keys,
+13 sockets), `tree-<family>-<young|mature|dying>.glb` and `fruit-<fruit key>.glb`.
+
+**Integration seam.** `src/chao_hooks.rs` is the only place care and garden
+effects touch stats, needs and body axes. It calls the merged life and body modules. Chao behaviour uses `garden::nearest_fruit(player, now)`
+(a read-only projection) and `care::eat_garden_fruit` (one atomic shake, and
+eat one fruit if any dropped).
+
+**Saves.** Care saves are version 2; version 1 saves load unchanged and gain
+empty `animalParts` and false D3/D6 flags. Garden state is the separate profile
+key `garden` (version 2, replaced as a whole on save; version 1 gardens from
+the earlier draft are refused). Older servers refuse version 2 care data rather
+than dropping it. The wire label stays `adapted-care-v1`.
+
 ## Client behavior
 
 Render all seven canonical skills: `swim`, `fly`, `run`, `power`, `stamina`,
