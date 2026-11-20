@@ -650,7 +650,7 @@ pub fn asset_filename(path: &str) -> Option<String> {
 }
 /// Locally converted evolution bodies, face and look textures (never in Git).
 /// `chao-body-al_<align><family>z.glb`, `chao-face.json`, `chao-look.json`,
-/// `chao-eye-<name>.png` and `chao-look-<name>.png` with a bounded lowercase name.
+/// `chao-eye-<name>.png`, `chao-mouth-<name>.png` and `chao-look-<name>.png` with a bounded lowercase name.
 fn chao_appearance_asset(filename: &str) -> bool {
     if filename == "chao-face.json" || filename == "chao-look.json" {
         return true;
@@ -662,17 +662,19 @@ fn chao_appearance_asset(filename: &str) -> bool {
         let bytes = family.as_bytes();
         return bytes.len() == 2 && b"ndh".contains(&bytes[0]) && b"cnsfrp".contains(&bytes[1]);
     }
-    ["chao-eye-", "chao-look-"].iter().any(|prefix| {
-        filename
-            .strip_prefix(prefix)
-            .and_then(|rest| rest.strip_suffix(".png"))
-            .is_some_and(|name| {
-                (1..=32).contains(&name.len())
-                    && name
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-            })
-    })
+    ["chao-eye-", "chao-look-", "chao-mouth-"]
+        .iter()
+        .any(|prefix| {
+            filename
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.strip_suffix(".png"))
+                .is_some_and(|name| {
+                    (1..=32).contains(&name.len())
+                        && name
+                            .bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                })
+        })
 }
 
 #[cfg(test)]
