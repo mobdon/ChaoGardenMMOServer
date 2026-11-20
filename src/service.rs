@@ -632,6 +632,9 @@ pub fn asset_filename(path: &str) -> Option<String> {
     {
         return Some(format!("activities/{filename}"));
     }
+    if let Some(local) = care_asset(filename) {
+        return Some(local);
+    }
     if glbs.iter().any(|name| filename == format!("{name}.glb"))
         || colors.iter().any(|color| {
             filename == format!("emerald-{color}.glb") || filename == format!("emerald-{color}.png")
@@ -645,6 +648,48 @@ pub fn asset_filename(path: &str) -> Option<String> {
         None
     }
 }
+/// Locally converted native care models (ignored `imports/care/`), by exact name:
+/// `animal-part-<species>-<child|adult>-<socket>.glb`, `tree-<family>-<stage>.glb`
+/// and `fruit-<fruit>.glb`. Names are allowlisted; nothing else is reachable.
+fn care_asset(filename: &str) -> Option<String> {
+    let stem = filename.strip_suffix(".glb")?;
+    const SOCKETS: [&str; 13] = [
+        "leftArm",
+        "rightArm",
+        "leftEar",
+        "rightEar",
+        "forehead",
+        "leftHorn",
+        "rightHorn",
+        "leftLeg",
+        "rightLeg",
+        "tail",
+        "leftWing",
+        "rightWing",
+        "tongue",
+    ];
+    let ok = if let Some(rest) = stem.strip_prefix("animal-part-") {
+        crate::care_catalog::ANIMAL_KEYS.iter().any(|species| {
+            ["child", "adult"].iter().any(|age| {
+                SOCKETS
+                    .iter()
+                    .any(|socket| rest == format!("{species}-{age}-{socket}"))
+            })
+        })
+    } else if let Some(rest) = stem.strip_prefix("tree-") {
+        crate::garden::SEEDS.iter().any(|(family, _, _)| {
+            ["young", "mature", "dying"]
+                .iter()
+                .any(|stage| rest == format!("{family}-{stage}"))
+        })
+    } else if let Some(rest) = stem.strip_prefix("fruit-") {
+        crate::care_catalog::FRUIT_KEYS.contains(&rest)
+    } else {
+        false
+    };
+    ok.then(|| format!("care/{filename}"))
+}
+
 fn byte_range(header_value: &str, length: usize) -> Option<(usize, usize)> {
     let range = header_value.strip_prefix("bytes=")?;
     let (left, right) = range.split_once('-')?;

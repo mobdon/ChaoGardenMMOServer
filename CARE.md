@@ -219,6 +219,11 @@ weighted pick from the first two SHA-256 bytes of its source ID: common animals
 stage tables and carry limits are still unknown; the 100-drop and 99-per-item
 limits remain.
 
+**Local models.** Converted native care models stay in the ignored data
+directory under `imports/care/` and are served only by exact allowlisted
+names: `animal-part-<species>-<child|adult>-<socket>.glb` (21 species keys,
+13 sockets), `tree-<family>-<young|mature|dying>.glb` and `fruit-<fruit key>.glb`.
+
 **Integration seam.** `src/chao_hooks.rs` is the only place care and garden
 effects touch stats, needs and body axes. It will call
 `life::grant_stat_progress`, `life::feed` and `body::apply_shape_delta` once

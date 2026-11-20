@@ -85,6 +85,16 @@ fn part_category(slot: &str) -> Option<usize> {
 }
 const MAX_AUDIT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_EXECUTABLE_BYTES: u64 = 64 * 1024 * 1024;
+/// Native animal species keys 0-20 (drives excluded).
+pub const ANIMAL_KEYS: [&str; 21] = {
+    let mut keys = [""; 21];
+    let mut i = 0;
+    while i < 21 {
+        keys[i] = KEYS[i];
+        i += 1;
+    }
+    keys
+};
 const KEYS: [&str; 25] = [
     "penguin",
     "seal",
