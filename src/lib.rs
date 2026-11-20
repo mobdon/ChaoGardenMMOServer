@@ -5,6 +5,7 @@ pub mod competition;
 pub mod competition_sim;
 pub mod evolution;
 pub mod game;
+pub mod life;
 pub mod metrics;
 pub mod phone;
 pub mod service;

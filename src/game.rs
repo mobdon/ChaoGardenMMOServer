@@ -84,6 +84,7 @@ pub struct Player {
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
     pub care: crate::care::CareState,
+    pub life: crate::life::LifeState,
     pub competition: CompetitionState,
     pub activity_lease: Option<Value>,
     pub boosting: bool,
@@ -172,14 +173,14 @@ impl Player {
             "rings": self.rings, "hp": self.hp, "maxHp": self.max_hp, "happiness": self.happiness,
             "energy": self.energy.round(), "hunger": self.hunger.round(),
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed,
-            "bestRaceMs": self.best_race_ms, "evolution": self.evolution(),
+            "bestRaceMs": self.best_race_ms, "evolution": self.evolution(), "life": crate::life::public_summary(self),
         })
     }
     pub fn profile(&self) -> Value {
         let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
-            "energy":self.energy,"hunger":self.hunger,"care":self.care,
+            "energy":self.energy,"hunger":self.hunger,"care":self.care,"life":self.life,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
@@ -201,6 +202,7 @@ fn merge_profile(preserved: &mut Value, canonical: Value) {
                 // Merging an empty inventory would resurrect consumed stacks.
                 if [
                     "care",
+                    "life",
                     "competition",
                     "activityLease",
                     "tinyRecords",
@@ -340,6 +342,7 @@ pub struct Game {
     pub care_catalog: crate::care_catalog::CareCatalog,
     pub activities: ActivityCatalog,
     pub competition_catalog: CompetitionCatalog,
+    pub life_policy: crate::life::Policy,
     pub time: f64,
     pub allow_owner_bootstrap: bool,
     pub terrains: BTreeMap<String, Terrain>,
@@ -401,6 +404,7 @@ impl Game {
             care_catalog: crate::care_catalog::CareCatalog::default(),
             activities: ActivityCatalog::default(),
             competition_catalog: CompetitionCatalog::default(),
+            life_policy: crate::life::Policy::default(),
             time: now,
             allow_owner_bootstrap,
             terrains,
@@ -521,6 +525,12 @@ impl Game {
             tiny_result: None,
             watch: None,
             care: crate::care::CareState::restore(data.get("care"))?,
+            life: crate::life::LifeState::legacy(
+                "",
+                "normal",
+                [0; 7],
+                crate::life::Policy::default(),
+            ),
             competition: competition::restore(
                 &data["competition"],
                 data["id"].as_str().unwrap_or_default(),
@@ -552,6 +562,13 @@ impl Game {
         };
         self.teleport(&mut player, "hub", 0., 6.)?;
         player.update_form();
+        player.life = crate::life::restore_for(
+            data,
+            &player.id,
+            &player.form,
+            &player.stats,
+            self.life_policy,
+        )?;
         watch::restore(self, &mut player, &data["resident"]);
         if let Some(plan) = &player.competition.plan {
             let expected = competition::lease(plan);
@@ -1365,6 +1382,14 @@ impl Game {
         for id in ids {
             let mut p = self.players.remove(&id).unwrap();
             competition::tick(self, &mut p, dt);
+            let resident = p.watch.is_some() && self.life_policy.resident_needs;
+            if p.connections > 0 || resident {
+                let (grounded, connected) = (p.jump_offset <= 0., p.connections > 0);
+                crate::life::tick(&mut p, dt, self.life_policy, connected, grounded);
+                if p.life.immobile() {
+                    p.input = Input::default();
+                }
+            }
             if competition::reserved(&p) || p.activity_lease.is_some() {
                 p.input = Input::default();
                 self.players.insert(id, p);
@@ -1506,6 +1531,15 @@ impl Game {
                 self.tick_race(&mut p);
             }
             self.players.insert(id, p);
+        }
+        let pending: Vec<_> = self
+            .players
+            .iter()
+            .filter(|(_, p)| !p.life.events.is_empty())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in pending {
+            crate::life::apply_events(self, &id);
         }
         self.tick_enemies(dt);
     }
@@ -1691,6 +1725,7 @@ impl Game {
             "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().filter(|_|mission_visible).map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
             "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
             "care":crate::care::public(self,self_id),
+            "life":crate::life::public(self,self_id),
             "competitionCatalog":self.competition_catalog.public(),
             "competition":self.players.get(self_id).map(competition::public),
             "karate": self.players.get(self_id).and_then(|p|p.karate.as_ref().map(KarateBout::public)),
