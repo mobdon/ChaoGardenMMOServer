@@ -85,6 +85,7 @@ pub struct Player {
     pub watch: Option<WatchState>,
     pub care: crate::care::CareState,
     pub body: crate::body::BodyState,
+    pub body_frames: f64,
     pub competition: CompetitionState,
     pub activity_lease: Option<Value>,
     pub boosting: bool,
@@ -122,7 +123,10 @@ impl Player {
     }
     fn update_form(&mut self) {
         // APos is the alignment authority; percent alignment is its projection.
-        self.alignment = self.body.alignment_percent();
+        self.alignment = self
+            .body
+            .chaos_alignment()
+            .unwrap_or_else(|| self.body.alignment_percent());
         if self.body.is_chaos() {
             self.form = "chaos".into();
         } else {
@@ -143,7 +147,6 @@ impl Player {
             if MAIN_STATS.contains(&name) && !self.admin {
                 stat.grade = (1 + stat.level / 20).min(5);
             }
-            crate::body::on_stat_progress(&mut self.body, name, i32::from(levels) * 100);
         }
     }
     pub fn evolution(&self) -> Value {
@@ -533,6 +536,7 @@ impl Game {
                 data["form"].as_str().unwrap_or("normal"),
                 number(&data["alignment"], 0., -100., 100.),
             )?,
+            body_frames: 0.,
             competition: competition::restore(
                 &data["competition"],
                 data["id"].as_str().unwrap_or_default(),
@@ -1395,7 +1399,12 @@ impl Game {
                 self.players.insert(id, p);
                 continue;
             }
-            p.body.tick(dt as f32);
+            // One native AL_CalcParameter call per 60 Hz frame (rate pending confirmation).
+            p.body_frames += dt * 60.;
+            while p.body_frames >= 1. {
+                p.body_frames -= 1.;
+                p.body.parameter_call();
+            }
             p.update_form();
             if p.tiny_game.is_some() {
                 phone::tick(self, &mut p, dt);

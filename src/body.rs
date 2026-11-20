@@ -1,39 +1,56 @@
 //! Chao body, evolution and appearance (`AL_BODY_INFO` in X-Hax SA2Structs.h).
 //!
-//! Field meanings, enum values and the 6-model-per-type `AL_RootObject` layout are
-//! native (SA2Structs.h, SA2Enums.h, SA Tools `PC_SA2/Chao_DLL.ini`). Every rate and
-//! threshold marked PLACEHOLDER is temporary MMO tuning to be replaced by values traced from the GameCube executable: the native shape and evolution
-//! formulas have not been traced yet, and the public view says so.
+//! Ported from SA2B GameCube `ChaoMain.rel` (GSNE8P, SHA-1 e7e24b8b…, decomp
+//! symbols). Addresses are ChaoMain.rel section offsets, traced from the owner's
+//! own disc. Anything the trace did not establish is left out and reported as
+//! unresolved in [`BodyState::public`]; no value here is MMO tuning.
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub const BODY_VERSION: u32 = 1;
+pub const BODY_VERSION: u32 = 2;
 
-/// `ChaoType` from SA2Enums.h. Only values this module can produce are listed.
+/// `ChaoType` from SA2Enums.h.
 pub mod chao_type {
     pub const CHILD: u8 = 0x02;
     pub const NEUTRAL_NORMAL: u8 = 0x05;
+    pub const NEUTRAL_SWIM: u8 = 0x08;
+    pub const NEUTRAL_FLY: u8 = 0x0B;
+    pub const NEUTRAL_RUN: u8 = 0x0E;
+    pub const NEUTRAL_POWER: u8 = 0x11;
     pub const NEUTRAL_CHAOS: u8 = 0x14;
     pub const HERO_CHAOS: u8 = 0x15;
     pub const DARK_CHAOS: u8 = 0x16;
 }
 
-/// PLACEHOLDER (tuned until the native value is traced): hero/dark class boundary on APos for evolution and child model family.
-pub const ALIGN_CLASS: f32 = 0.6;
-/// PLACEHOLDER (tuned until the native value is traced): adults stay Normal unless one shape axis has moved at least this far.
-pub const NORMAL_LIMIT: f32 = 0.3;
-/// PLACEHOLDER (tuned until the native value is traced): Aim axis movement per native Exp unit (100 Exp = one level, life.rs units).
-pub const SHAPE_PER_EXP: f32 = 0.0005;
-/// PLACEHOLDER (tuned until the native value is traced): visible axes ease toward their Aim targets at this many units per second.
-pub const EASE_PER_SECOND: f32 = 0.01;
-/// PLACEHOLDER (tuned until the native value is traced): seconds of connected play for growth (child or adult morph depth) to reach 1.
-pub const GROWTH_SECONDS: f32 = 3.0 * 3600.0;
-/// Native SA2BColour runs 0 (Normal) ..= 13 (Black); SA2BTexture 0 (None) ..= 16 (Moon).
-pub const MAX_COLOR: u8 = 13;
+/// ChaoGlobal: DeformLimit (AddHPos/AddVPos clamp).
+pub const DEFORM_LIMIT: f32 = 1.0;
+/// ChaoGlobal: GrowthLimit (AddGrowth clamp upper bound).
+pub const GROWTH_LIMIT: f32 = 1.2;
+/// ChaoGlobal: GrowthMayuPoint (child cocoon threshold, fn_60_1531C).
+pub const GROWTH_MAYU_POINT: f32 = 1.0;
+/// ChaoGlobal: NormalBoundary / NeutralBoundary (fn_60_3B5C0, strict comparisons).
+pub const NORMAL_BOUNDARY: f32 = 0.5;
+pub const NEUTRAL_BOUNDARY: f32 = 0.5;
+/// AL_CalcParameter (0x213CC) growth per 120-call step.
+pub const CHILD_TIME_GROWTH: f32 = 0.016_666_7;
+pub const ADULT_TIME_GROWTH: f32 = 0.004_166_67;
+/// AL_CalcParameter runs its parameter step once every this many calls.
+pub const PARAMETER_STEP_CALLS: u32 = 120;
+/// ALBHV_Capture (0x33A2C) MinimalAddForm: child / adult.
+pub const CAPTURE_FORM_CHILD: f32 = 0.1;
+pub const CAPTURE_FORM_ADULT: f32 = 0.05;
+/// Fruit growth: child / adult.
+pub const FRUIT_GROWTH_CHILD: f32 = 0.005;
+pub const FRUIT_GROWTH_ADULT: f32 = 0.001_25;
+/// AL_Deform: a zero |HPos| or |VPos| is replaced by this before the blend.
+pub const DEFORM_EPSILON: f32 = 1e-6;
+/// Native SA2BColour runs 0..=13; SA2BTexture 0..=16; SA2BEggColour 0..=0x36.
+pub const MAX_COLOR: u8 = 27;
 pub const MAX_JEWEL: u8 = 16;
-/// Native SA2BEggColour runs 0 ..= 0x36 in SA2Enums.h.
 pub const MAX_EGG_COLOR: u8 = 0x36;
 
+/// Expressed appearance alleles (genes live in life.rs). ColorNum indexes the
+/// 28-entry native colour table (rodata 0x1D60), not the PC SA2BColour enum.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GeneLook {
@@ -50,23 +67,37 @@ impl GeneLook {
     }
 }
 
+/// Native Chaos inputs read at the cocoon decision (fn_60_3B5C0).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChaosInputs {
+    /// All 21 animal species flags set (animals thread, PartsBTL MinimalFlag).
+    pub all_animals: bool,
+    /// UserLike toward the owner (life thread, AL_KNOWLEDGE).
+    pub user_like: i32,
+    /// CHAO_PARAM_GC byte at +142 (life thread maps the field).
+    pub param_142: i32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BodyState {
     pub version: u32,
-    /// Run (-1) : Power (+1).
+    /// Run (-) : Power (+).
     pub h_pos: f32,
-    /// Swim (-1) : Fly (+1).
+    /// Swim (-) : Fly (+).
     pub v_pos: f32,
-    /// Dark (-1) : Hero (+1). The server's percentage alignment is a projection of this.
+    /// Dark (-) : Hero (+). The server's percentage alignment is a projection of this.
     pub a_pos: f32,
+    /// Native: written only by AL_SucceedGeneParam; never eased toward.
     pub aim_h_pos: f32,
     pub aim_v_pos: f32,
     pub aim_a_pos: f32,
-    /// 0..1 morph depth within the current stage.
+    /// 0..=GrowthLimit.
     pub growth: f32,
     pub chao_type: u8,
     pub look: GeneLook,
+    /// AL_CalcParameter call counter toward the next 120-call step.
+    pub parameter_calls: u32,
 }
 
 impl Default for BodyState {
@@ -82,30 +113,33 @@ impl Default for BodyState {
             growth: 0.,
             chao_type: chao_type::CHILD,
             look: GeneLook::default(),
+            parameter_calls: 0,
         }
     }
 }
 
-fn axis(value: f32) -> f32 {
+fn clamp(value: f32, limit: f32) -> f32 {
     if value.is_finite() {
-        value.clamp(-1., 1.)
+        value.clamp(-limit, limit)
     } else {
         0.
     }
 }
 
-fn ease(current: f32, aim: f32, step: f32) -> f32 {
-    if (aim - current).abs() <= step {
-        aim
-    } else {
-        current + step * (aim - current).signum()
-    }
-}
-
 impl BodyState {
     /// Restore a saved body, or migrate the pre-body profile (form + percent alignment).
+    /// A version-1 body (tuned prototype) migrates to a child keeping APos and look.
     pub fn restore(saved: Option<&Value>, form: &str, alignment: f64) -> Result<Self, String> {
         if let Some(value) = saved.filter(|v| !v.is_null()) {
+            if value["version"] == 1 {
+                let a = clamp(value["aPos"].as_f64().unwrap_or(0.) as f32, 1.);
+                let look = serde_json::from_value(value["look"].clone()).unwrap_or_default();
+                return Ok(Self {
+                    a_pos: a,
+                    look,
+                    ..Self::migrated(form)
+                });
+            }
             let body: Self =
                 serde_json::from_value(value.clone()).map_err(|e| format!("Invalid body: {e}"))?;
             if !body.valid() {
@@ -113,36 +147,33 @@ impl BodyState {
             }
             return Ok(body);
         }
-        let a = axis((alignment / 100.) as f32);
-        let mut body = Self {
-            a_pos: a,
-            aim_a_pos: a,
-            ..Self::default()
-        };
+        Ok(Self {
+            a_pos: clamp((alignment / 100.) as f32, 1.),
+            ..Self::migrated(form)
+        })
+    }
+
+    fn migrated(form: &str) -> Self {
+        let mut body = Self::default();
         if form == "chaos" {
-            body.chao_type = chaos_for(a);
-            body.growth = 1.;
+            body.chao_type = chao_type::NEUTRAL_CHAOS;
         }
-        Ok(body)
+        body
     }
 
     pub fn valid(&self) -> bool {
-        let axes = [
-            self.h_pos,
-            self.v_pos,
-            self.a_pos,
-            self.aim_h_pos,
-            self.aim_v_pos,
-            self.aim_a_pos,
-        ];
+        let axes = [self.h_pos, self.v_pos, self.aim_h_pos, self.aim_v_pos];
+        let aligns = [self.a_pos, self.aim_a_pos];
         self.version == BODY_VERSION
             && axes
                 .iter()
-                .all(|v| v.is_finite() && (-1. ..=1.).contains(v))
+                .all(|v| v.is_finite() && v.abs() <= DEFORM_LIMIT)
+            && aligns.iter().all(|v| v.is_finite() && v.abs() <= 1.)
             && self.growth.is_finite()
-            && (0. ..=1.).contains(&self.growth)
+            && (0. ..=GROWTH_LIMIT).contains(&self.growth)
             && (self.chao_type == chao_type::CHILD
                 || (chao_type::NEUTRAL_NORMAL..=chao_type::DARK_CHAOS).contains(&self.chao_type))
+            && self.parameter_calls < PARAMETER_STEP_CALLS
             && self.look.valid()
     }
 
@@ -154,40 +185,59 @@ impl BodyState {
         (chao_type::NEUTRAL_CHAOS..=chao_type::DARK_CHAOS).contains(&self.chao_type)
     }
 
+    /// Chaos types keep their alignment in the type; others follow APos.
+    pub fn chaos_alignment(&self) -> Option<f64> {
+        match self.chao_type {
+            chao_type::HERO_CHAOS => Some(100.),
+            chao_type::DARK_CHAOS => Some(-100.),
+            _ => None,
+        }
+    }
+
     /// Percent alignment (-100..100) used by garden gates and the existing UI.
     pub fn alignment_percent(&self) -> f64 {
         (f64::from(self.a_pos) * 100.).round()
     }
 
-    /// Alignment changes from garden choices apply immediately (existing gameplay contract).
+    /// Existing garden choices (an MMO action, not a native event) set APos directly.
     pub fn set_alignment_percent(&mut self, percent: f64) {
-        let a = axis((percent / 100.) as f32);
-        self.a_pos = a;
-        self.aim_a_pos = a;
+        self.a_pos = clamp((percent / 100.) as f32, 1.);
     }
 
-    /// Advance the visible axes toward their Aim values and grow. `dt` is in seconds.
-    pub fn tick(&mut self, dt: f32) {
-        if !dt.is_finite() || dt <= 0. {
+    /// AddHPos / AddVPos / AddAPos / AddGrowth with the native clamps.
+    pub fn add(&mut self, h: f32, v: f32, a: f32, growth: f32) {
+        let finite = |x: f32| if x.is_finite() { x } else { 0. };
+        self.h_pos = clamp(self.h_pos + finite(h), DEFORM_LIMIT);
+        self.v_pos = clamp(self.v_pos + finite(v), DEFORM_LIMIT);
+        self.a_pos = clamp(self.a_pos + finite(a), 1.);
+        self.growth = (self.growth + finite(growth)).clamp(0., GROWTH_LIMIT);
+    }
+
+    /// One AL_CalcParameter call. Every 120th call adds the time growth
+    /// (child 1/60, adult 1/240). The garden-stage alignment drift is unresolved
+    /// (its sign source was not traced) and is not applied.
+    pub fn parameter_call(&mut self) {
+        self.parameter_calls += 1;
+        if self.parameter_calls < PARAMETER_STEP_CALLS {
             return;
         }
-        let step = EASE_PER_SECOND * dt;
-        self.h_pos = ease(self.h_pos, self.aim_h_pos, step);
-        self.v_pos = ease(self.v_pos, self.aim_v_pos, step);
-        self.a_pos = ease(self.a_pos, self.aim_a_pos, step);
-        if !self.is_chaos() {
-            self.growth = (self.growth + dt / GROWTH_SECONDS).min(1.);
+        self.parameter_calls = 0;
+        if self.is_chaos() {
+            return;
         }
+        let growth = if self.is_child() {
+            CHILD_TIME_GROWTH
+        } else {
+            ADULT_TIME_GROWTH
+        };
+        self.add(0., 0., 0., growth);
     }
 
-    pub fn class(&self) -> &'static str {
-        if self.a_pos >= ALIGN_CLASS {
-            "hero"
-        } else if self.a_pos <= -ALIGN_CLASS {
-            "dark"
-        } else {
-            "neutral"
-        }
+    /// fn_60_1531C: a child at GrowthMayuPoint enters the cocoon (ALBHV_Mayu).
+    /// The native call also requires the Chao to stand still on the ground; the
+    /// life cycle thread checks that before starting the cocoon.
+    pub fn cocoon_due(&self) -> bool {
+        self.is_child() && self.growth >= GROWTH_MAYU_POINT
     }
 
     pub fn type_name(&self) -> String {
@@ -205,115 +255,173 @@ impl BodyState {
         }
     }
 
-    /// First `AL_RootObject` index of this body's six native morph models
-    /// (z, n, s, f, r, p) in SA Tools `PC_SA2/Chao_DLL.ini`.
+    /// First `AL_RootObject` index of the six native models (z, n, s, f, r, p).
+    /// Children blend the neutral set (0) with the hero (6) or dark (12) set.
     pub fn model_base_index(&self) -> u16 {
         match self.chao_type {
-            chao_type::CHILD => match self.class() {
-                "hero" => 6,
-                "dark" => 12,
-                _ => 0,
-            },
+            chao_type::CHILD => 0,
+            chao_type::NEUTRAL_CHAOS => 108,
+            chao_type::HERO_CHAOS => 114,
+            chao_type::DARK_CHAOS => 120,
             t => 18 + u16::from(t - chao_type::NEUTRAL_NORMAL) * 6,
         }
     }
 
-    /// PLACEHOLDER morph weights relative to the `z` model: `n` is reached as growth rises and
-    /// the axes pull toward `s`/`f`/`r`/`p`. Native blend formula not yet traced.
-    pub fn morph_weights(&self) -> [f32; 5] {
+    /// AL_Deform weights as glTF morph weights on the z model.
+    ///
+    /// Native per vertex: `z + g*((v/(h+v))*lerp(n,V,v) + (h/(h+v))*lerp(n,H,h) - z)`,
+    /// H = p if HPos >= 0 else r, V = f if VPos >= 0 else s, zeros -> 1e-6, growth
+    /// unclamped up to GrowthLimit (AL_DeformObject 0x70D4). Children run the same
+    /// blend on the neutral and on the hero (APos >= 0) or dark set, then
+    /// `lerp(neutral, aligned, |APos|)` (AL_DeformObjectChild 0x6328).
+    /// Chaos and special models have no morph set.
+    pub fn morph(&self) -> (Vec<&'static str>, Vec<f32>) {
         if self.is_chaos() {
-            return [0.; 5];
+            return (vec![], vec![]);
         }
+        let h = self.h_pos.abs().max(DEFORM_EPSILON);
+        let v = self.v_pos.abs().max(DEFORM_EPSILON);
         let g = self.growth;
-        let s = (-self.v_pos).max(0.);
-        let f = self.v_pos.max(0.);
-        let r = (-self.h_pos).max(0.);
-        let p = self.h_pos.max(0.);
-        [g * (1. - s - f - r - p), g * s, g * f, g * r, g * p]
+        let c_n = (v * (1. - v) + h * (1. - h)) / (h + v);
+        let c_v = v * v / (h + v);
+        let c_h = h * h / (h + v);
+        let v_model = if self.v_pos >= 0. { 1 } else { 0 }; // f : s
+        let h_model = if self.h_pos >= 0. { 1 } else { 0 }; // p : r
+        let mut set = [0.; 5]; // n, s, f, r, p
+        set[0] = g * c_n;
+        set[1 + v_model] = g * c_v;
+        set[3 + h_model] = g * c_h;
+        if !self.is_child() {
+            return (vec!["n", "s", "f", "r", "p"], set.to_vec());
+        }
+        let a = self.a_pos.abs();
+        let names = vec![
+            "n", "s", "f", "r", "p", "hz", "hn", "hs", "hf", "hr", "hp", "dz", "dn", "ds", "df",
+            "dr", "dp",
+        ];
+        let mut weights = vec![0.; 17];
+        for i in 0..5 {
+            weights[i] = (1. - a) * set[i];
+        }
+        let aligned = if self.a_pos >= 0. { 5 } else { 11 };
+        // Σc = 1, so the aligned z model keeps a*(1-g) and its targets a*g*c.
+        weights[aligned] = a * (1. - g);
+        for i in 0..5 {
+            weights[aligned + 1 + i] = a * set[i];
+        }
+        (names, weights)
     }
 
     pub fn public(&self) -> Value {
+        let (targets, weights) = self.morph();
         json!({"version":self.version,"type":self.chao_type,"typeName":self.type_name(),
-            "stage":if self.is_child() {"child"} else {"adult"},"class":self.class(),
+            "stage":if self.is_child() {"child"} else {"adult"},
             "runPower":self.h_pos,"swimFly":self.v_pos,"heroDark":self.a_pos,
-            "aim":{"runPower":self.aim_h_pos,"swimFly":self.aim_v_pos,"heroDark":self.aim_a_pos},
-            "growth":self.growth,"modelBaseIndex":self.model_base_index(),
-            "morph":{"targets":["n","s","f","r","p"],"weights":self.morph_weights()},
+            "growth":self.growth,"cocoonDue":self.cocoon_due(),
+            "modelBaseIndex":self.model_base_index(),
+            "morph":{"targets":targets,"weights":weights},
             "look":self.look,
-            "rules":{"fields":"native AL_BODY_INFO","models":"native AL_RootObject layout",
-                "evolution":"placeholder-body-evolution-v1","morph":"placeholder-body-morph-v1",
-                "nativeFormulas":"unknown"}})
+            "rules":{"source":"SA2B GC ChaoMain.rel GSNE8P",
+                "unresolved":["garden-stage alignment drift sign","capture alignment sign",
+                    "capture species 12-20 random pick","jewel, shiny and monotone drawing",
+                    "AL_CalcParameter call rate"]}})
     }
 }
 
-fn chaos_for(a: f32) -> u8 {
-    if a >= ALIGN_CLASS {
-        chao_type::HERO_CHAOS
-    } else if a <= -ALIGN_CLASS {
-        chao_type::DARK_CHAOS
+/// ALBHV_Capture (0x33A2C) shape change for a captured animal or drive.
+/// Kinds 0-11 and 21-24 are traced; kinds 12-20 use a random pick and the
+/// alignment change uses a per-character table, both unresolved, so they are
+/// not applied. Returns whether a traced shape change was applied.
+pub fn apply_capture(body: &mut BodyState, kind: u8) -> bool {
+    if body.is_chaos() {
+        return false;
+    }
+    let f = if body.is_child() {
+        CAPTURE_FORM_CHILD
     } else {
-        chao_type::NEUTRAL_CHAOS
+        CAPTURE_FORM_ADULT
+    };
+    let (h, v) = match kind {
+        0..=2 => (0., -f),
+        3..=5 => (-f, 0.),
+        6..=8 => (f, 0.),
+        9..=11 => (0., f),
+        21 => (0., -f / 2.),
+        22 => (-f / 2., 0.),
+        23 => (f / 2., 0.),
+        24 => (0., f / 2.),
+        _ => return false,
+    };
+    body.add(h, v, 0., 0.);
+    true
+}
+
+/// Fruit growth (stats and needs are applied by life.rs).
+pub fn apply_fruit(body: &mut BodyState) {
+    if body.is_chaos() {
+        return;
     }
+    let growth = if body.is_child() {
+        FRUIT_GROWTH_CHILD
+    } else {
+        FRUIT_GROWTH_ADULT
+    };
+    body.add(0., 0., 0., growth);
 }
 
-/// Stat gains reshape the body. `amount` is native Exp (100 = one level).
-/// Swim/Fly/Run/Power only; other stats and negative amounts do not move the axes.
-pub fn on_stat_progress(body: &mut BodyState, stat: &str, amount: i32) {
-    let delta = SHAPE_PER_EXP * amount.clamp(0, 100_000) as f32;
-    match stat {
-        "swim" => apply_shape_delta(body, 0., -delta, 0.),
-        "fly" => apply_shape_delta(body, 0., delta, 0.),
-        "run" => apply_shape_delta(body, -delta, 0., 0.),
-        "power" => apply_shape_delta(body, delta, 0., 0.),
-        _ => {}
-    }
-}
-
-/// Animal, drive and fruit influence, in native AL_BODY_INFO units.
-pub fn apply_shape_delta(body: &mut BodyState, run_power: f32, swim_fly: f32, hero_dark: f32) {
-    let finite = |v: f32| if v.is_finite() { v } else { 0. };
-    body.aim_h_pos = axis(body.aim_h_pos + finite(run_power));
-    body.aim_v_pos = axis(body.aim_v_pos + finite(swim_fly));
-    body.aim_a_pos = axis(body.aim_a_pos + finite(hero_dark));
-}
-
-/// Cocoon finished: choose the adult type from the axes (PLACEHOLDER rule), reset morph depth.
-/// Chaos and existing adults are unchanged (this module has no second evolution yet).
-pub fn evolve(body: &mut BodyState) -> u8 {
+/// fn_60_3B5C0: cocoon type decision. Resets growth, HPos and VPos; keeps APos.
+/// Only children evolve here.
+pub fn evolve(body: &mut BodyState, chaos: ChaosInputs) -> u8 {
     if !body.is_child() {
         return body.chao_type;
     }
-    body.h_pos = body.aim_h_pos;
-    body.v_pos = body.aim_v_pos;
-    body.a_pos = body.aim_a_pos;
-    let align = match body.class() {
-        "hero" => 1,
-        "dark" => 2,
-        _ => 0,
-    };
-    let (h, v) = (body.h_pos, body.v_pos);
-    let family = if h.abs().max(v.abs()) < NORMAL_LIMIT {
-        0
-    } else if v.abs() >= h.abs() {
-        if v < 0. { 1 } else { 2 }
-    } else if h < 0. {
-        3
+    let (h, v, a) = (body.h_pos, body.v_pos, body.a_pos);
+    let family = if h.abs() < NORMAL_BOUNDARY && v.abs() < NORMAL_BOUNDARY {
+        if chaos.all_animals && chaos.user_like > 80 && chaos.param_142 >= 2 {
+            chao_type::NEUTRAL_CHAOS
+        } else {
+            chao_type::NEUTRAL_NORMAL
+        }
+    } else if v > h {
+        if v > -h {
+            chao_type::NEUTRAL_FLY
+        } else {
+            chao_type::NEUTRAL_RUN
+        }
+    } else if v > -h {
+        chao_type::NEUTRAL_POWER
     } else {
-        4
+        chao_type::NEUTRAL_SWIM
     };
-    body.chao_type = chao_type::NEUTRAL_NORMAL + family * 3 + align;
+    let align = if a.abs() < NEUTRAL_BOUNDARY {
+        0
+    } else if a > 0. {
+        1
+    } else {
+        2
+    };
+    body.chao_type = family + align;
     body.growth = 0.;
+    body.h_pos = 0.;
+    body.v_pos = 0.;
     body.chao_type
 }
 
-/// Separate milestone/owner path for Chaos forms (CAT-GROW-05 gate stays custom).
+/// The existing owner/milestone Chaos path (server MMO gate, not a native rule)
+/// keeps alignment in the native Chaos type.
 pub fn become_chaos(body: &mut BodyState) -> u8 {
-    body.chao_type = chaos_for(body.a_pos);
-    body.growth = 1.;
+    body.chao_type = if body.a_pos.abs() < NEUTRAL_BOUNDARY {
+        chao_type::NEUTRAL_CHAOS
+    } else if body.a_pos > 0. {
+        chao_type::HERO_CHAOS
+    } else {
+        chao_type::DARK_CHAOS
+    };
     body.chao_type
 }
 
 /// Reincarnation: a fresh child body. Expressed look is kept (genes live in life.rs).
+/// AL_SucceedGeneParam's Aim* carry-over is not ported yet.
 pub fn reincarnate(body: &mut BodyState) {
     *body = BodyState {
         look: body.look,
@@ -334,82 +442,154 @@ pub fn express(body: &mut BodyState, look: &GeneLook) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn evolution_picks_family_and_alignment() {
-        let mut b = BodyState::default();
-        on_stat_progress(&mut b, "swim", 1200);
-        apply_shape_delta(&mut b, 0., 0., 0.8);
-        assert_eq!(evolve(&mut b), 0x09); // Hero Swim
-        assert_eq!(b.type_name(), "hero-swim");
-        assert_eq!(b.model_base_index(), 42); // al_hsz
-        let mut b = BodyState::default();
-        on_stat_progress(&mut b, "power", 800);
-        on_stat_progress(&mut b, "run", 200);
-        on_stat_progress(&mut b, "luck", 5000);
-        on_stat_progress(&mut b, "swim", -5000);
-        apply_shape_delta(&mut b, 0., 0., -1.);
-        assert_eq!(evolve(&mut b), 0x13); // Dark Power
-        assert_eq!(b.model_base_index(), 102); // al_dpz
-        let mut b = BodyState::default();
-        assert_eq!(evolve(&mut b), chao_type::NEUTRAL_NORMAL);
-        assert_eq!(b.model_base_index(), 18); // al_nnz
-        assert_eq!(evolve(&mut b), chao_type::NEUTRAL_NORMAL);
-    }
-
-    #[test]
-    fn child_and_chaos_model_indices_follow_native_table() {
-        let mut b = BodyState::default();
-        assert_eq!(b.model_base_index(), 0);
-        b.set_alignment_percent(100.);
-        assert_eq!(b.model_base_index(), 6);
-        b.set_alignment_percent(-100.);
-        assert_eq!(b.model_base_index(), 12);
-        assert_eq!(become_chaos(&mut b), chao_type::DARK_CHAOS);
-        assert_eq!(b.model_base_index(), 120);
-        assert_eq!(b.morph_weights(), [0.; 5]);
-    }
-
-    #[test]
-    fn axes_ease_and_clamp_and_ignore_bad_input() {
-        let mut b = BodyState::default();
-        apply_shape_delta(&mut b, 5., f32::NAN, -0.5);
-        assert_eq!((b.aim_h_pos, b.aim_v_pos, b.aim_a_pos), (1., 0., -0.5));
-        b.tick(10.);
-        assert!((b.h_pos - 0.1).abs() < 1e-6);
-        b.tick(1000.);
-        assert_eq!(b.h_pos, 1.);
-        assert_eq!(b.a_pos, -0.5);
-        b.tick(f32::INFINITY);
-        assert!(b.valid());
-        assert_eq!(b.growth, (1010. / GROWTH_SECONDS).min(1.));
-    }
-
-    #[test]
-    fn morph_weights_reach_targets() {
-        let mut b = BodyState {
+    fn child(h: f32, v: f32, a: f32) -> BodyState {
+        BodyState {
+            h_pos: h,
+            v_pos: v,
+            a_pos: a,
             growth: 1.,
-            h_pos: -1.,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn native_type_decision() {
+        let none = ChaosInputs::default();
+        assert_eq!(
+            evolve(&mut child(0.49, -0.49, 0.), none),
+            chao_type::NEUTRAL_NORMAL
+        );
+        assert_eq!(evolve(&mut child(0., 0.6, 0.6), none), 0x0C); // Hero Fly
+        assert_eq!(
+            evolve(&mut child(-0.7, 0.2, 0.), none),
+            chao_type::NEUTRAL_RUN
+        );
+        assert_eq!(evolve(&mut child(0.7, 0.2, -0.5), none), 0x13); // Dark Power
+        assert_eq!(
+            evolve(&mut child(0.2, -0.7, -0.49), none),
+            chao_type::NEUTRAL_SWIM
+        );
+        // Ties on the diagonals follow the strict native comparisons.
+        assert_eq!(
+            evolve(&mut child(0.6, 0.6, 0.), none),
+            chao_type::NEUTRAL_POWER
+        );
+        assert_eq!(
+            evolve(&mut child(-0.6, 0.6, 0.), none),
+            chao_type::NEUTRAL_RUN
+        );
+        let chaos = ChaosInputs {
+            all_animals: true,
+            user_like: 81,
+            param_142: 2,
+        };
+        assert_eq!(
+            evolve(&mut child(0., 0., 0.9), chaos),
+            chao_type::HERO_CHAOS
+        );
+        assert_eq!(
+            evolve(
+                &mut child(0., 0., 0.),
+                ChaosInputs {
+                    user_like: 80,
+                    ..chaos
+                }
+            ),
+            5
+        );
+        let mut b = child(0.9, 0.1, 0.7);
+        evolve(&mut b, none);
+        assert_eq!((b.h_pos, b.v_pos, b.growth, b.a_pos), (0., 0., 0., 0.7));
+        assert_eq!(b.model_base_index(), 18 + 13 * 6); // al_hpz
+        assert_eq!(evolve(&mut b, none), 0x12);
+    }
+
+    #[test]
+    fn capture_fruit_and_time_follow_native_amounts() {
+        let mut b = BodyState::default();
+        assert!(apply_capture(&mut b, 0));
+        assert!(apply_capture(&mut b, 23));
+        assert_eq!((b.h_pos, b.v_pos), (0.05, -0.1));
+        assert!(!apply_capture(&mut b, 12));
+        assert!(!apply_capture(&mut b, 25));
+        for _ in 0..30 {
+            apply_capture(&mut b, 9);
+        }
+        assert_eq!(b.v_pos, DEFORM_LIMIT);
+        apply_fruit(&mut b);
+        assert_eq!(b.growth, FRUIT_GROWTH_CHILD);
+        let mut t = BodyState::default();
+        for _ in 0..119 {
+            t.parameter_call();
+        }
+        assert_eq!(t.growth, 0.);
+        t.parameter_call();
+        assert_eq!(t.growth, CHILD_TIME_GROWTH);
+        for _ in 0..120 * 80 {
+            t.parameter_call();
+        }
+        assert_eq!(t.growth, GROWTH_LIMIT);
+        assert!(t.cocoon_due());
+    }
+
+    #[test]
+    fn adult_weights_match_native_blend() {
+        let mut b = child(0.5, -0.25, 0.);
+        b.chao_type = chao_type::NEUTRAL_NORMAL;
+        b.growth = 1.2;
+        let (names, w) = b.morph();
+        assert_eq!(names, ["n", "s", "f", "r", "p"]);
+        let (h, v) = (0.5f32, 0.25f32);
+        let c_n = (v * (1. - v) + h * (1. - h)) / (h + v);
+        assert!((w[0] - 1.2 * c_n).abs() < 1e-6);
+        assert!((w[1] - 1.2 * v * v / (h + v)).abs() < 1e-6);
+        assert_eq!(w[2], 0.);
+        assert_eq!(w[3], 0.);
+        assert!((w[4] - 1.2 * h * h / (h + v)).abs() < 1e-6);
+        assert!((c_n + (v * v + h * h) / (h + v) - 1.).abs() < 1e-6);
+        b.h_pos = 0.;
+        b.v_pos = 0.;
+        let (_, w) = b.morph();
+        assert!((w[0] - 1.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn child_blends_neutral_with_aligned_set() {
+        let b = BodyState {
+            a_pos: -0.25,
+            growth: 0.5,
             ..Default::default()
         };
-        assert_eq!(b.morph_weights(), [0., 0., 0., 1., 0.]);
-        b.h_pos = 0.;
-        assert_eq!(b.morph_weights(), [1., 0., 0., 0., 0.]);
-        b.growth = 0.;
-        assert_eq!(b.morph_weights(), [0.; 5]);
+        let (names, w) = b.morph();
+        assert_eq!(names.len(), 17);
+        assert!((w[0] - 0.75 * 0.5).abs() < 1e-4); // neutral n
+        assert!((w[11] - 0.25 * 0.5).abs() < 1e-6); // dz keeps a*(1-g)
+        assert!((w[12] - 0.25 * 0.5).abs() < 1e-4); // dn
+        assert!(w[5..11].iter().all(|x| *x == 0.));
+        let chaos = BodyState {
+            chao_type: chao_type::DARK_CHAOS,
+            ..Default::default()
+        };
+        assert_eq!(chaos.morph().1.len(), 0);
+        assert_eq!(chaos.model_base_index(), 120);
     }
 
     #[test]
     fn restore_migrates_and_round_trips() {
         let b = BodyState::restore(None, "chaos", -100.).unwrap();
-        assert_eq!(b.chao_type, chao_type::DARK_CHAOS);
-        assert_eq!(b.alignment_percent(), -100.);
-        let child = BodyState::restore(None, "hero", 70.).unwrap();
-        assert!(child.is_child());
-        assert_eq!(child.class(), "hero");
-        let saved = serde_json::to_value(&b).unwrap();
-        assert_eq!(BodyState::restore(Some(&saved), "normal", 0.).unwrap(), b);
+        assert!(b.is_chaos());
+        let old = json!({"version":1,"aPos":0.7,"look":{"color":3,"jewel":0,"shiny":true,"monotone":false,"eggColor":0}});
+        let migrated = BodyState::restore(Some(&old), "normal", 0.).unwrap();
+        assert!(migrated.is_child());
+        assert_eq!(migrated.a_pos, 0.7);
+        assert!(migrated.look.shiny);
+        let saved = serde_json::to_value(&migrated).unwrap();
+        assert_eq!(
+            BodyState::restore(Some(&saved), "normal", 0.).unwrap(),
+            migrated
+        );
         let mut bad = saved.clone();
-        bad["hPos"] = json!(3.0);
+        bad["growth"] = json!(1.3);
         assert!(BodyState::restore(Some(&bad), "normal", 0.).is_err());
         let mut extra = saved;
         extra["unknown"] = json!(1);
@@ -428,12 +608,10 @@ mod tests {
         };
         assert!(express(&mut b, &look));
         assert!(!express(&mut b, &GeneLook { jewel: 17, ..look }));
-        assert_eq!(b.look, look);
-        apply_shape_delta(&mut b, 1., 1., 1.);
-        evolve(&mut b);
+        b.add(1., 1., 1., 1.);
+        evolve(&mut b, ChaosInputs::default());
         reincarnate(&mut b);
         assert!(b.is_child());
-        assert_eq!(b.aim_h_pos, 0.);
         assert_eq!(b.look, look);
     }
 }

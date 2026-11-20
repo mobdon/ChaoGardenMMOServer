@@ -692,12 +692,18 @@ fn disconnect_cancels_race_and_returns_to_separate_hub() {
 fn body_reshapes_from_stats_and_survives_restore() {
     let (mut g, id, token) = fixture(false);
     let p = g.players.get_mut(&id).unwrap();
-    chao_game_server::body::on_stat_progress(&mut p.body, "swim", 1000);
-    assert!(p.body.aim_v_pos < 0.);
-    let aim = p.body.aim_v_pos;
+    chao_game_server::body::apply_capture(&mut p.body, 0);
+    assert!(p.body.v_pos < 0.);
+    let aim = p.body.v_pos;
     assert_eq!(p.public()["body"]["typeName"], "child");
     let restored = Game::new(g.export_profiles(), BTreeMap::new(), false, 1000.).unwrap();
     let p = restored.player_for_token(&token).unwrap();
-    assert_eq!(p.body.aim_v_pos, aim);
-    assert_eq!(p.public()["body"]["rules"]["nativeFormulas"], "unknown");
+    assert_eq!(p.body.v_pos, aim);
+    assert_eq!(
+        p.public()["body"]["morph"]["targets"]
+            .as_array()
+            .unwrap()
+            .len(),
+        17
+    );
 }
