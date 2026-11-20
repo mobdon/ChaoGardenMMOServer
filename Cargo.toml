@@ -15,6 +15,7 @@ tokio = { version = "1", features = ["full"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 tiny-garden-games = { path = "crates/tiny-garden-games" }
+tiny-garden-core = { path = "crates/tiny-garden-core" }
 
 [dev-dependencies]
 http-body-util = "0.1"

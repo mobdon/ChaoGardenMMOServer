@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 description = "Bounded native Tiny Chao Garden inspection and separate MMO idle training core"
 
-# Deliberately isolated: this is not linked into the gameplay server yet.
+# Standalone checks remain available; the Rust host uses its verified shop reader.
 [workspace]
 
 [dependencies]

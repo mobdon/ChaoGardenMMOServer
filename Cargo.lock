@@ -133,6 +133,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "tiny-garden-core",
  "tiny-garden-games",
  "tokio",
  "tokio-tungstenite 0.30.0",
@@ -977,6 +978,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
+]
+
+[[package]]
+name = "tiny-garden-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2",
 ]
 
 [[package]]

@@ -28,6 +28,15 @@ use tokio::{
     time::{Instant, MissedTickBehavior},
 };
 
+/// Trusted wall time for persisted AFK deadlines, independent of skipped simulation ticks.
+pub fn trusted_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub data_dir: PathBuf,
@@ -39,6 +48,9 @@ pub struct Config {
     pub event_capacity: usize,
     pub send_timeout: Duration,
     pub max_snapshot_bytes: usize,
+    pub tiny_garden_payload: Option<PathBuf>,
+    pub tiny_a3ve_payload: Option<PathBuf>,
+    pub tiny_asoe_payload: Option<PathBuf>,
 }
 fn bounded_env(name: &str, default: usize, maximum: usize) -> Result<usize, String> {
     let value = env::var(name)
@@ -94,6 +106,9 @@ impl Config {
                 bounded_env("CHAO_SEND_TIMEOUT_MS", 1000, 30000)? as u64
             ),
             max_snapshot_bytes: bounded_env("CHAO_MAX_SNAPSHOT_BYTES", 1048576, 8388608)?,
+            tiny_asoe_payload: env::var_os("CHAO_TINY_ASOE_PAYLOAD").map(PathBuf::from),
+            tiny_a3ve_payload: env::var_os("CHAO_TINY_A3VE_PAYLOAD").map(PathBuf::from),
+            tiny_garden_payload: env::var_os("CHAO_TINY_GARDEN_PAYLOAD").map(PathBuf::from),
         })
     }
     pub fn local(data_dir: PathBuf, owner_bootstrap: bool) -> Self {
@@ -107,6 +122,9 @@ impl Config {
             event_capacity: 512,
             send_timeout: Duration::from_secs(1),
             max_snapshot_bytes: 1048576,
+            tiny_garden_payload: None,
+            tiny_a3ve_payload: None,
+            tiny_asoe_payload: None,
         }
     }
 }
@@ -180,6 +198,24 @@ impl AppState {
                 crate::behaviour::AimLists::load(&aim)
                     .map_err(|e| io::Error::other(format!("chao-garden-aim.json: {e}")))?,
             ));
+        }
+        if let Some(path) = &config.tiny_garden_payload {
+            let bytes = crate::care::load_tiny_payload(path)?;
+            game.native_tiny.load_a2ne(&bytes)?;
+            game.tiny_shop_catalog = Some(
+                tiny_garden_core::shop::TinyShopCatalog::from_verified_payload(&bytes)
+                    .map_err(io::Error::other)?,
+            );
+            game.tiny_egg_source = Some(
+                crate::collection::EggSource::from_verified_payload(&bytes)
+                    .map_err(io::Error::other)?,
+            );
+        }
+        if let Some(path) = &config.tiny_asoe_payload {
+            game.native_tiny.load_rps(path)?;
+        }
+        if let Some(path) = &config.tiny_a3ve_payload {
+            game.native_tiny.load_ball(path)?;
         }
         match (
             env::var_os("CHAO_CARE_AUDIT_DIR"),
@@ -370,6 +406,26 @@ impl AppState {
     }
     /// The WebSocket mutex serializes devices; success is visible only after durable commit.
     pub fn care_action(&self, game: &mut Game, id: &str, message: &Value) -> io::Result<Value> {
+        self.care_action_at(game, id, message, trusted_unix_ms())
+    }
+    /// Host/test clock injection only; there is no client clock field or endpoint.
+    pub fn care_action_at(
+        &self,
+        game: &mut Game,
+        id: &str,
+        message: &Value,
+        now: u64,
+    ) -> io::Result<Value> {
+        self.care_action_inner(game, id, message, now, false)
+    }
+    fn care_action_inner(
+        &self,
+        game: &mut Game,
+        id: &str,
+        message: &Value,
+        now: u64,
+        automatic: bool,
+    ) -> io::Result<Value> {
         let before = game
             .players
             .get(id)
@@ -377,7 +433,7 @@ impl AppState {
             .ok_or_else(|| io::Error::other("Missing profile"))?;
         let was_dirty = game.dirty;
         let event_count = game.events.len();
-        let response = crate::care::action(game, id, message);
+        let response = crate::care::action_at(game, id, message, now, automatic);
         if response["accepted"] == true
             && response["replayed"] == false
             && let Err(error) = self.persist(game)
@@ -420,6 +476,25 @@ impl AppState {
             "accepted":accepted,
             "competition":competition, "serverTime":game.time
         }))
+    }
+    /// Closes ready jobs under the same mutex and atomic store as explicit care.
+    pub fn settle_ready_training_at(&self, game: &mut Game, now: u64) -> io::Result<usize> {
+        let ready: Vec<_> = game
+            .players
+            .iter()
+            .filter_map(|(id, p)| crate::training::ready_job(p, now).map(|job| (id.clone(), job)))
+            .collect();
+        let mut count = 0;
+        for (id, job) in ready {
+            let revision = game.players[&id].care.revision;
+            let request = json!({"type":"care","requestId":uuid::Uuid::new_v4().to_string(),"expectedRevision":revision,"intent":{"kind":"training_settle","jobId":job}});
+            let result = self.care_action_inner(game, &id, &request, now, true)?;
+            if result["accepted"] == true && result["replayed"] == false {
+                count += 1;
+                game.events.push(Event{target:Some(id),message:json!({"type":"event","kind":"training-result","revision":result["revision"],"result":result["effects"]["training"],"rulesVersion":crate::training::RULES})});
+            }
+        }
+        Ok(count)
     }
 }
 
@@ -552,8 +627,8 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
     let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
     Json(
         json!({"ok": true, "mode": if state.config.address.ip().is_loopback() { "local-development" } else { "server" },
-        "online": game.online_connections(), "setup": setup,
-        "tinyGarden":{"games":["memory","rock_paper_scissors","bounce","ball","search"],"rules":"adapted","maxRingReward":crate::phone::MAX_RING_REWARD},
+        "online": game.online_connections(), "setup": setup,"capabilities":{"careMutations":true},
+        "tinyGarden":{"games":["memory","rock_paper_scissors","bounce","ball","search"],"rules":game.native_tiny.rules(),"nativeTinyGames":game.native_tiny.capabilities(),"maxRingReward":game.native_tiny.max_ring_reward(),"shop":crate::care::tiny_shop_catalog(&game),"autoResident":true,"observerSockets":true,"training":crate::training::capability(),"ownedEggs":{"enabled":game.tiny_egg_source.is_some(),"rulesVersion":crate::collection::RULES,"rotationMs":crate::collection::ROTATION_MS,"maxHeldEggs":1,"maxChao":crate::collection::MAX_CHAO,"selectionEnabled":false}},
         "terrain": {"loaded": game.terrains.keys().collect::<Vec<_>>(), "flatFallback": TERRAIN_ZONES.into_iter().filter(|zone| !game.terrains.contains_key(*zone)).collect::<Vec<_>>()}}),
     )
 }
@@ -911,12 +986,23 @@ async fn asset_or_missing(
 #[derive(Deserialize)]
 struct TokenQuery {
     token: Option<String>,
+    observe: Option<u8>,
+}
+fn connection_snapshot(game: &Game, id: &str, observer: bool) -> Value {
+    let mut snapshot = game.snapshot(id);
+    snapshot["connectionMode"] = json!(if observer { "observe" } else { "control" });
+    snapshot
 }
 async fn upgrade(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let observer = match query.observe {
+        None | Some(0) => false,
+        Some(1) => true,
+        _ => return error(StatusCode::BAD_REQUEST, "Invalid observation mode."),
+    };
     let id = query.token.as_deref().and_then(|token| {
         state
             .game
@@ -939,7 +1025,7 @@ async fn upgrade(
         .max_frame_size(2048)
         .write_buffer_size(0)
         .max_write_buffer_size(state.config.max_snapshot_bytes + 65536)
-        .on_upgrade(move |socket| handle_socket(socket, state, id, permit))
+        .on_upgrade(move |socket| handle_socket(socket, state, id, permit, observer))
 }
 
 // One in-flight frame per socket; snapshots are made on demand, never queued.
@@ -957,13 +1043,13 @@ where
     matches!(result, Ok(Ok(())))
 }
 
-fn snapshot_message(state: &AppState, id: &str) -> Option<(Message, usize)> {
+fn snapshot_message(state: &AppState, id: &str, observer: bool) -> Option<(Message, usize)> {
     let started = Instant::now();
-    let snapshot = state
-        .game
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .snapshot(id);
+    let snapshot = connection_snapshot(
+        &state.game.lock().unwrap_or_else(|p| p.into_inner()),
+        id,
+        observer,
+    );
     // The snapshot owns its values; JSON encoding need not block authority.
     let encoded = snapshot.to_string();
     state.metrics.snapshot.record(started.elapsed());
@@ -985,10 +1071,14 @@ fn publish_events(state: &AppState, game: &mut Game) {
 struct ConnectedSocket {
     state: AppState,
     id: String,
+    observer: bool,
 }
 impl Drop for ConnectedSocket {
     fn drop(&mut self) {
         self.state.metrics.ws_closed();
+        if self.observer {
+            return;
+        }
         self.state
             .game
             .lock()
@@ -1002,17 +1092,19 @@ async fn handle_socket(
     state: AppState,
     id: String,
     _permit: OwnedSemaphorePermit,
+    observer: bool,
 ) {
     let mut events = state.events.subscribe();
     let mut shutdown = state.shutdown.subscribe();
     let (mut writer, mut reader) = socket.split();
     {
         let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-        if !game.connect(&id) {
-            return;
-        }
-        let owner = game.players.get(&id).is_some_and(|p| p.admin);
-        game.notice(
+        if !observer {
+            if !game.connect(&id) {
+                return;
+            }
+            let owner = game.players.get(&id).is_some_and(|p| p.admin);
+            game.notice(
             &id,
             if owner {
                 "Welcome, owner! Your admin Chao has all S grades, level 99, and max hidden stats."
@@ -1021,6 +1113,7 @@ async fn handle_socket(
             },
             "info",
         );
+        }
         publish_events(&state, &mut game);
     }
     let reconnect = !state
@@ -1032,8 +1125,9 @@ async fn handle_socket(
     let _connected = ConnectedSocket {
         state: state.clone(),
         id: id.clone(),
+        observer,
     };
-    let Some((initial, bytes)) = snapshot_message(&state, &id) else {
+    let Some((initial, bytes)) = snapshot_message(&state, &id, observer) else {
         return;
     };
     if !send_bounded(&mut writer, initial, &state).await {
@@ -1055,7 +1149,7 @@ async fn handle_socket(
     loop {
         let outgoing: Option<(Message, usize)> = tokio::select! {
             _ = shutdown.changed() => break,
-            _ = snapshots.tick() => match snapshot_message(&state, &id) { Some(frame) => Some(frame), None => break },
+            _ = snapshots.tick() => match snapshot_message(&state, &id, observer) { Some(frame) => Some(frame), None => break },
             event = events.recv() => match event {
                 Ok(event) => {
                     state.metrics.set_queue_depth(state.events.len());
@@ -1089,7 +1183,9 @@ async fn handle_socket(
                     Message::Close(_) => break,
                     Message::Text(_) | Message::Binary(_) => {
                         let mut response = None;
-                        if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
+                        if observer {
+                            response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"observer-read-only","text":"This connection only observes your Chao. Open Tiny Garden for activities."}).to_string().into()), 0));
+                        } else if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
                             let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
                             match value["type"].as_str() {
                                 Some("input") => game.set_input(&id, &value),
@@ -1181,6 +1277,9 @@ pub fn spawn_simulation(state: AppState) -> tokio::task::JoinHandle<()> {
                     game.tick(0.05);
                     state.metrics.resident_tick.record(game.last_resident_tick);
                     state.metrics.set_residents(game.last_tick_residents);
+                    if let Err(error) = state.settle_ready_training_at(&mut game, trusted_unix_ms()) {
+                        eprintln!("Could not settle ready training: {error}");
+                    }
                     if (crate::phone::has_pending(&game) || crate::competition::has_pending(&game))
                         && game.time >= game.tiny_save_retry_at
                         && let Err(value)=state.persist(&mut game) {

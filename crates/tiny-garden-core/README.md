@@ -1,6 +1,6 @@
 # Tiny Chao Garden core
 
-Standalone Rust foundation, version0.1.0. The production server does not depend on this crate yet. No ROM, extracted program, save, third-party C/assembly, original graphics or audio is included in this package.
+Reusable Rust foundation, version0.1.0. The shop reader is available to the server adapter; the pure training ledger remains separate from durable service integration. No ROM, extracted program, save, third-party C/assembly, original graphics or audio is included in this package.
 
 Implemented:
 

@@ -89,6 +89,7 @@ pub struct Player {
     pub life: crate::life::LifeState,
     pub competition: CompetitionState,
     pub activity_lease: Option<Value>,
+    pub tiny_collection: Option<crate::collection::CollectionState>,
     pub boosting: bool,
     pub boost_energy: f64,
     pub happiness: f64,
@@ -191,7 +192,7 @@ impl Player {
         let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
-            "energy":self.energy,"hunger":self.hunger,"care":self.care,"body":self.body,"life":self.life,"garden":self.garden,
+            "energy":self.energy,"hunger":self.hunger,"care":self.care,"body":self.body,"life":self.life,"garden":self.garden,"tinyCollection":self.tiny_collection,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
@@ -218,6 +219,7 @@ fn merge_profile(preserved: &mut Value, canonical: Value) {
                     "life",
                     "competition",
                     "activityLease",
+                    "tinyCollection",
                     "tinyRecords",
                     "raceRecords",
                     "karateRecords",
@@ -353,6 +355,9 @@ pub const SHOP_CATALOG: [ShopItem; 1] = [ShopItem {
 
 pub struct Game {
     pub care_catalog: crate::care_catalog::CareCatalog,
+    pub native_tiny: crate::native_tiny::Sources,
+    pub tiny_shop_catalog: Option<tiny_garden_core::shop::TinyShopCatalog>,
+    pub tiny_egg_source: Option<crate::collection::EggSource>,
     pub activities: ActivityCatalog,
     pub competition_catalog: CompetitionCatalog,
     pub life_policy: crate::life::Policy,
@@ -417,6 +422,9 @@ impl Game {
         }
         let mut game = Self {
             care_catalog: crate::care_catalog::CareCatalog::default(),
+            native_tiny: Default::default(),
+            tiny_shop_catalog: None,
+            tiny_egg_source: None,
             activities: ActivityCatalog::default(),
             competition_catalog: CompetitionCatalog::default(),
             life_policy: crate::life::Policy::default(),
@@ -558,6 +566,9 @@ impl Game {
                 data["id"].as_str().unwrap_or_default(),
             )?,
             activity_lease: data.get("activityLease").filter(|v| !v.is_null()).cloned(),
+            tiny_collection: crate::collection::CollectionState::restore(
+                data.get("tinyCollection"),
+            )?,
             happiness: number(&data["happiness"], 65., 0., 100.),
             energy: number(&data["energy"], 100., 0., 100.),
             hunger: number(&data["hunger"], 100., 0., 100.),
@@ -588,6 +599,8 @@ impl Game {
         if (player.alignment - player.body.alignment_percent()).abs() >= 0.5 {
             player.body.set_alignment_percent(player.alignment);
         }
+        crate::training::validate_player(&player)?;
+        crate::collection::validate_player(&player)?;
         player.update_form();
         player.life = crate::life::restore_for(
             data,
@@ -608,6 +621,7 @@ impl Game {
             }
             player.activity_lease = Some(expected);
         }
+        watch::maintain_tiny(self, &mut player);
         Ok(player)
     }
 
@@ -653,7 +667,17 @@ impl Game {
     pub fn disconnect(&mut self, id: &str) {
         if let Some(mut player) = self.players.remove(id) {
             player.connections = player.connections.saturating_sub(1);
-            if player.connections == 0 && player.watch.is_none() && !competition::reserved(&player)
+            if let Some(run) = &mut player.tiny_game {
+                run.release_controls();
+            }
+            if player.connections == 0 && player.care.tiny_resident {
+                if !player.tiny_game.as_ref().is_some_and(TinyRun::saving) {
+                    player.tiny_game = None;
+                }
+                watch::maintain_tiny(self, &mut player);
+            } else if player.connections == 0
+                && player.watch.is_none()
+                && !competition::reserved(&player)
             {
                 let _ = self.teleport(&mut player, "hub", 0., 6.);
                 if !player.tiny_game.as_ref().is_some_and(TinyRun::saving) {
@@ -669,6 +693,8 @@ impl Game {
                 || player.watch.is_some()
                 || competition::training_conflict(player)
                 || competition::reserved(player)
+                || player.care.tiny_resident
+                || player.care.activity_lock.is_some()
             {
                 return;
             }
@@ -857,6 +883,10 @@ impl Game {
         }
         if action.starts_with("watch-") {
             watch::action(self, p, message);
+            return;
+        }
+        if p.care.tiny_resident && matches!(action, "tiny-start" | "tiny-stop") {
+            phone::action(self, p, message);
             return;
         }
         if p.watch.is_some() {
@@ -1429,6 +1459,23 @@ impl Game {
                 p.input = Input::default();
                 self.players.insert(id, p);
                 continue;
+            }
+            watch::maintain_tiny(self, &mut p);
+            if p.care.tiny_resident
+                && p.tiny_game.is_none()
+                && p.care.activity_lock.is_none()
+                && p.race.is_none()
+                && p.karate.is_none()
+                && p.vehicle.is_none()
+                && matches!(p.zone.as_str(), "garden" | "hero" | "dark" | "hub")
+                && let Some(assets) = self.native_tiny.weeds.as_ref()
+            {
+                let patch = p.care.weeds.get_or_insert_with(crate::weeds::Patch::new);
+                self.dirty |= patch.advance(dt, assets, &mut p.happiness, &mut p.hunger);
+                if let Some(t) = &mut p.care.toys {
+                    t.advance(dt);
+                    self.dirty = true;
+                }
             }
             if p.connections == 0 && p.watch.is_none() {
                 self.players.insert(id, p);

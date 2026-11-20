@@ -93,6 +93,92 @@ pub fn restore(game: &Game, player: &mut Player, value: &Value) {
     player.watch = Some(WatchState::new(game, player, game.time));
 }
 
+fn tiny_conflict(player: &Player) -> bool {
+    player.tiny_game.is_some()
+        || player.race.is_some()
+        || player.karate.is_some()
+        || player.vehicle.is_some()
+        || player.care.activity_lock.is_some()
+        || !["hub", "garden", "hero", "dark"].contains(&player.zone.as_str())
+}
+
+/// Durable opt-in is committed by the versioned care transaction. No passive
+/// connection or page load calls this, and no training/reward authority moves.
+pub(crate) fn enter_tiny(game: &Game, player: &mut Player) -> Result<(), &'static str> {
+    if player.connections == 0 || tiny_conflict(player) {
+        return Err("activity-conflict");
+    }
+    if player.zone == "hub" {
+        game.teleport(player, "garden", 0., 6.)
+            .map_err(|_| "safe-garden-unavailable")?;
+    }
+    player.care.tiny_resident = true;
+    player.input = Input::default();
+    player.vy = 0.;
+    player.jump_offset = 0.;
+    player.y = player.ground_y;
+    player.boosting = false;
+    if player.watch.is_none() {
+        player.watch = Some(WatchState::new(game, player, game.time));
+    }
+    Ok(())
+}
+
+/// The persisted choice survives temporary activities. A resident never runs
+/// AI and a minigame/training/mech/race at the same time, even while offline.
+pub(crate) fn maintain_tiny(game: &Game, player: &mut Player) {
+    if !player.care.tiny_resident {
+        return;
+    }
+    player.input = Input::default();
+    if player.connections == 0 && player.tiny_game.as_ref().is_some_and(|run| !run.saving()) {
+        player.tiny_game = None;
+    }
+    if tiny_conflict(player) {
+        player.watch = None;
+        return;
+    }
+    if player.zone == "hub" && game.teleport(player, "garden", 0., 6.).is_err() {
+        player.watch = None;
+        return;
+    }
+    if player.watch.is_none() {
+        player.vy = 0.;
+        player.jump_offset = 0.;
+        player.y = player.ground_y;
+        player.boosting = false;
+        player.watch = Some(WatchState::new(game, player, game.time));
+    }
+}
+
+/// Called after reward persistence, when mutable player iteration has ended.
+pub(crate) fn maintain_all(game: &mut Game) {
+    let ids: Vec<_> = game.players.keys().cloned().collect();
+    for id in ids {
+        let Some(mut player) = game.players.remove(&id) else {
+            continue;
+        };
+        maintain_tiny(game, &mut player);
+        game.players.insert(id, player);
+    }
+}
+
+pub fn tiny_public(player: &Player) -> Value {
+    let enabled = player.care.tiny_resident;
+    let mode = if !enabled {
+        "manual"
+    } else if player.tiny_game.as_ref().is_some_and(|run| run.saving()) {
+        "saving"
+    } else if player.tiny_game.is_some() {
+        "minigame"
+    } else if player.watch.is_some() && !tiny_conflict(player) {
+        "resident"
+    } else {
+        "paused"
+    };
+    json!({"enabled":enabled,"active":mode=="resident","mode":mode})
+}
+
 fn valid_intent(message: &Value, allowed: &[&str]) -> bool {
     message
         .as_object()
@@ -151,6 +237,7 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
     }
     if action == "watch-stop" {
         player.watch = None;
+        player.care.tiny_resident = false;
         player.input = Input::default();
         game.dirty = true;
         return;

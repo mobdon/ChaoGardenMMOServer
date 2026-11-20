@@ -621,3 +621,124 @@ fn revision_overflow_rejects_new_effects_without_receipt_or_item_loss() {
     );
     assert_eq!(state(&game.players[&id]), before);
 }
+
+#[test]
+fn seven_tiny_fruit_rows_use_signed_adapted_effects_and_keep_levels_grades_hidden_stats_and_energy()
+{
+    let (mut game, id) = fixture(false);
+    // Made-up rows exercise the adapter; no decoded original table is embedded.
+    game.tiny_shop_catalog = Some(tiny_garden_core::shop::TinyShopCatalog {
+        fruits: std::array::from_fn(|id| tiny_garden_core::shop::TinyFruit {
+            id: id as u8,
+            price: 40 + id as u32,
+            raw: [-1, 2, -3, 4, -5, 6, -7],
+        }),
+    });
+    game.players.get_mut(&id).unwrap().rings = 1000;
+    for native_id in 0..7 {
+        game.time += 2000.;
+        let item = format!("tiny-fruit:{native_id}");
+        let (before, rings) = {
+            let p = game.players.get_mut(&id).unwrap();
+            p.happiness = 50.;
+            p.hunger = 50.;
+            p.energy = 31.;
+            for stat in p.stats.values_mut() {
+                stat.points = 100;
+                stat.level = 7;
+                stat.grade = 2;
+            }
+            (p.stats.clone(), p.rings)
+        };
+        let revision = game.players[&id].care.revision;
+        let buy = request(
+            200 + native_id * 2,
+            revision,
+            json!({"kind":"tiny_purchase","itemId":item}),
+        );
+        let bought = care::action(&mut game, &id, &buy);
+        assert_eq!(bought["accepted"], true);
+        assert_eq!(game.players[&id].rings, rings - 40 - native_id);
+        assert_eq!(game.players[&id].care.inventory[&item], 1);
+        let feed = consume(201 + native_id * 2, revision + 1, &item);
+        let applied = care::action(&mut game, &id, &feed);
+        assert_eq!(applied["accepted"], true);
+        assert_eq!(
+            applied["effects"]["raw"]["applicationRules"],
+            care::TINY_FRUIT_RULES
+        );
+        assert_eq!(applied["effects"]["raw"]["nativeLevelUpPorted"], false);
+        assert_eq!(
+            applied["effects"]["points"],
+            json!({"swim":-30,"fly":40,"run":-50,"power":60,"stamina":-70})
+        );
+        let p = &game.players[&id];
+        assert!(!p.care.inventory.contains_key(&item));
+        assert_eq!((p.happiness, p.hunger, p.energy), (40., 70., 31.));
+        assert_eq!(p.stats["luck"], before["luck"]);
+        assert_eq!(p.stats["intelligence"], before["intelligence"]);
+        assert!(
+            p.care.raw_totals.is_empty(),
+            "Tiny byte units must not mix with SA2 animal totals"
+        );
+        assert_eq!(p.care.evidence.animal_uses, 0);
+        for name in ALL_STATS {
+            assert_eq!(p.stats[name].level, before[name].level);
+            assert_eq!(p.stats[name].grade, before[name].grade);
+        }
+        assert_eq!(care::action(&mut game, &id, &buy)["replayed"], true);
+        assert_eq!(care::action(&mut game, &id, &feed)["replayed"], true);
+        assert_eq!(game.players[&id].rings, rings - 40 - native_id);
+    }
+    assert_eq!(
+        care::public(&game, &id)["tinyShop"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        8
+    );
+}
+
+#[test]
+fn unavailable_tiny_source_preserves_owned_fruit_and_rejects_noncanonical_ids() {
+    let (mut game, id) = fixture(false);
+    game.players
+        .get_mut(&id)
+        .unwrap()
+        .care
+        .inventory
+        .insert("tiny-fruit:0".into(), 1);
+    let before = state(&game.players[&id]);
+    for intent in [
+        json!({"kind":"tiny_purchase","itemId":"tiny-fruit:0"}),
+        json!({"kind":"consume","itemId":"tiny-fruit:0"}),
+    ] {
+        assert_eq!(
+            care::action(&mut game, &id, &request(230, 0, intent))["code"],
+            "native-data-unavailable"
+        );
+        assert_eq!(state(&game.players[&id]), before);
+    }
+    for item in [
+        "tiny-fruit:00",
+        "tiny-fruit:7",
+        "tiny-fruit:-1",
+        "tiny-fruit:",
+        "tiny-fruit:1.0",
+    ] {
+        assert_eq!(
+            care::action(&mut game, &id, &consume(231, 0, item))["code"],
+            "invalid-request"
+        );
+        assert_eq!(state(&game.players[&id]), before);
+    }
+    let saved = serde_json::to_value(&game.players[&id].care).unwrap();
+    assert_eq!(
+        CareState::restore(Some(&saved)).unwrap(),
+        game.players[&id].care
+    );
+    assert_eq!(
+        care::public(&game, &id)["tinyShop"]["nativeCatalog"]["enabled"],
+        false
+    );
+}
