@@ -42,6 +42,21 @@ fn karate_catalog() -> Value {
     }]})
 }
 
+/// Synthetic native-shaped tables (no game data): 27 karate descriptors, 28
+/// skill rows, 62 course rows, 115 racer records and 62 rival sets, all weak
+/// so a test Chao wins.
+fn native_tables() -> Value {
+    json!({
+        "karate":{
+            "descriptors":(0..27).map(|i|json!({"skills":0,"name":i,"appearance":0,"kind":-1,"alternate":-1})).collect::<Vec<_>>(),
+            "skills":(0..28).map(|_|json!([0,0,0,0,0,0,0,0])).collect::<Vec<_>>()
+        },
+        "raceCourses":(0..62).map(|_|json!({"index":0,"land":0,"sections":2,"e010":2,"unlock":-1})).collect::<Vec<_>>(),
+        "raceBots":(0..115).map(|_|json!({"mode":0,"shared":0,"pairs":[[0,0],[0,0],[0,0],[0,0],[0,0],[0,0],[0,0]]})).collect::<Vec<_>>(),
+        "rivalSets":(0..62).map(|_|json!({"fixed":0,"unknown4":0,"bots":[0,0,0,0,0,0,0]})).collect::<Vec<_>>()
+    })
+}
+
 fn write_catalogs(path: &Path) {
     fs::create_dir_all(path.join("activities")).unwrap();
     fs::write(
@@ -52,6 +67,11 @@ fn write_catalogs(path: &Path) {
     fs::write(
         path.join("activities/karate.json"),
         karate_catalog().to_string(),
+    )
+    .unwrap();
+    fs::write(
+        path.join("activities/competition-native.json"),
+        native_tables().to_string(),
     )
     .unwrap();
 }
@@ -267,7 +287,7 @@ fn running_entry_restarts_with_frozen_seed_roster_clock_and_no_downtime_catchup(
     {
         let mut game = state.game.lock().unwrap();
         start(&state, &mut game, &id, "karate", 1);
-        tick_and_save(&state, &mut game, 1500);
+        tick_and_save(&state, &mut game, 200);
         game.dirty = true;
         state.persist(&mut game).unwrap();
         before = public(&game, &id);
@@ -907,4 +927,28 @@ fn a_replaced_runtime_lease_pauses_competition_and_survives_safe_cancellation() 
     assert!(public(&game, &id)["plan"].is_null());
     assert!(public(&game, &id)["results"].as_array().unwrap().is_empty());
     assert_eq!(game.players[&id].rings, baseline);
+}
+
+#[test]
+fn five_native_karate_wins_in_a_row_award_the_class_emblem_once() {
+    let (_dir, state, id, _) = fixture();
+    let mut game = state.game.lock().unwrap();
+    assert!(!game.players[&id].care.emblems.karate[0]);
+    start(&state, &mut game, &id, "karate", 3);
+    finish_one(&state, &mut game, &id, 3);
+    for _ in 0..100 {
+        if public(&game, &id)["plan"].is_null() && !competition::has_pending(&game) {
+            break;
+        }
+        tick_and_save(&state, &mut game, 1000);
+    }
+    assert_eq!(game.players[&id].competition.karate_round, 3);
+    assert!(!game.players[&id].care.emblems.karate[0]);
+    start(&state, &mut game, &id, "karate", 2);
+    let last = finish_one(&state, &mut game, &id, 5);
+    assert_eq!(last["award"]["classCleared"], 0);
+    assert_eq!(last["award"]["emblem"], true);
+    tick_and_save(&state, &mut game, 1000);
+    assert!(game.players[&id].care.emblems.karate[0]);
+    assert_eq!(game.players[&id].competition.karate_round, 0);
 }

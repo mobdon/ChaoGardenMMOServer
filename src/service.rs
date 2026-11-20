@@ -212,8 +212,12 @@ impl AppState {
         };
         let races = read_catalog("races")?;
         let karate = read_catalog("karate")?;
+        // Native tables from the owner's install (client CLI chao-competition-tables)
+        // and the optional MMO tuning; without the tables no competition is offered.
+        let native = read_catalog("competition-native")?;
+        let mmo_config = read_catalog("competition-mmo")?;
         game.competition_catalog =
-            crate::competition::CompetitionCatalog::from_values(&races, &karate)
+            crate::competition::CompetitionCatalog::from_values(&karate, &native, &mmo_config)
                 .map_err(io::Error::other)?;
         game.activities = crate::activities::ActivityCatalog::from_values(races, karate)
             .map_err(io::Error::other)?;

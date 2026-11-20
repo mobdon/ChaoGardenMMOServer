@@ -1,7 +1,9 @@
-//! Opt-in, bounded away competitions. Native tables are references for an
-//! explicitly adapted simulation, never a claim that native routes are playable.
-use crate::activities::ActivityCatalog;
-use crate::competition_sim::{self, Competitor, Simulation, SimulationKind};
+//! Opt-in, bounded away competitions. Outcomes come from the native Chao Race
+//! and Karate rules (`competition_native`), driven by the MMO layer
+//! (`competition_mmo`) for everything the server does not run natively.
+use crate::competition_mmo::{self as mmo, Competitor, MmoConfig, Simulation, SimulationKind};
+use crate::competition_native::{MslRand, NativeTables, karate, race};
+use crate::emblems::{self, Emblem};
 use crate::game::{ALL_STATS, Event, Game, Input, Player};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -14,73 +16,113 @@ pub const HISTORY_LIMIT: usize = 10;
 
 #[derive(Clone, Debug, Default)]
 pub struct CompetitionCatalog {
-    race: Option<(String, Value, Vec<Competitor>)>,
-    karate: Option<Competitor>,
+    tables: Option<NativeTables>,
+    /// MsgChaoKarateName (from the local karate catalog), by name index.
+    names: Vec<String>,
+    config: MmoConfig,
 }
 
 impl CompetitionCatalog {
-    pub fn from_values(races: &Value, karate: &Value) -> Result<Self, String> {
-        // Reuse the existing authoritative catalog validation. Only the first
-        // audited references are offered until this vertical slice is accepted.
-        let catalog = ActivityCatalog::from_values(races.clone(), karate.clone())?;
-        let race = catalog
-            .courses
-            .iter()
-            .find(|c| c.id == "beginner-0-1")
-            .and_then(|course| {
-                let bots = races.get("raceBots")?.as_array()?;
-                let rivals: Vec<_> = bots
-                    .iter()
-                    .enumerate()
-                    .skip(1)
-                    .take(3)
-                    .filter_map(|(i, bot)| competition_sim::rival_from_native(bot, i))
-                    .collect();
-                (rivals.len() == 3).then(|| (course.id.clone(), course.source.clone(), rivals))
-            });
-        let karate = catalog
-            .karate
-            .iter()
-            .find(|t| t.id == "karate-beginner")
-            .and_then(|t| {
-                t.opponents
-                    .iter()
-                    .find(|o| o.id == "native-karate-opponent-2")
+    /// `native` is CHAO_DATA_DIR/activities/competition-native.json (client CLI
+    /// `chao-competition-tables` on the owner's sonic2app.exe); `config` is the
+    /// optional MMO tuning file. Without the native tables nothing is offered.
+    pub fn from_values(karate: &Value, native: &Value, config: &Value) -> Result<Self, String> {
+        let tables = if native.is_null() || native.as_object().is_some_and(|o| o.is_empty()) {
+            None
+        } else {
+            Some(NativeTables::from_value(native)?)
+        };
+        let names = karate
+            .get("names")
+            .and_then(Value::as_array)
+            .map(|n| {
+                n.iter()
+                    .take(64)
+                    .map(|v| v.as_str().unwrap_or_default().chars().take(32).collect())
+                    .collect()
             })
-            .map(competition_sim::competitor_from_karate);
-        Ok(Self { race, karate })
+            .unwrap_or_default();
+        Ok(Self {
+            tables,
+            names,
+            config: MmoConfig::from_value(config)?,
+        })
     }
 
     pub fn public(&self) -> Value {
-        json!({"version":VERSION,"rules":"adapted-ai-v1","maxMatches":MAX_MATCHES,
-            "gapMs":GAP_MS,"race":self.race.is_some(),"karate":self.karate.is_some(),
-            "raceCourseId":"beginner-0-1","karateOpponentId":"native-karate-opponent-2"})
+        let c = &self.config;
+        let class = match c.race_class {
+            race::Class::Beginner => "beginner",
+            race::Class::Jewel => "jewel",
+            race::Class::Challenge => "challenge",
+            race::Class::Hero => "hero",
+            race::Class::Dark => "dark",
+        };
+        json!({"version":VERSION,"rules":mmo::RULES_VERSION,"maxMatches":MAX_MATCHES,
+            "gapMs":GAP_MS,"race":self.tables.is_some(),"karate":self.tables.is_some(),
+            "raceCourseId":format!("{class}-{}-{}", c.race_course, c.race_level + 1),
+            "karateClass":c.karate_class,"karateRounds":karate::ROUNDS})
+    }
+
+    pub fn config(&self) -> &MmoConfig {
+        &self.config
     }
 
     fn simulation(
         &self,
         player: &Player,
+        others: &[Competitor],
         kind: SimulationKind,
         seed: u64,
     ) -> Option<(Simulation, Value)> {
+        let tables = self.tables.as_ref()?;
+        let cfg = &self.config;
         let owner = Competitor {
             id: player.id.clone(),
             name: player.name.clone(),
             stats: ALL_STATS.map(|s| player.stats[s].level),
+            skills: ALL_STATS.map(|s| mmo::skill_points(player.stats[s].points)),
             source: json!({"kind":"canonical-chao"}),
         };
         match kind {
             SimulationKind::Race => {
-                let (id, source, rivals) = self.race.as_ref()?;
+                let mut rng = MslRand { next: seed as u32 };
+                let mut field = vec![owner];
+                let mut rivals = mmo::native_rivals(tables, cfg, &mut rng)?;
+                // MMO: other players' Chao take the first lanes when configured.
+                for (lane, other) in others
+                    .iter()
+                    .take(usize::from(cfg.race_player_rivals))
+                    .enumerate()
+                {
+                    rivals[lane] = other.clone();
+                }
+                field.extend(rivals);
+                let sim = mmo::simulate_race(u64::from(rng.next), tables, cfg, field)?;
                 Some((
-                    competition_sim::simulate_race(seed, owner, rivals.clone()),
-                    json!({"courseId":id,"source":source,"geometryUsed":false}),
+                    sim,
+                    json!({"class":cfg.race_class,"course":cfg.race_course,"level":cfg.race_level}),
                 ))
             }
-            SimulationKind::Karate => Some((
-                competition_sim::simulate_karate(seed, owner, self.karate.clone()?),
-                json!({"tierId":"karate-beginner","opponentId":"native-karate-opponent-2"}),
-            )),
+            SimulationKind::Karate => {
+                let round = player.competition.karate_round.min(karate::ROUNDS - 1);
+                let mut rng = MslRand { next: seed as u32 };
+                let (opponent, d) =
+                    mmo::karate_opponent(tables, &self.names, cfg.karate_class, round, &mut rng)?;
+                let native = json!({"class":cfg.karate_class,"round":round,
+                    "descriptor":opponent.source["descriptor"]});
+                let child = player.body.is_child();
+                let sim = mmo::simulate_karate(
+                    u64::from(rng.next),
+                    cfg,
+                    owner,
+                    child,
+                    opponent,
+                    d.kind,
+                    native.clone(),
+                );
+                Some((sim, native))
+            }
         }
     }
 }
@@ -116,6 +158,9 @@ pub struct MatchResult {
     pub simulation: Simulation,
     reference: Value,
     seed: u64,
+    /// Native award: race progress/medal/unlock/emblems or karate round/emblem.
+    #[serde(default)]
+    pub award: Value,
 }
 
 impl MatchResult {
@@ -123,7 +168,8 @@ impl MatchResult {
         json!({"id":self.id,"kind":self.kind,"rank":self.rank,"rings":self.rings,
             "earnedRings":self.earned_rings,"durationMs":self.simulation.duration_ms,
             "placements":self.simulation.placements,"reason":self.simulation.reason,
-            "saved":true,"replayAvailable":true,"rulesVersion":self.simulation.rules_version})
+            "saved":true,"replayAvailable":true,"rulesVersion":self.simulation.rules_version,
+            "award":self.award})
     }
 }
 
@@ -132,6 +178,7 @@ struct Pending {
     next: Box<CompetitionState>,
     reward: u32,
     result_id: Option<String>,
+    emblems: Vec<Emblem>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -143,6 +190,12 @@ pub struct CompetitionState {
     pub active: Option<Entry>,
     pub results: Vec<MatchResult>,
     pub completed_total: u64,
+    /// Karate rounds won in a row in the configured class (fn_72_54A4 +7).
+    #[serde(default)]
+    pub karate_round: u8,
+    /// Native race progress bytes (CM fn_60_24ABC).
+    #[serde(default)]
+    pub race_progress: race::Progress,
     #[serde(skip)]
     pending: Option<Pending>,
     #[serde(skip)]
@@ -158,6 +211,8 @@ impl Default for CompetitionState {
             active: None,
             results: vec![],
             completed_total: 0,
+            karate_round: 0,
+            race_progress: race::Progress::default(),
             pending: None,
             save_failed: false,
         }
@@ -193,20 +248,23 @@ pub fn restore(value: &Value, owner: &str) -> Result<CompetitionState, String> {
         })
         || state.results.iter().any(|r| {
             Uuid::parse_str(&r.id).is_err()
-                || r.rings > 50
-                || r.earned_rings > 50
+                || r.rings > 1000
+                || r.earned_rings > 1000
                 || r.kind != r.simulation.kind
                 || r.simulation
                     .placements
                     .iter()
                     .find(|p| p.id == owner)
                     .is_none_or(|p| p.rank != r.rank)
-                || r.earned_rings != payout(&r.kind, r.rank)
+                || r.earned_rings != payout(&r.simulation, r.rank)
                 || r.rings > r.earned_rings
                 || !valid_simulation(&r.simulation, owner, r.seed)
         })
     {
         return Err("Invalid competition ledger bounds".into());
+    }
+    if state.karate_round >= karate::ROUNDS {
+        return Err("Invalid karate round".into());
     }
     let mut ids = std::collections::BTreeSet::new();
     if state.results.iter().any(|r| !ids.insert(r.id.as_str()))
@@ -220,9 +278,21 @@ pub fn restore(value: &Value, owner: &str) -> Result<CompetitionState, String> {
     Ok(state)
 }
 
-fn valid_simulation(simulation: &Simulation, owner: &str, seed: u64) -> bool {
-    let bounded = (1..=120_000).contains(&simulation.duration_ms)
-        && (2..=4).contains(&simulation.competitors.len())
+/// Structural checks. Results are not re-run on load (the native tables live
+/// outside the save), so a saved result is bounded, not replayed.
+fn valid_simulation(simulation: &Simulation, owner: &str, _seed: u64) -> bool {
+    let current = simulation.rules_version == mmo::RULES_VERSION;
+    let legacy = simulation.rules_version == mmo::LEGACY_RULES_VERSION;
+    let lanes = if current { 2..=race::LANES } else { 2..=4 };
+    let ids: std::collections::BTreeSet<_> = simulation
+        .competitors
+        .iter()
+        .map(|c| c.id.as_str())
+        .collect();
+    (current || legacy)
+        && (1..=3_600_000).contains(&simulation.duration_ms)
+        && lanes.contains(&simulation.competitors.len())
+        && ids.len() == simulation.competitors.len()
         && simulation
             .competitors
             .first()
@@ -232,39 +302,57 @@ fn valid_simulation(simulation: &Simulation, owner: &str, seed: u64) -> bool {
             .iter()
             .all(|c| c.stats.iter().all(|s| *s <= 99))
         && !simulation.frames.is_empty()
-        && simulation.frames.len() <= 1000
+        && simulation.frames.len() <= 20_000
+        && simulation.frames.iter().all(|f| {
+            f.elapsed_ms <= simulation.duration_ms
+                && f.competitors.len() == simulation.competitors.len()
+                && f.competitors
+                    .iter()
+                    .zip(&simulation.competitors)
+                    .all(|(c, who)| {
+                        c.progress <= 10_000
+                            && c.id == who.id
+                            && match simulation.kind {
+                                // Zeal never exceeds 1000; HP is at most 1000 + stamina skill.
+                                SimulationKind::Karate => {
+                                    c.stamina <= 1000 && c.hp <= 1000 + 65_535
+                                }
+                                // Race stamina starts at fn_76_1764's maximum and only falls.
+                                SimulationKind::Race => {
+                                    c.hp == 0
+                                        && i64::from(c.stamina)
+                                            <= i64::from(race::start_stamina(race::race_skill(
+                                                u32::from(who.skills[4]),
+                                            )))
+                                            .max(i64::from(legacy) * 100)
+                                }
+                            }
+                    })
+        })
+        && simulation.placements.len() == simulation.competitors.len()
         && simulation
-            .frames
+            .placements
             .iter()
-            .all(|f| f.elapsed_ms <= simulation.duration_ms)
-        && simulation.placements.len() == simulation.competitors.len();
-    if !bounded || simulation.rules_version != competition_sim::RULES_VERSION {
-        return false;
-    }
-    let owner = simulation.competitors[0].clone();
-    let expected = match simulation.kind {
-        SimulationKind::Race => {
-            competition_sim::simulate_race(seed, owner, simulation.competitors[1..].to_vec())
-        }
-        SimulationKind::Karate if simulation.competitors.len() == 2 => {
-            competition_sim::simulate_karate(seed, owner, simulation.competitors[1].clone())
-        }
-        _ => return false,
-    };
-    expected == *simulation
+            .all(|p| ids.contains(p.id.as_str()) && (1..=8).contains(&p.rank))
+        && (simulation.kind != SimulationKind::Karate || simulation.competitors.len() == 2)
+        && simulation.config.as_ref().is_none_or(MmoConfig::valid)
+        && (legacy || simulation.config.is_some())
 }
 
-fn payout(kind: &SimulationKind, rank: u8) -> u32 {
-    match kind {
-        SimulationKind::Race => match rank {
-            1 => 25,
-            2 => 15,
-            3 => 5,
-            _ => 0,
-        },
+/// MMO payout from the config the result was made with (legacy results use
+/// the default table, which equals the old one).
+fn payout(simulation: &Simulation, rank: u8) -> u32 {
+    let legacy = MmoConfig::default();
+    let cfg = simulation.config.as_ref().unwrap_or(&legacy);
+    match simulation.kind {
+        SimulationKind::Race => cfg
+            .race_rings
+            .get(usize::from(rank).wrapping_sub(1))
+            .copied()
+            .unwrap_or(0),
         SimulationKind::Karate => {
             if rank == 1 {
-                50
+                cfg.karate_rings
             } else {
                 0
             }
@@ -322,15 +410,32 @@ fn stage(
         next: Box::new(next),
         reward,
         result_id,
+        emblems: vec![],
     });
     game.dirty = true;
 }
 
 fn make_entry(game: &Game, player: &Player, kind: SimulationKind) -> Option<Entry> {
     let seed = Uuid::new_v4().as_u128() as u64;
+    // MMO: other players' Chao (by id order) for the configured player lanes.
+    let others: Vec<Competitor> = game
+        .players
+        .values()
+        .filter(|p| p.id != player.id)
+        .take(usize::from(
+            game.competition_catalog.config().race_player_rivals,
+        ))
+        .map(|p| Competitor {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            stats: ALL_STATS.map(|s| p.stats[s].level),
+            skills: ALL_STATS.map(|s| mmo::skill_points(p.stats[s].points)),
+            source: json!({"kind":"player-chao","mmo":true}),
+        })
+        .collect();
     let (simulation, reference) =
         game.competition_catalog
-            .simulation(player, kind.clone(), seed)?;
+            .simulation(player, &others, kind.clone(), seed)?;
     Some(Entry {
         id: Uuid::new_v4().to_string(),
         kind,
@@ -480,10 +585,11 @@ pub fn tick(game: &mut Game, player: &mut Player, dt: f64) {
             .iter()
             .find(|p| p.id == player.id)
             .map_or(4, |p| p.rank);
-        let earned = payout(&entry.kind, rank);
+        let earned = payout(&entry.simulation, rank);
         let rings = earned.min(999999_u32.saturating_sub(player.rings));
         let mut next = player.competition.clone();
         next.active = None;
+        let (award, new_emblems) = native_award(game, player, &mut next, &entry, rank);
         if next.plan.as_ref().is_some_and(|p| p.remaining == 0) {
             next.plan = None;
         } else if let Some(plan) = &mut next.plan {
@@ -499,11 +605,15 @@ pub fn tick(game: &mut Game, player: &mut Player, dt: f64) {
             simulation: entry.simulation,
             reference: entry.reference,
             seed: entry.seed,
+            award,
         });
         if next.results.len() > HISTORY_LIMIT {
             next.results.remove(0);
         }
         stage(game, player, next, rings, Some(entry.id));
+        if let Some(p) = &mut player.competition.pending {
+            p.emblems = new_emblems;
+        }
     } else {
         let plan = player.competition.plan.as_mut().unwrap();
         plan.wait_remaining_ms = plan.wait_remaining_ms.saturating_sub(delta);
@@ -517,6 +627,74 @@ pub fn tick(game: &mut Game, player: &mut Player, dt: f64) {
             next.plan.as_mut().unwrap().remaining -= 1;
             next.active = Some(entry);
             stage(game, player, next, 0, None);
+        }
+    }
+}
+
+/// Native results of a finished match: race wins record progress, medals,
+/// unlocks and emblems (fn_76_698); karate counts rounds and five wins in a
+/// row earn the class emblem (fn_72_5D48). Losing a round restarts the class
+/// (MMO: the native loss path is not traced).
+fn native_award(
+    game: &Game,
+    player: &Player,
+    next: &mut CompetitionState,
+    entry: &Entry,
+    rank: u8,
+) -> (Value, Vec<Emblem>) {
+    let Some(cfg) = entry.simulation.config.as_ref() else {
+        return (Value::Null, vec![]);
+    };
+    match entry.kind {
+        SimulationKind::Race => {
+            if rank != 1 {
+                return (json!({"win":false}), vec![]);
+            }
+            let row = cfg.race_class.row(cfg.race_course, cfg.race_level);
+            let Some(row) = game
+                .competition_catalog
+                .tables
+                .as_ref()
+                .zip(row)
+                .and_then(|(t, row)| t.race_courses.get(row))
+            else {
+                return (Value::Null, vec![]);
+            };
+            let have = player.care.emblems.race;
+            let award = race::win(
+                &mut next.race_progress,
+                &have,
+                cfg.race_class,
+                cfg.race_course,
+                cfg.race_level,
+                row,
+            );
+            let list = award.emblems.iter().map(|i| Emblem::ChaoRace(*i)).collect();
+            (
+                json!({"win":true,"award":award,"progress":next.race_progress}),
+                list,
+            )
+        }
+        SimulationKind::Karate => {
+            if rank != 1 {
+                next.karate_round = 0;
+                return (json!({"win":false,"round":0}), vec![]);
+            }
+            next.karate_round += 1;
+            if next.karate_round < karate::ROUNDS {
+                return (json!({"win":true,"round":next.karate_round}), vec![]);
+            }
+            next.karate_round = 0;
+            let class = usize::from(cfg.karate_class);
+            let fresh = !player.care.emblems.karate[class];
+            (
+                json!({"win":true,"classCleared":cfg.karate_class,"emblem":fresh}),
+                if fresh {
+                    vec![Emblem::ChaoKarate(class)]
+                } else {
+                    vec![]
+                },
+            )
         }
     }
 }
@@ -583,6 +761,9 @@ pub fn commit(game: &mut Game) {
         };
         let next_lease = projected_lease(player, &pending.next);
         player.rings = player.rings.saturating_add(pending.reward).min(999999);
+        for emblem in &pending.emblems {
+            emblems::award(&mut player.care.emblems, *emblem);
+        }
         player.competition = *pending.next;
         player.activity_lease = next_lease;
         if let Some(id) = pending.result_id {
