@@ -84,6 +84,7 @@ pub struct Player {
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
     pub care: crate::care::CareState,
+    pub garden: crate::garden::GardenState,
     pub competition: CompetitionState,
     pub activity_lease: Option<Value>,
     pub boosting: bool,
@@ -179,7 +180,7 @@ impl Player {
         let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
-            "energy":self.energy,"hunger":self.hunger,"care":self.care,
+            "energy":self.energy,"hunger":self.hunger,"care":self.care,"garden":self.garden,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
@@ -201,6 +202,7 @@ fn merge_profile(preserved: &mut Value, canonical: Value) {
                 // Merging an empty inventory would resurrect consumed stacks.
                 if [
                     "care",
+                    "garden",
                     "competition",
                     "activityLease",
                     "tinyRecords",
@@ -521,6 +523,7 @@ impl Game {
             tiny_result: None,
             watch: None,
             care: crate::care::CareState::restore(data.get("care"))?,
+            garden: crate::garden::GardenState::restore(data.get("garden"))?,
             competition: competition::restore(
                 &data["competition"],
                 data["id"].as_str().unwrap_or_default(),

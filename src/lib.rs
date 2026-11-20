@@ -1,10 +1,12 @@
 pub mod activities;
 pub mod care;
 pub mod care_catalog;
+pub mod chao_hooks;
 pub mod competition;
 pub mod competition_sim;
 pub mod evolution;
 pub mod game;
+pub mod garden;
 pub mod metrics;
 pub mod phone;
 pub mod service;
@@ -12,3 +14,5 @@ pub mod watch;
 
 #[cfg(test)]
 mod care_tests;
+#[cfg(test)]
+mod garden_care_tests;

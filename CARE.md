@@ -156,6 +156,80 @@ item remains in inventory and is not substituted or discarded. Adapted Garden
 Fruit remains available. The UI must use each `shop` entry's `enabled` state
 instead of assuming that a listed native offer is usable.
 
+## Fruit, seeds, trees, animal parts and drops (care v2)
+
+Added November 20, 2026. Native evidence and MMO tuning stay separate; every
+tuned rule carries a versioned label in the snapshot and in each effect.
+
+**Native fruit rows.** The loader now also requires the audit's 24 `fruitStats`
+rows and checks each against the pinned executable at `0x008A6448 + 20 × id`.
+Fruit IDs follow the native enum 0x00–0x17 (Chao Garden, Hero Garden, Dark
+Garden, Strong, Tasty, Hero, Dark, Round, Triangle, Square, Heart, Chao, Smart,
+Orange, Blue, Pink, Green, Purple, Yellow, Red, Mushroom, alternate Mushroom,
+Mint Candy, Grapes). Inventory IDs are `sa2-fruit:N` (N 0–23, no leading zero).
+Eating one applies its native row through the same adapted mapping as animals
+(`native-row-adapted-mapping-v1`): seven skills one-for-one, Mood to happiness,
+Belly to satiety. Hero and Dark Fruit additionally pull the hero/dark axis by
+±0.05 (AL_BODY_INFO units, tuning). Special effects that are not in the row
+(Heart Fruit breeding, Chao Fruit, Mushrooms, colour fruit) are reported as
+`unknown-not-applied`. Without verified rows every fruit, seed, plant and
+harvest action returns `native-data-unavailable`.
+
+**Seeds and trees** (`adapted-tree-growth-v1`, all numbers tuning; native timers
+are unknown). Seven seeds `seed:<family>` for the native tree families Strong,
+Tasty, Hero, Dark, Round, Triangle and Square are sold at the hub shop (10
+rings; Hero and Dark 15). Each profile has private plots (six in the Neutral
+garden, three each in Hero and Dark) listed in `snapshot.care.garden.plots`.
+New intents:
+
+| Intent | Fields | Meaning |
+| --- | --- | --- |
+| `plant` | `itemId` (`seed:*`), `plotId` | Use one owned seed on an empty or dead plot within 2 m. |
+| `water` | `plotId` | Speed a seed or young tree by 15 min; 10 min cooldown. |
+| `harvest` | `plotId` | Take one hanging fruit from a plot tree or a garden grove into inventory. |
+
+A tree is a seed for 30 min, young until 3 h, mature for 3 days, then dying for
+12 h and dead. A mature tree grows one fruit of its family (Strong → Strong
+Fruit, …) every 20 min up to 3 hanging; dying trees keep hanging fruit and grow
+none; dead trees drop everything and the plot can be replanted. Each garden also
+has a permanent grove bearing that garden's native fruit (`garden-grove`,
+`hero-grove`, `dark-grove`), starting with 3 fruit and regrowing the same way.
+Growth is computed from wall-clock time, so it continues while offline and is
+identical however often the server looks. The adapted `garden-fruit` purchase
+stays for compatibility.
+
+**Animal parts** (`adapted-replace-every-verified-category-v1`). `care.animalParts`
+mirrors native `MinimalParts`: part category (arms, ears, forehead, horns, legs,
+tail, wings, tongue) → native species ID. Eating an animal replaces every
+category for which that species' child and adult lists both resolve every
+socket to a verified native model. Runtime-only lists (Half Fish, Skeleton Dog,
+Bat) and partial categories (the Rabbit right ear) grant nothing until the
+audit resolves them. Drives never grant parts. The native selection/removal
+probability is unknown. Life-cycle reincarnation calls
+`care::reset_animal_parts` and `care::reset_species_history`.
+
+**Body-axis pull** (`adapted-row-difference-per-400-v1`). Each animal or drive
+pulls run/power by (Power − Run) / 400 and swim/fly by (Fly − Swim) / 400 of its
+native row. Until `body.rs` lands only hero/dark is stored (as alignment);
+the other axes are reported in `effects.shape`.
+
+**Mission drop table** (`adapted-mission-drop-v2`). A defeated robot's drop is a
+weighted pick from the first two SHA-256 bytes of its source ID: common animals
+0–14 weigh 40, rare animals 15–20 weigh 4 and each drive 30 (of 744). Native
+stage tables and carry limits are still unknown; the 100-drop and 99-per-item
+limits remain.
+
+**Integration seam.** `src/chao_hooks.rs` is the only place care and garden
+effects touch stats, needs and body axes. It will call
+`life::grant_stat_progress`, `life::feed` and `body::apply_shape_delta` once
+those modules merge. Chao behaviour uses `garden::nearest_fruit` (read-only)
+and `care::eat_garden_fruit` (one atomic take-and-eat).
+
+**Saves.** Care saves are now version 2; version 1 saves load unchanged and gain
+an empty `animalParts`. Garden state is the separate profile key `garden`
+(version 1, replaced as a whole on save). Older servers refuse version 2 care
+data rather than dropping it.
+
 ## Client behavior
 
 Render all seven canonical skills: `swim`, `fly`, `run`, `power`, `stamina`,

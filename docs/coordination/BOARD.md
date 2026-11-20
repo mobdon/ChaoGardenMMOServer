@@ -7,6 +7,17 @@ before starting. The Vibe-generated release documents arrived in server commit
 `b525d8b` through PR #1; they are planning drafts, not implementation evidence.
 No Vibe website board or external chat has been updated by creating these files.
 
+## Chao animals, fruit and trees (in progress)
+
+Branch `claude/project-thread-vp2v2k` from `40a0ada`. Adds native fruit rows,
+seeds, planting, watering, tree growth, groves and harvest (`src/garden.rs`),
+animal part record and verified part categories, body-axis pull, weighted
+mission drop table v2 and the `src/chao_hooks.rs` seam agreed with the life
+(`claude/project-thread-3i7u22`) and body (`claude/project-thread-bhz10h`)
+branches. Care save version 2; new profile key `garden`. Contract in
+[CARE.md](../../CARE.md). The client and the rare-animal/Rabbit-ear audit fix
+are separate. All timers, prices, plots and weights are labelled MMO tuning.
+
 ## Vibe merge repair
 
 The user authorized useful-only PR integration. [The November 18 integration

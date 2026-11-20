@@ -570,7 +570,10 @@ fn saved_care_round_trip_keeps_pending_claims_receipts_and_signed_evidence() {
     assert_eq!(CareState::restore(None).unwrap(), CareState::default());
     assert!(CareState::restore(Some(&Value::Null)).is_err());
     for (field, value) in [
-        ("version", json!(2)),
+        ("version", json!(3)),
+        ("version", json!(0)),
+        ("animalParts", json!({"ears":21})),
+        ("animalParts", json!({"antlers":1})),
         ("inventory", json!({"sa2:25":1})),
         ("inventory", json!({"garden-fruit":0})),
         (
