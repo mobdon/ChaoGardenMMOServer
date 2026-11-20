@@ -1399,10 +1399,12 @@ impl Game {
                 self.players.insert(id, p);
                 continue;
             }
-            // One native AL_CalcParameter call per 60 Hz frame (rate pending confirmation).
-            p.body_frames += dt * 60.;
-            while p.body_frames >= 1. {
-                p.body_frames -= 1.;
+            // AL_ParameterControl (0x20CCC) runs AL_CalcParameter for one of 32 Chao
+            // slots every ChaoTimerBaseInterval (3) frames: once per Chao per 96 frames
+            // at the 60 Hz game rate.
+            p.body_frames += dt * crate::body::GAME_FRAMES_PER_SECOND;
+            while p.body_frames >= crate::body::FRAMES_PER_PARAMETER_CALL {
+                p.body_frames -= crate::body::FRAMES_PER_PARAMETER_CALL;
                 p.body.parameter_call();
             }
             p.update_form();

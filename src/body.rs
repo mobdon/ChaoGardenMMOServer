@@ -34,7 +34,11 @@ pub const NEUTRAL_BOUNDARY: f32 = 0.5;
 /// AL_CalcParameter (0x213CC) growth per 120-call step.
 pub const CHILD_TIME_GROWTH: f32 = 0.016_666_7;
 pub const ADULT_TIME_GROWTH: f32 = 0.004_166_67;
-/// AL_CalcParameter runs its parameter step once every this many calls.
+/// ChaoTimerBaseInterval (3) x nbMaxEntry[0] (32 Chao slots, rodata 0x81E0).
+pub const FRAMES_PER_PARAMETER_CALL: f64 = 96.;
+/// NTSC game logic rate (ALW_Control runs once per frame).
+pub const GAME_FRAMES_PER_SECOND: f64 = 60.;
+/// ChaoTimerLifeInterval: AL_CalcParameter runs its growth step once every this many calls.
 pub const PARAMETER_STEP_CALLS: u32 = 120;
 /// ALBHV_Capture (0x33A2C) MinimalAddForm: child / adult.
 pub const CAPTURE_FORM_CHILD: f32 = 0.1;
@@ -326,7 +330,7 @@ impl BodyState {
             "rules":{"source":"SA2B GC ChaoMain.rel GSNE8P",
                 "unresolved":["garden-stage alignment drift sign","capture alignment sign",
                     "capture species 12-20 random pick","jewel, shiny and monotone drawing",
-                    "AL_CalcParameter call rate"]}})
+                    "60 Hz game rate assumed for ALW_Control"]}})
     }
 }
 
