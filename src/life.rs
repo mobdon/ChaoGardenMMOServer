@@ -1639,9 +1639,9 @@ pub fn action(game: &mut Game, id: &str, message: &Value) -> Value {
     }
 }
 
-/// Drain life events. The body module hooks in here: `LifeTick` → growth,
+/// Drain life events into the body: `LifeTick` → BodyState::life_step,
 /// `EvolutionDecision` → body::evolve, `Reincarnated` → body::reincarnate,
-/// `Hatched` → body::express, `FruitBite` → body::apply_fruit.
+/// `Hatched` → a fresh body with body::express, `FruitBite` → body::apply_fruit.
 pub fn apply_events(game: &mut Game, id: &str) {
     let Some(p) = game.players.get_mut(id) else {
         return;
@@ -1649,12 +1649,53 @@ pub fn apply_events(game: &mut Game, id: &str) {
     let events = std::mem::take(&mut p.life.events);
     for event in events {
         let (kind, text) = match &event {
-            LifeEvent::LifeTick | LifeEvent::EvolutionDecision(_) | LifeEvent::FruitBite { .. } => {
+            LifeEvent::LifeTick => {
+                p.body.life_step();
                 continue;
             }
+            LifeEvent::EvolutionDecision(inputs) => {
+                // The animals module does not publish PartsBTL MinimalFlag yet, so the
+                // all-21-animals Chaos condition cannot be met here.
+                crate::body::evolve(
+                    &mut p.body,
+                    crate::body::ChaosInputs {
+                        all_animals: false,
+                        user_like: i32::from(inputs.user_like),
+                        param_142: i32::from(inputs.reincarnations),
+                    },
+                );
+                p.update_form();
+                game.dirty = true;
+                continue;
+            }
+            LifeEvent::FruitBite { kind, last, .. } => {
+                crate::body::apply_fruit(&mut p.body, *kind, *last);
+                game.dirty = true;
+                continue;
+            }
+            LifeEvent::Reincarnated => {
+                crate::body::reincarnate(&mut p.body);
+                p.update_form();
+                ("life-reincarnated", "Your Chao was reborn.")
+            }
+            LifeEvent::Hatched { look } => {
+                // A new Chao: a fresh child body with the expressed gene look.
+                let egg_color = p.body.look.egg_color;
+                p.body = crate::body::BodyState::default();
+                crate::body::express(
+                    &mut p.body,
+                    &crate::body::GeneLook {
+                        color: look.color,
+                        jewel: look.jewel,
+                        shiny: look.shiny,
+                        monotone: look.monotone,
+                        egg_color,
+                    },
+                );
+                p.update_form();
+                ("life-hatched", "A new Chao hatched.")
+            }
             LifeEvent::Evolved => ("life-evolved", "Your Chao has grown into an adult."),
-            LifeEvent::Reincarnated => ("life-reincarnated", "Your Chao was reborn."),
-            LifeEvent::Hatched { .. } => ("life-hatched", "A new Chao hatched."),
             LifeEvent::Died => ("life-ended", "Your Chao's life has ended."),
         };
         game.dirty = true;
