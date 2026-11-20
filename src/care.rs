@@ -11,7 +11,9 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-pub const RULES: &str = "adapted-care-v2";
+/// Wire contract label. Fruit, seed, garden and part additions are additive and
+/// carry their own labels, so existing v1 clients keep working.
+pub const RULES: &str = "adapted-care-v1";
 pub const CARE_VERSION: u32 = 2;
 /// Drop-table selection for defeated mission robots (MMO tuning, not a retail table).
 pub const DROP_RULES: &str = "adapted-mission-drop-v2";

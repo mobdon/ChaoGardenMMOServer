@@ -156,7 +156,7 @@ item remains in inventory and is not substituted or discarded. Adapted Garden
 Fruit remains available. The UI must use each `shop` entry's `enabled` state
 instead of assuming that a listed native offer is usable.
 
-## Fruit, seeds, trees, animal parts and drops (care v2)
+## Fruit, seeds, trees, animal parts and drops (care save v2)
 
 Added November 20, 2026. Native evidence and MMO tuning stay separate; every
 tuned rule carries a versioned label in the snapshot and in each effect.
@@ -228,7 +228,9 @@ and `care::eat_garden_fruit` (one atomic take-and-eat).
 **Saves.** Care saves are now version 2; version 1 saves load unchanged and gain
 an empty `animalParts`. Garden state is the separate profile key `garden`
 (version 1, replaced as a whole on save). Older servers refuse version 2 care
-data rather than dropping it.
+data rather than dropping it. The wire label stays `adapted-care-v1`: every
+addition is additive, though an older client that strictly validates inventory
+keys will show the inventory as unreported until it learns the new IDs.
 
 ## Client behavior
 
