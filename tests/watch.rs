@@ -362,7 +362,7 @@ fn resident_behaviour_is_published_consistently_with_legacy_activity() {
         // Every observer sees the same server-chosen behaviour.
         assert_eq!(mine["watch"]["behaviour"], theirs["watch"]["behaviour"]);
         let b = &mine["watch"]["behaviour"];
-        assert_eq!(b["rules"], "adapted-tuning");
+        assert_eq!(b["rules"], "placeholder-tuning");
         let kind = b["kind"].as_str().unwrap().to_owned();
         let legacy = match kind.as_str() {
             "wander" => "wander",

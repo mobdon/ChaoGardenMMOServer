@@ -1,10 +1,10 @@
 //! Server-owned Chao behaviour selection for opted-in garden residents.
 //!
-//! This is **adapted MMO tuning**, not a port of the retail behaviour
+//! This is **placeholder tuning** until native values replace it, not a port of the retail behaviour
 //! controllers. The native controllers and activity timers are mapped in the
 //! research notes (client `docs/MECHANICS.md`, CAT-LIFE-03) but their priority
 //! tables and timers are not yet decoded. Every weight and duration below is
-//! our own labelled tuning and is published with `rules:"adapted-tuning"`.
+//! a placeholder, published with `rules:"placeholder-tuning"`.
 //!
 //! The server picks a behaviour kind, a variant and a phase. Clients map the
 //! kind and variant onto native Chao motion clips and faces. The server never
@@ -87,7 +87,7 @@ impl Phase {
     }
 }
 
-/// Adapted tuning (milliseconds). Not native timers.
+/// PLACEHOLDER tuning (milliseconds), not native timers. Replace with decoded native values.
 pub mod tuning {
     pub const IDLE_MS: f64 = 1800.;
     pub const WANDER_MS: f64 = 5500.;
@@ -214,7 +214,7 @@ impl Behaviour {
         json!({"kind":self.kind.name(),"variant":self.variant,"phase":self.phase.name(),
             "startedAt":self.started_at,"until":self.until,
             "phaseStartedAt":self.phase_started_at,"phaseUntil":self.phase_until,
-            "rules":"adapted-tuning"})
+            "rules":"placeholder-tuning"})
     }
 }
 
@@ -242,7 +242,7 @@ pub enum Choice {
 
 /// Choose the next behaviour after an idle beat.
 ///
-/// Adapted tuning: decisions cycle in threes so every resident visibly rests,
+/// PLACEHOLDER tuning: decisions cycle in threes so every resident visibly rests,
 /// walks and has one free choice within a few seconds. The rest slot becomes
 /// sleep when sleepy, the free slot leans toward play when bored or happy.
 pub fn choose(needs: NeedsView, salt: u64, decision: u32) -> (Choice, u8) {

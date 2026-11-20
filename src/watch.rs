@@ -1,5 +1,5 @@
 //! Small custom resident routine; this does not execute retail Chao AI.
-//! Behaviour selection lives in `crate::behaviour` (adapted tuning).
+//! Behaviour selection lives in `crate::behaviour` (placeholder tuning until native values are decoded).
 use crate::behaviour::{self, Behaviour, Choice, Kind, NeedsView};
 use crate::game::{Game, Input, Player};
 use serde_json::{Value, json};

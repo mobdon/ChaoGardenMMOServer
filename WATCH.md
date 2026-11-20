@@ -26,9 +26,9 @@ Use canonical player coordinates for rendering.
 `variant` (a small server-chosen index the client maps onto its native clip
 list), `phase` (`enter`, `loop`, `exit` for sit and sleep; `loop` otherwise),
 `startedAt`, `until`, `phaseStartedAt`, `phaseUntil` and
-`rules:"adapted-tuning"`. `activity` stays the coarse legacy value: `sit` and
+`rules:"placeholder-tuning"`. `activity` stays the coarse legacy value: `sit` and
 `sleep` report `rest`, `wander` reports `wander`, everything else reports
-`idle`. Behaviour weights and durations are our own labelled tuning, because
+`idle`. Behaviour weights and durations are placeholders until the decoded native values replace them, because
 the native behaviour controllers and timers are mapped but not decoded. The
 picker reads needs through a read-only adapter (currently the prototype
 `energy` and `happiness`) and never writes them. The server never names motion

@@ -64,7 +64,7 @@ Branch `claude/project-thread-b0gujd`, base `40a0ada`. Adds `src/behaviour.rs`
 and extends the Watch resident routine with server-chosen `sit`, `sleep`,
 `play`, `happy` and `startled` behaviours, enter/loop/exit phases and a
 `watch.behaviour` snapshot object. Legacy `watch.activity` values are kept.
-All weights and timers are labelled `adapted-tuning`; native controllers stay
+All weights and timers are labelled `placeholder-tuning`; native controllers stay
 undecoded (CAT-LIFE-03). No rings, stats or needs change from routine activity.
 Shared state: needs, mood and personality are read only through the life
 cycle module (`life::needs_view`) once it merges; until then a prototype
