@@ -1,5 +1,4 @@
 //! Loopback-only proof of canonical away entries and durable spectator results.
-use chao_game_server::competition;
 use chao_game_server::service::{AppState, Config, router, spawn_simulation};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -111,16 +110,6 @@ async fn send(socket: &mut Socket, value: Value) {
         .unwrap();
 }
 
-fn player<'a>(snapshot: &'a Value, id: &str) -> &'a Value {
-    static MISSING: Value = Value::Null;
-    snapshot["players"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["id"] == id)
-        .unwrap_or(&MISSING)
-}
-
 /// Synthetic native-shaped tables (no game data): 27 karate descriptors, 28
 /// skill rows, 62 course rows, 115 racer records and 62 rival sets, all weak
 /// so a test Chao wins.
@@ -164,270 +153,33 @@ fn write_catalogs(path: &std::path::Path) {
     .unwrap();
 }
 
-/// Advances the actual host/core while sockets observe it. Every staged boundary
-/// goes through the real durable service transaction, with no client clock input.
-fn finish_one(server: &LiveServer, id: &str, expected_results: usize) {
-    let mut game = server.state.game.lock().unwrap();
-    for _ in 0..20_000 {
-        game.tick(0.05);
-        if chao_game_server::competition::has_pending(&game) {
-            server.state.persist(&mut game).unwrap();
-        }
-        if chao_game_server::competition::public(&game.players[id])["results"]
-            .as_array()
-            .unwrap()
-            .len()
-            >= expected_results
-        {
-            return;
-        }
-    }
-    panic!("server-owned match did not durably finish within bounded simulation");
-}
-
 #[tokio::test]
-async fn race_and_karate_keep_one_away_chao_and_publish_only_durable_results() {
+async fn competition_start_fails_closed_over_the_socket_without_side_effects() {
     let server = LiveServer::start().await;
     let owner = server.session("Competitor");
-    let visitor = server.session("Spectator");
     let id = owner["player"]["id"].as_str().unwrap();
-    let mut observer = server.socket(&visitor).await;
     let mut control = server.socket(&owner).await;
-    let mut duplicate = server.socket(&owner).await;
-    receive_until(&mut control, |value| value["type"] == "snapshot").await;
-    send(
-        &mut control,
-        json!({"type":"action","action":"watch-start"}),
-    )
-    .await;
-    let watched = receive_until(&mut control, |value| value["kind"] == "watch-saved").await;
-    assert_eq!(watched["accepted"], true);
-    send(&mut observer, json!({"type":"action","action":"garden"})).await;
-    receive_until(&mut observer, |value| {
-        value["type"] == "snapshot" && player(value, id)["connected"] == true
-    })
-    .await;
-
-    let forged = json!({"type":"action","action":"competition-start","expectedRevision":0,
-        "kind":"race","matches":1,"rings":999999,"winner":id});
-    send(&mut control, forged).await;
-    let rejected = receive_until(&mut control, |value| value["kind"] == "competition-saved").await;
-    assert_eq!(rejected["accepted"], false);
-    assert_eq!(server.disk_profile(id)["rings"], owner["player"]["rings"]);
-
-    for (index, kind) in ["race", "karate"].into_iter().enumerate() {
-        let before = {
-            let game = server.state.game.lock().unwrap();
-            chao_game_server::competition::public(&game.players[id])
-        };
-        let start = json!({"type":"action","action":"competition-start",
-            "expectedRevision":before["revision"],"kind":kind,"matches":1});
-        send(&mut control, start.clone()).await;
-        let accepted =
-            receive_until(&mut control, |value| value["kind"] == "competition-saved").await;
-        assert_eq!(
-            accepted["accepted"], true,
-            "{kind} entry must durably opt in"
-        );
-        send(&mut duplicate, start).await;
-        let replayed =
-            receive_until(&mut duplicate, |value| value["kind"] == "competition-saved").await;
-        assert_eq!(
-            replayed["accepted"], false,
-            "same revision cannot create another plan"
-        );
-
-        control.close(None).await.unwrap();
-        duplicate.close(None).await.unwrap();
-        receive_until(&mut observer, |value| {
-            value["type"] == "snapshot" && player(value, id)["connected"] == false
-        })
-        .await;
-        finish_one(&server, id, index + 1);
-        let result_snapshot = receive_until(&mut observer, |value| {
-            value["type"] == "snapshot"
-                && player(value, id)["competition"]["results"]
-                    .as_array()
-                    .is_some_and(|results| results.iter().any(|result| result["kind"] == kind))
-        })
-        .await;
-        assert_eq!(
-            result_snapshot["players"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|row| row["id"] == id)
-                .count(),
-            1
-        );
-        let result = player(&result_snapshot, id)["competition"]["results"]
-            .as_array()
+    let snapshot = receive_until(&mut control, |value| value["type"] == "snapshot").await;
+    assert_eq!(snapshot["competitionCatalog"]["race"], false);
+    assert_eq!(snapshot["competitionCatalog"]["karate"], false);
+    assert_eq!(snapshot["competitionCatalog"]["nativeTables"], true);
+    assert!(
+        snapshot["competitionCatalog"]["reason"]
+            .as_str()
             .unwrap()
-            .iter()
-            .find(|result| result["kind"] == kind)
-            .unwrap()
-            .clone();
-        assert_eq!(result["kind"], kind);
-        assert_eq!(result["saved"], true);
-        let disk = server.disk_profile(id);
-        assert_eq!(disk["rings"], player(&result_snapshot, id)["rings"]);
-        assert!(disk.to_string().contains(result["id"].as_str().unwrap()));
-
-        control = server.socket(&owner).await;
-        duplicate = server.socket(&owner).await;
+            .contains("not ported")
+    );
+    for kind in ["race", "karate"] {
         send(
             &mut control,
-            json!({"type":"action","action":"competition-replay","matchId":result["id"]}),
+            json!({"type":"action","action":"competition-start","expectedRevision":0,"kind":kind,"matches":1}),
         )
         .await;
-        let replay =
-            receive_until(&mut control, |value| value["kind"] == "competition-replay").await;
-        assert!(replay.to_string().contains(result["id"].as_str().unwrap()));
-        assert_eq!(server.disk_profile(id)["rings"], disk["rings"]);
+        let reply = receive_until(&mut control, |value| value["kind"] == "competition-saved").await;
+        assert_eq!(reply["accepted"], false, "{kind} must not start");
     }
-    control.close(None).await.unwrap();
-    duplicate.close(None).await.unwrap();
-    observer.close(None).await.unwrap();
-    let restarted =
-        AppState::load(Config::local(server.directory.path().to_owned(), false)).unwrap();
-    let game = restarted.game.lock().unwrap();
-    let restored = game
-        .player_for_token(owner["token"].as_str().unwrap())
-        .unwrap();
-    assert_eq!(restored.id, id);
-    assert_eq!(
-        chao_game_server::competition::public(restored)["results"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(
-        restored.rings,
-        server.disk_profile(id)["rings"].as_u64().unwrap() as u32
-    );
-}
-
-#[test]
-fn rejected_intent_flushing_a_pending_result_is_not_acknowledged_as_accepted() {
-    for (kind, action) in [
-        ("race", "competition-start"),
-        ("karate", "competition-stop"),
-    ] {
-        let directory = tempfile::tempdir().unwrap();
-        write_catalogs(directory.path());
-        let state = AppState::load(Config::local(directory.path().to_owned(), true)).unwrap();
-        let mut game = state.game.lock().unwrap();
-        let session = game
-            .create_session(&json!({"name":"Pending result"}))
-            .unwrap();
-        let id = session["player"]["id"].as_str().unwrap();
-        game.connect(id);
-        state.persist(&mut game).unwrap();
-        assert_eq!(
-            chao_game_server::care::public(&game, id)["eligibility"]["canCare"],
-            true
-        );
-        let accepted = state
-            .competition_action(
-                &mut game,
-                id,
-                &json!({
-                    "type":"action", "action":"competition-start", "kind":kind,
-                    "matches":1, "expectedRevision":0
-                }),
-            )
-            .unwrap();
-        assert_eq!(accepted["accepted"], true);
-        let rejected_care = state
-            .care_action(
-                &mut game,
-                id,
-                &json!({"type":"care", "requestId":uuid::Uuid::new_v4().to_string(),
-                    "expectedRevision":0, "intent":{"kind":"purchase", "itemId":"garden-fruit"}}),
-            )
-            .unwrap();
-        assert_eq!(rejected_care["accepted"], false);
-        assert_eq!(rejected_care["code"], "activity-conflict");
-        assert_eq!(rejected_care["revision"], 0);
-        let plan_id = competition::public(&game.players[id])["plan"]["id"].clone();
-        let baseline = game.players[id].rings;
-        let mut terminal = false;
-        for _ in 0..5000 {
-            game.tick(0.05);
-            if competition::has_pending(&game) {
-                let exported = game.export_profiles();
-                let projected = exported.iter().find(|profile| profile["id"] == id).unwrap();
-                if projected["competition"]["results"]
-                    .as_array()
-                    .unwrap()
-                    .len()
-                    == 1
-                {
-                    terminal = true;
-                    break;
-                }
-                state.persist(&mut game).unwrap();
-            }
-        }
-        assert!(terminal, "server match must stage a terminal result");
-        let disk_before = fs::read(directory.path().join("profiles.json")).unwrap();
-        fs::create_dir(directory.path().join("profiles.json.tmp")).unwrap();
-        assert!(state.persist(&mut game).is_err());
-        competition::save_failed(&mut game);
-        assert_eq!(game.players[id].rings, baseline);
-        assert_eq!(
-            fs::read(directory.path().join("profiles.json")).unwrap(),
-            disk_before
-        );
-        assert!(
-            competition::public(&game.players[id])["results"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-        fs::remove_dir(directory.path().join("profiles.json.tmp")).unwrap();
-
-        let revision = competition::public(&game.players[id])["revision"].clone();
-        let rejected = if action == "competition-start" {
-            json!({"type":"action", "action":action, "expectedRevision":revision,
-                "kind":kind, "matches":1})
-        } else {
-            json!({"type":"action", "action":action, "expectedRevision":revision, "planId":plan_id})
-        };
-        let acknowledgement = state.competition_action(&mut game, id, &rejected).unwrap();
-        assert_eq!(acknowledgement["kind"], "competition-saved");
-        assert_eq!(
-            acknowledgement["accepted"], false,
-            "committing a prior earned result must not accept the rejected intent"
-        );
-        let result = acknowledgement["competition"]["results"][0].clone();
-        assert_eq!(result["saved"], true);
-        assert!(acknowledgement["competition"]["plan"].is_null());
-        let credited = game.players[id].rings;
-        assert_eq!(
-            credited,
-            baseline + result["rings"].as_u64().unwrap() as u32
-        );
-        assert_eq!(
-            game.drain_events()
-                .iter()
-                .filter(|event| event.message["kind"] == "competition-result")
-                .count(),
-            1
-        );
-        state.persist(&mut game).unwrap();
-        assert_eq!(game.players[id].rings, credited);
-        assert!(
-            !game
-                .drain_events()
-                .iter()
-                .any(|event| event.message["kind"] == "competition-result")
-        );
-        drop(game);
-        let restarted = AppState::load(Config::local(directory.path().to_owned(), false)).unwrap();
-        let game = restarted.game.lock().unwrap();
-        assert_eq!(game.players[id].rings, credited);
-        assert_eq!(competition::public(&game.players[id])["results"][0], result);
-    }
+    let disk = server.disk_profile(id);
+    assert_eq!(disk["rings"], owner["player"]["rings"]);
+    assert!(disk["competition"].is_null() || disk["competition"]["plan"].is_null());
+    assert!(disk["activityLease"].is_null());
 }

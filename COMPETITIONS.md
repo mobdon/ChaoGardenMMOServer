@@ -6,26 +6,19 @@ running. The plan, frozen match inputs, elapsed simulation time, saved results,
 and ring receipts belong to that profile. A reconnect or a second socket does
 not create another competitor or another clock.
 
-Rules `native-gsne8p+mmo-v1`. Every outcome rule is a port of the GameCube
-SA2B Chao modules (`src/competition_native.rs`; the same routines in the
-client crate are checked bit for bit against the GameCube PowerPC):
+Native only. The GameCube SA2B Chao Race and Karate rules are ported in
+`src/competition_native.rs` (each with its address; the same routines in the
+client crate are checked bit for bit against the GameCube PowerPC). A native
+result also needs the race course geometry, path following and movement
+integrator, and the karate motion lengths, fighter movement and ring-out,
+which are not ported yet. Nothing non-native is substituted, so
+`competition-start` is refused for both kinds and the catalog reports
+`race:false`, `karate:false` with that reason. There is no ring payout.
 
-- Race: the course table and class layout, the rival set, lane shuffle and
-  rival skills, start stamina, the run/swim/fly/climb movement laws, the run
-  trip roll and stamina drain, and the win rules for progress, medals,
-  unlocks and emblems.
-- Karate: the opponent table and row choice, fighter setup, the hit check,
-  damage with its 5% floor, HP and zeal, the charge, attack outcome and
-  give-up rules, the 90-second clock, the knock-out and HP-percentage
-  judgement, five wins per class and the class emblem.
-
-`src/competition_mmo.rs` supplies only what the server does not run
-natively: the 3D course (abstract stretches per native section set), the
-movement integrator, karate motion lengths, task order, the random seed,
-replay sampling, optional player-Chao rivals and the ring payout. All of it
-is in `MmoConfig`; the defaults are listed there and can be overridden in
-`CHAO_DATA_DIR/activities/competition-mmo.json`. Saved results keep the
-config they ran with.
+Profiles saved by the earlier `adapted-ai-competition-v1` simulation still
+load: their results stay as history (and replays still return them), and an
+unfinished plan is cancelled without payout on the next tick, releasing its
+activity lease.
 
 The native tables are read from the owner's own install, never from git:
 
@@ -34,11 +27,9 @@ sa2-assets chao-competition-tables <Steam>/sonic2app.exe .local/chao-competition
 ```
 
 Copy that file to `CHAO_DATA_DIR/activities/competition-native.json`.
-Without it no competition is offered. Karate opponent names come from the
-existing local `activities/karate.json` `names` list when present.
-Native race and karate do not change stats or needs, so this feature calls
-no `life::` stat API. Emblems go through `emblems::award` only.
-Results saved by `adapted-ai-competition-v1` still load.
+
+The sections below describe the earlier adapted protocol and apply only to
+its saved data.
 
 ## Eligibility, ownership, and budgets
 
