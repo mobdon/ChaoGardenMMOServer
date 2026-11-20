@@ -31,15 +31,9 @@ pub const GROWTH_MAYU_POINT: f32 = 1.0;
 /// ChaoGlobal: NormalBoundary / NeutralBoundary (fn_60_3B5C0, strict comparisons).
 pub const NORMAL_BOUNDARY: f32 = 0.5;
 pub const NEUTRAL_BOUNDARY: f32 = 0.5;
-/// AL_CalcParameter (0x213CC) growth per 120-call step.
+/// AL_CalcParameter (0x213CC) growth per life step.
 pub const CHILD_TIME_GROWTH: f32 = 0.016_666_7;
 pub const ADULT_TIME_GROWTH: f32 = 0.004_166_67;
-/// ChaoTimerBaseInterval (3) x nbMaxEntry[0] (32 Chao slots, rodata 0x81E0).
-pub const FRAMES_PER_PARAMETER_CALL: f64 = 96.;
-/// NTSC game logic rate (ALW_Control runs once per frame).
-pub const GAME_FRAMES_PER_SECOND: f64 = 60.;
-/// ChaoTimerLifeInterval: AL_CalcParameter runs its growth step once every this many calls.
-pub const PARAMETER_STEP_CALLS: u32 = 120;
 /// ALBHV_Capture (0x33A2C) MinimalAddForm: child / adult.
 pub const CAPTURE_FORM_CHILD: f32 = 0.1;
 pub const CAPTURE_FORM_ADULT: f32 = 0.05;
@@ -102,8 +96,6 @@ pub struct BodyState {
     pub growth: f32,
     pub chao_type: u8,
     pub look: GeneLook,
-    /// AL_CalcParameter call counter toward the next 120-call step.
-    pub parameter_calls: u32,
 }
 
 impl Default for BodyState {
@@ -119,7 +111,6 @@ impl Default for BodyState {
             growth: 0.,
             chao_type: chao_type::CHILD,
             look: GeneLook::default(),
-            parameter_calls: 0,
         }
     }
 }
@@ -179,7 +170,6 @@ impl BodyState {
             && (0. ..=GROWTH_LIMIT).contains(&self.growth)
             && (self.chao_type == chao_type::CHILD
                 || (chao_type::NEUTRAL_NORMAL..=chao_type::DARK_CHAOS).contains(&self.chao_type))
-            && self.parameter_calls < PARAMETER_STEP_CALLS
             && self.look.valid()
     }
 
@@ -219,15 +209,11 @@ impl BodyState {
         self.growth = (self.growth + finite(growth)).clamp(0., GROWTH_LIMIT);
     }
 
-    /// One AL_CalcParameter call. Every 120th call adds the time growth
-    /// (child 1/60, adult 1/240). The garden-stage alignment drift is unresolved
-    /// (its sign source was not traced) and is not applied.
-    pub fn parameter_call(&mut self) {
-        self.parameter_calls += 1;
-        if self.parameter_calls < PARAMETER_STEP_CALLS {
-            return;
-        }
-        self.parameter_calls = 0;
+    /// The AL_CalcParameter life step (ChaoTimerLifeInterval). The clock that
+    /// fires it is owned by life.rs (LifeEvent::LifeTick). Child +1/60, adult
+    /// +1/240. The garden-stage alignment drift is unresolved (its sign source
+    /// was not traced) and is not applied.
+    pub fn life_step(&mut self) {
         if self.is_chaos() {
             return;
         }
@@ -330,7 +316,7 @@ impl BodyState {
             "rules":{"source":"SA2B GC ChaoMain.rel GSNE8P",
                 "unresolved":["garden-stage alignment drift sign","capture alignment sign",
                     "capture species 12-20 random pick","jewel, shiny and monotone drawing",
-                    "60 Hz game rate assumed for ALW_Control"]}})
+                    "AddUserLike APos shift sign (per player character)"]}})
     }
 }
 
@@ -538,14 +524,10 @@ mod tests {
         apply_fruit(&mut b, 6);
         assert!((b.a_pos + 0.15).abs() < 1e-6);
         let mut t = BodyState::default();
-        for _ in 0..119 {
-            t.parameter_call();
-        }
-        assert_eq!(t.growth, 0.);
-        t.parameter_call();
+        t.life_step();
         assert_eq!(t.growth, CHILD_TIME_GROWTH);
-        for _ in 0..120 * 80 {
-            t.parameter_call();
+        for _ in 0..80 {
+            t.life_step();
         }
         assert_eq!(t.growth, GROWTH_LIMIT);
         assert!(t.cocoon_due());
