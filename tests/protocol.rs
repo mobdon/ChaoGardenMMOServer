@@ -373,6 +373,10 @@ async fn native_chao_shadow_png_is_exact_missing_safe_and_head_compatible() {
     let (directory, state) = fixture(false);
     let route = "/api/assets/chao-shadow.png";
     assert_eq!(asset_filename(route).as_deref(), Some("chao-shadow.png"));
+    assert_eq!(
+        asset_filename("/api/assets/chao-behaviour.glb").as_deref(),
+        Some("chao-behaviour.glb")
+    );
     for method in ["GET", "HEAD"] {
         let response = request(router(state.clone()), method, route, Body::empty(), &[]).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
