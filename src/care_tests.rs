@@ -31,11 +31,17 @@ fn consume(sequence: u32, revision: u64, item: &str) -> Value {
 }
 
 #[test]
-fn all_seven_signed_channels_clamp_without_changing_levels_grades_or_form() {
+fn all_seven_signed_channels_add_native_exp_without_changing_levels_grades_or_form() {
     let (mut game, id) = fixture(false);
     let before = [9995, 5, 100, 10, 9990, 5, 9980];
-    let after = [9999, 0, 117, 0, 9999, 0, 9999];
-    let changes = [4, -5, 17, -10, 9, -5, 19];
+    // Synthetic row in ALL_STATS order, applied as native Exp (minimum 0).
+    let row = game
+        .care_catalog
+        .item(0)
+        .unwrap()
+        .raw
+        .skill_deltas()
+        .map(|(_, v)| i32::from(v));
     {
         let p = game.players.get_mut(&id).unwrap();
         p.care.inventory.insert("sa2:0".into(), 1);
@@ -49,15 +55,26 @@ fn all_seven_signed_channels_clamp_without_changing_levels_grades_or_form() {
             stat.grade = 2;
         }
     }
+    let exp_before = game.players[&id].life.exp;
     let response = care::action(&mut game, &id, &consume(1, 0, "sa2:0"));
     assert_eq!(response["accepted"], true);
     let p = &game.players[&id];
-    for ((name, points), delta) in ALL_STATS.into_iter().zip(after).zip(changes) {
+    // AL_ParameterGrow adds Exp; points change only on a level-up (Exp > 99).
+    for (i, ((name, points), exp)) in ALL_STATS.into_iter().zip(before).zip(row).enumerate() {
         assert_eq!(p.stats[name].points, points, "{name}");
         assert_eq!(p.stats[name].level, 7, "{name}");
         assert_eq!(p.stats[name].grade, 2, "{name}");
-        assert_eq!(response["effects"]["points"][name], delta, "{name}");
+        assert_eq!(response["effects"]["points"][name], 0, "{name}");
+        let want = (i32::from(exp_before[i]) + exp).max(0);
+        assert!(want <= 99, "{name}: no level-up in this fixture");
+        assert_eq!(i32::from(p.life.exp[i]), want, "{name}");
+        assert_eq!(
+            response["effects"]["exp"][name],
+            want - i32::from(exp_before[i]),
+            "{name}"
+        );
     }
+    assert_eq!(response["effects"]["levelsChanged"], false);
     // The Mood/Belly columns are never read by the native capture code.
     assert_eq!(p.happiness, 1.);
     assert_eq!(p.hunger, 98.);
@@ -114,7 +131,7 @@ fn drives_use_separate_history_and_every_principal_channel() {
             &consume(10 + offset as u32, offset as u64, &format!("sa2:{native}")),
         );
         assert_eq!(response["accepted"], true);
-        assert_eq!(response["effects"]["points"][skill], 11);
+        assert_eq!(response["effects"]["exp"][skill], 11);
     }
     let p = &game.players[&id];
     assert_eq!(p.care.evidence.species_history, 0);

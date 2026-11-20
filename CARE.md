@@ -169,13 +169,17 @@ rows and checks each against the pinned executable at `0x008A6448 + 20 × id`.
 Fruit IDs follow the native enum 0x00–0x17 (Chao Garden, Hero Garden, Dark
 Garden, Strong, Tasty, Hero, Dark, Round, Triangle, Square, Heart, Chao, Smart,
 Orange, Blue, Pink, Green, Purple, Yellow, Red, Mushroom, alternate Mushroom,
-Mint Candy, Grapes). Inventory IDs are `sa2-fruit:N` (N 0–23). Eating one adds
-the row's seven skill values. The Mood and Belly columns are never read by the
-native code, so they change nothing. Native eating is four bites with belly +3
-per bite (CG+0xB8); that belongs to the life module, so the effect's `"life"`
-field reports `pending-life-module` until it merges. Special effects not in the row (Heart
-Fruit breeding, Chao Fruit, Mushrooms, colour fruit) report
-`unknown-not-applied`. Without verified rows every fruit, seed, plant, water
+Mint Candy, Grapes). Inventory IDs are `sa2-fruit:N` (N 0–23). Eating one is
+four native bites through the life module (`life::eat_fruit_bite`): each bite
+adds a quarter of the row's seven skills as native Exp (remainder on the last
+bite), hunger −2400, life +3 and, for a child, LifeMax +5. Points change only
+when Exp passes 99 (one level-up per stat per call). A fruit handed over by
+the owner adds like +1; a Heart Fruit adds breed +10000 on the last bite. The
+Mood and Belly columns are never read natively. Other special effects (Chao
+Fruit, Mushrooms, colour fruit) are not traced and not applied. Animals and
+drives apply their row once through `life::capture_animal` (Exp, like +1).
+Petting adds like +1 (`life::pet`) beside the existing adapted happiness +2.
+Without verified rows every fruit, seed, plant, water
 and harvest action returns `native-data-unavailable`.
 
 **Trees** (`native-gc-chaomain-tree-v1`). Each garden has the native seven tree
@@ -219,8 +223,10 @@ species history and D3 = 1 for a child. Skeleton Dog: history. Bat: 50%
 history and D6 = 1. Others: history always. All 21 species' child and adult
 part lists resolve natively (Half Fish, Skeleton Dog and Bat have empty lists;
 the Rabbit right ear is at 0xED8C3C). Drives never grant parts. Each public
-player record carries `animalParts`. Life-cycle reincarnation calls
-`care::reset_animal_parts` and `care::reset_species_history`.
+player record carries `animalParts`. At rebirth the life module calls
+`care::rebirth` (AL_SucceedGeneParam): species history (MinimalFlag) clears and
+each part is lost with probability 0.3. D3/D6 at rebirth are not traced and
+stay. `care::all_species_eaten` reports MinimalFlag for all 21 species.
 
 **Body changes.** Giving an animal or drive and eating fruit change body axes
 only through the body module (`body::apply_capture`, `body::apply_fruit`).
@@ -240,8 +246,8 @@ names: `animal-part-<species>-<child|adult>-<socket>.glb` (21 species keys,
 13 sockets), `tree-<family>-<young|mature|dying>.glb` and `fruit-<fruit key>.glb`.
 
 **Integration seam.** `src/chao_hooks.rs` is the only place care and garden
-effects touch stats, needs and body axes; it swaps to the life and body modules
-when they merge. Chao behaviour uses `garden::nearest_fruit(player, now)`
+effects touch stats, needs and body axes. It calls the life module (merged)
+and will call the body module when that merges. Chao behaviour uses `garden::nearest_fruit(player, now)`
 (a read-only projection) and `care::eat_garden_fruit` (one atomic shake, and
 eat one fruit if any dropped).
 

@@ -1647,6 +1647,9 @@ pub fn apply_events(game: &mut Game, id: &str) {
         return;
     };
     let events = std::mem::take(&mut p.life.events);
+    if events.contains(&LifeEvent::Reincarnated) {
+        crate::care::rebirth(p);
+    }
     for event in events {
         let (kind, text) = match &event {
             LifeEvent::LifeTick | LifeEvent::EvolutionDecision(_) | LifeEvent::FruitBite { .. } => {

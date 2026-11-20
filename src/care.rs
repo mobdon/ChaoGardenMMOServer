@@ -268,10 +268,27 @@ impl CareState {
 pub fn reset_animal_parts(p: &mut Player) {
     p.care.animal_parts.clear();
 }
-/// Clears recorded species history. For the life cycle's reincarnation step;
-/// the native reset timing is still unknown.
+/// Clears recorded species history.
 pub fn reset_species_history(p: &mut Player) {
     p.care.evidence.species_history = 0;
+}
+/// Rebirth (AL_SucceedGeneParam, traced by the life module): MinimalFlag
+/// (species history) becomes 0 and each kept animal part is removed with
+/// probability 0.3. The D3/D6 flags at rebirth are not traced, so they stay.
+pub fn rebirth(p: &mut Player) {
+    reset_species_history(p);
+    with_rand(|rand| {
+        p.care
+            .animal_parts
+            .retain(|_, _| rand.next() >= REBIRTH_PART_LOSS);
+    });
+}
+const REBIRTH_PART_LOSS: f32 = 0.3;
+
+/// True when MinimalFlag records all 21 animal species, for body::ChaosInputs.
+pub fn all_species_eaten(p: &Player) -> bool {
+    let mask = crate::evolution::ALL_SPECIES_MASK;
+    p.care.evidence.species_history & mask == mask
 }
 
 fn result(
@@ -393,12 +410,11 @@ fn points(p: &mut Player, name: &str, delta: i16) -> i64 {
     chao_hooks::grant_stat(p, name, delta)
 }
 
-/// Applies one native row's seven skills and records every raw field.
-fn apply_raw(p: &mut Player, raw: &NativeItemStats, delta: &mut BTreeMap<&'static str, i64>) {
+/// Records every raw field of a native row (audit totals only).
+fn record_raw(p: &mut Player, raw: &NativeItemStats) {
     for (name, value) in raw.skill_deltas() {
         let total = p.care.raw_totals.entry(name.into()).or_default();
         *total = total.saturating_add(i64::from(value));
-        delta.insert(name, points(p, name, value));
     }
     for (name, value) in [
         ("mood", raw.mood),
@@ -409,27 +425,30 @@ fn apply_raw(p: &mut Player, raw: &NativeItemStats, delta: &mut BTreeMap<&'stati
         *total = total.saturating_add(i64::from(value));
     }
 }
+/// The row's seven skills in `ALL_STATS` order, as native Exp.
+fn skill_row(raw: &NativeItemStats) -> [i16; 7] {
+    raw.skill_deltas().map(|(_, v)| v)
+}
 
-/// Eats one whole native fruit. Native eating is four bites (ALO_FruitHeldC
-/// 0x2B6A4); AL_ParameterGrow(kind 3) adds a quarter of the FruitGrowParam row
-/// per bite with the remainder on the last, so the whole row is applied here.
-/// The Mood and Belly columns are never read natively; per-bite belly +3
-/// (CG+0xB8) belongs to the life module and growth/alignment to the body module.
-fn eat_fruit(game: &Game, p: &mut Player, id: u8) -> Result<Value, &'static str> {
+/// Eats one whole native fruit: four bites (ALO_FruitHeldC 0x2B6A4) through
+/// the life module, which applies AL_ParameterGrow(kind 3) per bite, hunger,
+/// life and LifeMax. The Mood and Belly columns are never read natively.
+/// `handed` is true when the owner gave the fruit (like +1, fn_60_2B8FC).
+fn eat_fruit(game: &Game, p: &mut Player, id: u8, handed: bool) -> Result<Value, &'static str> {
     let fruit = game
         .care_catalog
         .fruit(id)
         .ok_or("native-data-unavailable")?;
-    let mut delta = BTreeMap::new();
-    apply_raw(p, &fruit.raw, &mut delta);
-    let life = chao_hooks::fruit_bites(p, id, 4);
-    let body = chao_hooks::fruit_body(p, id);
-    Ok(
-        json!({"points":delta,"raw":fruit.raw,"bites":4,"life":life,"body":body,
-        "fruitRules":"native-gc-fruit-grow-param-v1",
-        "heartMatePath":if id == 10 {"pending-life-module"} else {"none"},
-        "levelsChanged":false,"gradesChanged":false}),
-    )
+    record_raw(p, &fruit.raw);
+    if handed {
+        chao_hooks::fruit_handed_over(p);
+    }
+    let mut effects = chao_hooks::fruit_bites(p, id, skill_row(&fruit.raw));
+    effects["raw"] = json!(fruit.raw);
+    effects["body"] = json!(chao_hooks::fruit_body(p, id));
+    effects["fruitRules"] = json!("native-gc-fruit-grow-param-v1");
+    effects["gradesChanged"] = json!(false);
+    Ok(effects)
 }
 
 /// One shake of a tree. Dropped fruit go into the profile's inventory (native
@@ -615,8 +634,10 @@ fn apply(
             effect_ready(p, now)?;
             let before = p.happiness;
             p.happiness = (before + 2.).min(100.);
+            let like = p.life.like;
+            chao_hooks::pet(p);
             p.care.last_effect_at = Some(now);
-            Ok(json!({"happiness":p.happiness-before}))
+            Ok(json!({"happiness":p.happiness-before,"like":p.life.like-like}))
         }
         Intent::Consume { item_id } => {
             effect_ready(p, now)?;
@@ -627,12 +648,13 @@ fn apply(
                     return Err("native-data-unavailable");
                 }
                 take_quantity(p, item_id)?;
-                let mut effects = eat_fruit(game, p, fruit)?;
+                let mut effects = eat_fruit(game, p, fruit, true)?;
                 effects["inventory"] = json!({item_id:-1});
                 p.care.last_effect_at = Some(now);
                 return Ok(effects);
             }
             let mut extra = json!({});
+            let mut grown = json!({"levelsChanged":false});
             let raw = if item_id == "garden-fruit" {
                 take_quantity(p, item_id)?;
                 p.energy = (p.energy + 35.).min(100.);
@@ -648,7 +670,8 @@ fn apply(
                 take_quantity(p, item_id)?;
                 // AL_ParameterGrow(kind 2) adds the whole MinimalGrowParam row;
                 // its Mood/Belly columns are never read natively.
-                apply_raw(p, &native.raw, &mut delta);
+                record_raw(p, &native.raw);
+                grown = chao_hooks::capture_stats(p, skill_row(&native.raw));
                 let body = chao_hooks::capture_body(p, native.id);
                 extra = if native.kind == crate::care_catalog::NativeItemKind::Animal {
                     let mut capture = capture_parts(p, native, rand);
@@ -663,9 +686,11 @@ fn apply(
             };
             p.care.last_effect_at = Some(now);
             let mut effects = json!({"inventory":{item_id:-1},"points":delta,"energy":p.energy-energy,"satiety":p.hunger-hunger,
-                "happiness":p.happiness-happiness,"raw":raw,"unknown18Applied":false,"levelsChanged":false,"gradesChanged":false});
-            if let (Some(effects), Some(extra)) = (effects.as_object_mut(), extra.as_object()) {
-                effects.extend(extra.clone());
+                "happiness":p.happiness-happiness,"raw":raw,"unknown18Applied":false,"gradesChanged":false});
+            for extra in [grown, extra] {
+                if let (Some(effects), Some(extra)) = (effects.as_object_mut(), extra.as_object()) {
+                    effects.extend(extra.clone());
+                }
             }
             Ok(effects)
         }
@@ -751,7 +776,7 @@ pub fn eat_garden_fruit(game: &mut Game, id: &str, place: &str) -> Result<Value,
             add_quantity(&mut next, &item_id)?;
         }
         let mut effects = if dropped > 0 {
-            eat_fruit(game, &mut next, fruit)?
+            eat_fruit(game, &mut next, fruit, false)?
         } else {
             json!({})
         };

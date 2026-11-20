@@ -63,15 +63,17 @@ fn native_fruit_rows_add_skills_only_and_leave_needs_and_body_to_their_modules()
         json!({"kind":"consume","itemId":"sa2-fruit:5"}),
     );
     assert_eq!(r["accepted"], true, "{r}");
-    assert_eq!(r["effects"]["points"]["stamina"], 5);
-    assert_eq!(r["effects"]["points"]["intelligence"], 0, "clamped at 0");
+    // Four native bites through the life module: Exp, hunger and like.
+    assert_eq!(r["effects"]["exp"]["stamina"], 5);
+    assert_eq!(r["effects"]["exp"]["intelligence"], 0, "Exp minimum 0");
     assert_eq!(r["effects"]["bites"], 4);
-    assert_eq!(r["effects"]["life"], "pending-life-module");
     assert_eq!(r["effects"]["body"], "pending-body-module");
     let p = &game.players[&id];
+    assert!(p.hunger > before.hunger, "each bite lowers hunger by 2400");
     assert_eq!(
-        p.hunger, before.hunger,
-        "native never reads the Belly column"
+        p.life.like,
+        before.life.like + 1,
+        "handed over by the owner"
     );
     assert_eq!(p.happiness, before.happiness);
     assert_eq!(p.alignment, 0.);
@@ -263,11 +265,17 @@ fn capture_follows_the_native_part_and_flag_rules() {
     );
     assert!(r["effects"].get("parts").is_none());
     assert_eq!(game.players[&id].care.evidence.species_history, history);
+    // Rebirth: history clears; each part is lost when rand < 0.3.
     let p = player(&mut game, &id);
-    care::reset_animal_parts(p);
-    care::reset_species_history(p);
-    assert!(p.care.animal_parts.is_empty());
+    p.care.animal_parts.insert("ears".into(), 0);
+    p.care.animal_parts.insert("tail".into(), 0);
+    script(&[0.5, 0.1]);
+    care::rebirth(p);
     assert_eq!(p.care.evidence.species_history, 0);
+    assert_eq!(p.care.animal_parts.len(), 1);
+    assert!(p.care.animal_parts.contains_key("ears"));
+    care::reset_animal_parts(p);
+    assert!(p.care.animal_parts.is_empty());
 }
 
 #[test]
