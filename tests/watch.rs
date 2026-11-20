@@ -439,3 +439,35 @@ fn native_petting_is_one_touch_and_rest_and_wake_have_no_native_command() {
     assert_eq!(behaviour(&g, &id)["fn"], "Bhv_Nade");
     assert_eq!(g.players[&id].happiness, 65.);
 }
+
+/// Local check with the owner's extracted data (never committed). Run with
+/// CHAO_NATIVE_IMPORTS=<data dir>/imports cargo test --test watch -- --ignored --nocapture
+#[test]
+#[ignore = "needs the owner's local native imports"]
+fn local_native_data_runs_a_resident() {
+    let dir = std::path::PathBuf::from(std::env::var("CHAO_NATIVE_IMPORTS").unwrap());
+    let (mut g, id, _) = fixture(false);
+    g.native_chao = NativeData {
+        motion: Some(Arc::new(
+            MotionTable::load(&dir.join("chao-motion-table.json")).unwrap(),
+        )),
+        aim: Some(Arc::new(
+            chao_game_server::behaviour::AimLists::load(&dir.join("chao-garden-aim.json")).unwrap(),
+        )),
+    };
+    act(&mut g, &id, "watch-start", json!({}));
+    let mut seen = BTreeSet::new();
+    let mut states = BTreeSet::new();
+    let start = (g.players[&id].x, g.players[&id].z);
+    for _ in 0..(20 * 60 * 10) {
+        g.tick(0.05);
+        let b = behaviour(&g, &id);
+        seen.insert(b["fn"].as_str().unwrap().to_owned());
+        states.insert(b["motion"]["num"].as_u64().unwrap());
+    }
+    let end = (g.players[&id].x, g.players[&id].z);
+    println!(
+        "10 minutes: behaviours {seen:?}, motion states {states:?}, moved from {start:?} to {end:?}"
+    );
+    assert!(seen.len() > 1);
+}
