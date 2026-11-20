@@ -8,6 +8,7 @@ Implemented:
 - Bounded BIOS-format type0x10 LZ77 byte decoding, including overlapping back references. Invalid distances, truncated streams, output overruns and caller limits return errors.
 - Fingerprint-gated extraction of the exact verified Sonic Advance2 USA Tiny Chao Garden program; a bounded aligned scan can locate that same fingerprint elsewhere.
 - Read-only native save-record checksum validation and physical-sector selection. Every body byte remains opaque, including any unknown Chao type, stat, form, animal history or genetic data.
+- Fingerprint-gated, bounded native Tiny shop reader for seven fruit prices and seven signed raw channels per fruit from the exact A2NE multiboot payload. Gameplay interpretation remains a separate server adapter.
 - A **custom MMO adaptation** for server-timed idle training, with frozen server policy, a maximum8-hour duration, stored server timestamps, monotonically increasing job IDs, once-only settle/cancel transitions, bounded awards and trusted-store restoration.
 
 This is not a full Tiny Chao Garden port, GBA emulator, sprite/type renderer, phone login system or database synchronization layer. It does not claim that a shared sprite proves support for Chaos Chao type codes. Native field semantics require a separate source/runtime audit. Five original main-game stats are selectable in the custom training adaptation; it does not manufacture hidden-stat training rules or overwrite a native save body.
@@ -53,6 +54,38 @@ cargo test --manifest-path server/crates/tiny-garden-core/Cargo.toml --test loca
 ```
 
 Validation completed:21 unit tests, the opt-in real-ROM test and Clippy with warnings denied. Unit fixtures are synthetic. The real-ROM test verifies header identity, exact decompressed bytes/hash/length, all256 native CRC table entries and the bounded scanner's matching offset.
+
+## Verified Tiny shop tables
+
+`shop::TinyShopCatalog::from_verified_payload(&[u8])` first requires the exact
+191,340-byte payload and existing reference SHA-1 above. It then checks both
+bounded table spans against their SHA-256 fingerprints before reading any row:
+effects at `0x12510`, 49 bytes,
+`b33ae558a366ac031e7326d7ade4d3a38f3818f21c6139f6a97a8ceeaa3c49bd`;
+prices at `0x12548`, 28 bytes,
+`e9eaed988f3156a9b8c28f72dc48adac7c1735915afd280c7a2406529cc2dc19`.
+The resulting public `fruits` array contains seven `TinyFruit` rows with
+zero-based `id`, little-endian `u32` `price` and unchanged `[i8; 7]` `raw`.
+No original decoded tables are embedded in source or synthetic fixtures.
+
+This reader does not assign channel names, apply effects, spawn inventory,
+charge rings or establish a native save/server transaction. It rejects another
+payload/version or a full cartridge ROM rather than guessing offsets. Server
+consumption, purchase authorization and any MMO application policy remain
+separate from the source reader.
+
+Opt-in verification needs only the owner's decoded payload, not the full ROM:
+
+```powershell
+$env:CHAO_TINY_GARDEN_PAYLOAD = 'C:/path/to/private/mb-chao-garden-A2NE.gba'
+cargo test --manifest-path crates/tiny-garden-core/Cargo.toml --test local_shop -- --ignored
+```
+
+The test checks exact payload/table identity and parity of every decoded row,
+without printing or redistributing the original table contents.
+The current core run passes 25 unit tests, the opt-in owned-payload shop test,
+formatting and Clippy with warnings denied. The unrelated full-ROM test stays
+opt-in and was not required for this reader.
 
 ## Training integration boundary
 
