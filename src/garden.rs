@@ -51,18 +51,18 @@ pub const GROVES: [(&str, &str, f64, f64, u8); 3] = [
 
 /// Plantable plots per garden zone (MMO layout tuning, inside the ±22 bounds).
 pub const PLOTS: [(&str, &str, f64, f64); 12] = [
-    ("garden-1", "garden", 4., -8.),
-    ("garden-2", "garden", 8., -8.),
-    ("garden-3", "garden", 4., -12.),
-    ("garden-4", "garden", 8., -12.),
-    ("garden-5", "garden", -2., -12.),
-    ("garden-6", "garden", 12., -10.),
-    ("hero-1", "hero", 5., -8.),
-    ("hero-2", "hero", 9., -8.),
-    ("hero-3", "hero", 5., -12.),
-    ("dark-1", "dark", 5., -8.),
-    ("dark-2", "dark", 9., -8.),
-    ("dark-3", "dark", 5., -12.),
+    ("garden-1", "garden", 10., 2.),
+    ("garden-2", "garden", 13., 2.),
+    ("garden-3", "garden", 10., -2.),
+    ("garden-4", "garden", 13., -2.),
+    ("garden-5", "garden", 2., 12.),
+    ("garden-6", "garden", 6., 12.),
+    ("hero-1", "hero", 10., 2.),
+    ("hero-2", "hero", 13., 2.),
+    ("hero-3", "hero", 10., -2.),
+    ("dark-1", "dark", 10., 2.),
+    ("dark-2", "dark", 13., 2.),
+    ("dark-3", "dark", 10., -2.),
 ];
 
 pub fn seed(family: &str) -> Option<(&'static str, u8, u32)> {

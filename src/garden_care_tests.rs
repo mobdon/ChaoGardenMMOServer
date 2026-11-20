@@ -100,7 +100,7 @@ fn seeds_plant_water_grow_and_harvest_once_per_fruit() {
         send(&mut game, &id, 11, plant.clone())["code"],
         "out-of-range"
     );
-    go(&mut game, &id, "garden", 4., -8.);
+    go(&mut game, &id, "garden", 10., 2.);
     let r = send(&mut game, &id, 12, plant.clone());
     assert_eq!(r["accepted"], true, "{r}");
     assert!(!game.players[&id].care.inventory.contains_key("seed:hero"));
@@ -260,7 +260,7 @@ fn version_one_care_saves_migrate_and_garden_round_trips_through_profile() {
     assert!(CareState::restore(Some(&bad)).is_err());
 
     let (mut game, id) = fixture();
-    go(&mut game, &id, "garden", 4., -8.);
+    go(&mut game, &id, "garden", 10., 2.);
     player(&mut game, &id)
         .care
         .inventory
