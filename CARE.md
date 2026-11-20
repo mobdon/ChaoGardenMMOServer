@@ -210,9 +210,36 @@ Growth is computed from server time in frames, so it continues offline and is
 identical however often the server looks. Permanent trees are planted when a
 profile first connects. Not ported (absent, not substituted): fruit falling on
 its own above 1.9, the 10-fruit garden cap and object count, random starting
-fruit growth of permanent trees, and seed prices. Seeds are therefore not sold;
-owned seeds can still be planted. The pre-existing adapted `garden-fruit`
-purchase stays for compatibility.
+fruit growth of permanent trees. Seeds are sold by the Black Market below.
+The pre-existing adapted `garden-fruit` purchase stays for compatibility.
+
+**Black Market** (`native-gc-black-market-v1`, `src/black_market.rs`). Ported
+from the GameCube Kindergarten module (restock fn 0x2D14, buy fn 0x1AD0) and
+ChaoMain's item tables. `snapshot.care.market` lists the current stock with
+native buy and sell prices in rings:
+
+| Item | Buy | Sell | Stocked |
+| --- | --- | --- | --- |
+| Strong Seed | 500 | 150 | always |
+| Tasty / Hero / Dark Seed | 200 / 400 / 400 | 50 / 100 / 100 | f < 0.7, then one of the three |
+| Round / Triangle / Square Seed | 300 | 80 | two of the three |
+| Hero / Dark Fruit | 120 | 40 | 70% each |
+| Heart Fruit / Chao Fruit | 300 / 200 | 80 / 50 | 50% each |
+| Round / Triangle / Square Fruit | 80 | 20 | two of the three |
+| Mushroom (30% alternate) | 300 | 50 | 70% |
+
+| Intent | Fields | Meaning |
+| --- | --- | --- |
+| `market` | – | Entering the shop: rebuilds the stock only when the restock timer has run out (10,800 + int(14,400 f) frames). |
+| `purchase` | `itemId` | Buy an item in the current stock. Seeds and ordinary fruit stay in stock; a mushroom is removed. |
+| `sell` | `itemId` | Sell one owned seed or fruit at its native sell price (rings capped at 999,999). |
+
+Draws follow the native order and quantisation (f = k / 32768; f < C and
+int(100 f) < P tests; "two of three" redraws duplicates). Not ported: eggs,
+hats and menu themes (this server has no emblem count, egg item or hat item),
+and the Kindergarten door; the shop stands at the existing hub shop point
+(−4, 8). The native restock timer counts from power-on and is not saved; here
+it is saved with the profile so a restart does not restock early.
 
 **Animal parts** (`native-gc-albhv-capture-v1`, ALBHV_Capture 0x33388).
 `care.animalParts` mirrors native `MinimalParts` (category → species ID). For

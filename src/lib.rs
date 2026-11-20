@@ -1,5 +1,6 @@
 pub mod activities;
 pub mod behaviour;
+pub mod black_market;
 pub mod body;
 pub mod care;
 pub mod care_catalog;

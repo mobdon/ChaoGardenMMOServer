@@ -17,7 +17,8 @@ ALBHV_Capture part and flag rules, complete child/adult part lists, and the
 and body (`claude/project-thread-bhz10h`) branches. Mission drops stay the
 existing adapted v1. Care save version 2; profile key `garden` version 2.
 Contract and the list of untraced rules left out are in
-[CARE.md](../../CARE.md). Seeds are not sold until native prices are traced.
+[CARE.md](../../CARE.md). Seeds and fruit are sold by the native Black Market
+(seed and fruit stock only; eggs, hats and themes are not ported).
 
 ## Vibe merge repair
 

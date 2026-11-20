@@ -59,6 +59,9 @@ pub const MAX_RECEIPTS: usize = 4096;
 pub const MAX_QUANTITY: u32 = 99;
 pub const MAX_PICKUPS: usize = 100;
 const EFFECT_COOLDOWN_MS: f64 = 1500.;
+/// The existing hub shop point; this world has no Kindergarten room.
+const MARKET_X: f64 = -4.;
+const MARKET_Z: f64 = 8.;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
@@ -89,6 +92,12 @@ pub enum Intent {
     Harvest {
         #[serde(rename = "plotId")]
         plot_id: String,
+    },
+    /// Entering the Black Market: rebuilds the stock if its timer ran out.
+    Market,
+    Sell {
+        #[serde(rename = "itemId")]
+        item_id: String,
     },
 }
 
@@ -142,6 +151,9 @@ pub struct CareState {
     /// Native Chao param +0xD6, set by Bat (read as the bat-flight flag).
     #[serde(default)]
     pub flag_d6: bool,
+    /// Native Black Market stock and restock timer.
+    #[serde(default)]
+    pub market: crate::black_market::Market,
 }
 
 impl Default for CareState {
@@ -159,6 +171,7 @@ impl Default for CareState {
             animal_parts: BTreeMap::new(),
             flag_d3: false,
             flag_d6: false,
+            market: crate::black_market::Market::default(),
         }
     }
 }
@@ -187,7 +200,8 @@ fn valid_request(r: &Request) -> bool {
         && match &r.intent {
             Intent::Consume { item_id } | Intent::Purchase { item_id } => valid_item(item_id),
             Intent::Pickup { pickup_id } => !pickup_id.is_empty() && pickup_id.len() <= 128,
-            Intent::Pet => true,
+            Intent::Pet | Intent::Market => true,
+            Intent::Sell { item_id } => crate::black_market::prices(item_id).is_some(),
             Intent::Plant { item_id, plot_id } => {
                 garden::seed_item(item_id).is_some() && garden::plot(plot_id).is_some()
             }
@@ -212,6 +226,7 @@ impl CareState {
                 .iter()
                 .any(|(k, id)| !PART_CATEGORIES.contains(&k.as_str()) || *id > 20)
             || !state.evidence.valid()
+            || !state.market.valid()
             || state.inventory.len() > 64
             || state
                 .inventory
@@ -346,7 +361,7 @@ pub fn public(game: &Game, id: &str) -> Value {
         "animalParts":{"rules":PART_RULES,"categories":PART_CATEGORIES,"shown":p.care.animal_parts,
             "flagD3":p.care.flag_d3,"flagD6":p.care.flag_d6},
         "garden":p.garden.public(),
-        "shop":shop(game),
+        "shop":shop(game),"market":p.care.market.public(),
         "eligibility":{"canCare":!conflict(p,false),"canPickup":!conflict(p,true),"activityLock":p.care.activity_lock,
             "effectReadyAt":p.care.last_effect_at.map(|at|at+EFFECT_COOLDOWN_MS),"receiptCapacityRemaining":MAX_RECEIPTS.saturating_sub(p.care.receipts.len())}})
 }
@@ -543,6 +558,62 @@ fn apply(
     }
     p.garden.advance(garden::frame_at(now), rand);
     match &request.intent {
+        Intent::Purchase { item_id } if crate::black_market::prices(item_id).is_some() => {
+            if !catalog.fruits_enabled() {
+                return Err("native-data-unavailable");
+            }
+            if !near(game, p, "hub", MARKET_X, MARKET_Z, 2.) {
+                return Err("out-of-range");
+            }
+            let index = p
+                .care
+                .market
+                .stock
+                .iter()
+                .position(|i| i == item_id)
+                .ok_or("not-in-stock")?;
+            let (buy, _) = crate::black_market::prices(item_id).ok_or("not-for-sale")?;
+            if p.rings < buy {
+                return Err("insufficient-rings");
+            }
+            add_quantity(p, item_id)?;
+            p.rings -= buy;
+            if crate::black_market::removed_when_bought(item_id) {
+                p.care.market.stock.remove(index);
+            }
+            Ok(json!({"rings":-(i64::from(buy)),"inventory":{item_id:1},
+                "rules":crate::black_market::MARKET_RULES}))
+        }
+        Intent::Market => {
+            if !catalog.fruits_enabled() {
+                return Err("native-data-unavailable");
+            }
+            if !near(game, p, "hub", MARKET_X, MARKET_Z, 2.) {
+                return Err("out-of-range");
+            }
+            let frame = garden::frame_at(now);
+            let restocked = p.care.market.due(frame);
+            if restocked {
+                p.care.market.restock(frame, rand);
+            }
+            Ok(json!({"restocked":restocked,"market":p.care.market.public()}))
+        }
+        Intent::Sell { item_id } => {
+            if !catalog.fruits_enabled() {
+                return Err("native-data-unavailable");
+            }
+            if !near(game, p, "hub", MARKET_X, MARKET_Z, 2.) {
+                return Err("out-of-range");
+            }
+            let (_, sell) = crate::black_market::prices(item_id).ok_or("not-for-sale")?;
+            take_quantity(p, item_id)?;
+            let before = p.rings;
+            p.rings = p.rings.saturating_add(sell).min(999_999);
+            Ok(
+                json!({"rings":i64::from(p.rings) - i64::from(before),"inventory":{item_id:-1},
+                "rules":crate::black_market::MARKET_RULES}),
+            )
+        }
         Intent::Purchase { item_id } => {
             let price = price(item_id).ok_or("not-for-sale")?;
             if native_id(item_id).is_some_and(|id| catalog.item(id).is_none())

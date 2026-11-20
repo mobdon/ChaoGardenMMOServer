@@ -89,26 +89,103 @@ fn native_fruit_rows_add_skills_only_and_leave_needs_and_body_to_their_modules()
 }
 
 #[test]
-fn seeds_are_not_sold_until_a_native_price_is_traced() {
+fn black_market_restocks_on_entry_and_sells_at_native_prices() {
     let (mut game, id) = fixture();
-    let p = player(&mut game, &id);
-    p.zone = "hub".into();
-    (p.x, p.z, p.rings) = (-4., 8., 100);
+    {
+        let p = player(&mut game, &id);
+        p.zone = "hub".into();
+        (p.x, p.z, p.rings) = (0., 0., 1_000);
+    }
+    let market = json!({"kind":"market"});
     assert_eq!(
-        send(
-            &mut game,
-            &id,
-            5,
-            json!({"kind":"purchase","itemId":"seed:hero"})
-        )["code"],
-        "not-for-sale"
+        send(&mut game, &id, 5, market.clone())["code"],
+        "out-of-range"
+    );
+    let buy = |item: &str| json!({"kind":"purchase","itemId":item});
+    {
+        let p = player(&mut game, &id);
+        (p.x, p.z) = (-4., 8.);
+    }
+    assert_eq!(
+        send(&mut game, &id, 6, buy("seed:strong"))["code"],
+        "not-in-stock"
+    );
+    // Draws: eggs, Hero, Dark, Heart, Chao, two-of (0, 1), seed gate, Tasty,
+    // two-of (0, 1), alternate mushroom, add it, timer.
+    script(&[0., 0., 0., 0., 0., 0., 0.5, 0., 0., 0., 0.5, 0., 0., 0.]);
+    let r = send(&mut game, &id, 7, market.clone());
+    assert_eq!(r["effects"]["restocked"], true, "{r}");
+    let stock: Vec<_> = r["effects"]["market"]["stock"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["itemId"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        stock,
+        [
+            "sa2-fruit:5",
+            "sa2-fruit:6",
+            "sa2-fruit:10",
+            "sa2-fruit:11",
+            "sa2-fruit:7",
+            "sa2-fruit:8",
+            "seed:strong",
+            "seed:tasty",
+            "seed:round",
+            "seed:triangle",
+            "sa2-fruit:21",
+        ]
+    );
+    // Re-entering before the timer runs out keeps the stock.
+    assert_eq!(
+        send(&mut game, &id, 8, market.clone())["effects"]["restocked"],
+        false
+    );
+    assert_eq!(
+        send(&mut game, &id, 9, buy("seed:square"))["code"],
+        "not-in-stock"
+    );
+    // Seeds stay in stock after a purchase; mushrooms are removed.
+    for seq in [10, 11] {
+        assert_eq!(
+            send(&mut game, &id, seq, buy("seed:strong"))["accepted"],
+            true
+        );
+    }
+    assert_eq!(game.players[&id].rings, 0);
+    assert_eq!(
+        send(&mut game, &id, 12, buy("sa2-fruit:21"))["code"],
+        "insufficient-rings"
+    );
+    let sell = |item: &str| json!({"kind":"sell","itemId":item});
+    let r = send(&mut game, &id, 13, sell("seed:strong"));
+    assert_eq!(r["effects"]["rings"], 150, "{r}");
+    player(&mut game, &id).rings = 300;
+    assert_eq!(
+        send(&mut game, &id, 14, buy("sa2-fruit:21"))["accepted"],
+        true
     );
     assert!(
-        care::public(&game, &id)["shop"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|o| !o["itemId"].as_str().unwrap().starts_with("seed:"))
+        !game.players[&id]
+            .care
+            .market
+            .stock
+            .contains(&"sa2-fruit:21".to_owned())
+    );
+    assert_eq!(
+        send(&mut game, &id, 15, sell("sa2-fruit:21"))["effects"]["rings"],
+        50
+    );
+    assert_eq!(
+        send(&mut game, &id, 16, sell("sa2-fruit:21"))["code"],
+        "item-not-owned"
+    );
+    // Restock is due 10,800 frames later at the earliest (timer draw 0).
+    game.time += 10_800. * FRAME_MS;
+    assert_eq!(
+        send(&mut game, &id, 17, market)["effects"]["restocked"],
+        true
     );
 }
 
