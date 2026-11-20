@@ -30,7 +30,7 @@
 //! loaded from local files and never committed. Without the motion table the
 //! native routine is unavailable. Without an aim list, wandering is
 //! unavailable and Move ends at once.
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
@@ -68,7 +68,7 @@ const NADE_ADD_ATTR: f32 = 0.05;
 const DEFAULT_LINK_FRAMES: f32 = 15.;
 
 /// Native motion table row (ChaoMain .data 0x3F870, 622 × 0x1C).
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MotionRow {
     pub mode: u8,
@@ -109,6 +109,61 @@ impl MotionTable {
     pub fn load(path: &Path) -> Result<Self, String> {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let rows: Vec<MotionRow> = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        Self::from_rows(rows)
+    }
+    pub fn rows(&self) -> &[MotionRow] {
+        &self.0
+    }
+    /// Read `AL_motion_table` (.data 0x3F870, 622 × 0x1C, big-endian) from the
+    /// owner's GSNE8P `ChaoMain.rel`. Layout per row (MOTION_TABLE): motion
+    /// pointer (relocated, ignored), s16 mode, s16 posture, s32 next,
+    /// s32 link_step, f32 start, f32 end, f32 spd.
+    pub fn from_rel(rel: &[u8]) -> Result<Self, String> {
+        const MODULE_ID: u32 = 0x3B;
+        const DATA_SECTION: usize = 5;
+        const TABLE: usize = 0x3F870;
+        const ROW: usize = 0x1C;
+        let u32_at = |at: usize| -> Result<u32, String> {
+            rel.get(at..at + 4)
+                .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+                .ok_or_else(|| format!("REL truncated at {at:#x}"))
+        };
+        if u32_at(0)? != MODULE_ID {
+            return Err("not ChaoMain.rel (module id is not 0x3B)".into());
+        }
+        let sections = u32_at(0x0C)? as usize;
+        let info = u32_at(0x10)? as usize;
+        if DATA_SECTION >= sections {
+            return Err("REL has no .data section".into());
+        }
+        let offset = u32_at(info + DATA_SECTION * 8)?;
+        let length = u32_at(info + DATA_SECTION * 8 + 4)? as usize;
+        if offset & 1 != 0 || offset == 0 || length < TABLE + Self::STATES * ROW {
+            return Err("REL .data section does not hold the motion table".into());
+        }
+        let base = offset as usize + TABLE;
+        let mut rows = Vec::with_capacity(Self::STATES);
+        for index in 0..Self::STATES {
+            let at = base + index * ROW;
+            let word = |o: usize| u32_at(at + o);
+            let mode = (word(4)? >> 16) as i16;
+            let posture = word(4)? as u16 as i16;
+            let next = word(8)? as i32;
+            let link_step = word(12)? as i32;
+            let float = |o: usize| word(o).map(f32::from_bits);
+            let narrow =
+                |v: i32| i16::try_from(v).map_err(|_| format!("motion state {index} out of range"));
+            rows.push(MotionRow {
+                mode: u8::try_from(mode).map_err(|_| format!("motion state {index} mode"))?,
+                start: float(16)?,
+                end: float(20)?,
+                spd: float(24)?,
+                next: narrow(next)?,
+                link_step: narrow(link_step)?,
+                posture: u8::try_from(posture)
+                    .map_err(|_| format!("motion state {index} posture"))?,
+            });
+        }
         Self::from_rows(rows)
     }
     fn row(&self, num: u16) -> MotionRow {
@@ -1347,6 +1402,37 @@ mod tests {
         assert_eq!(m.num, 0);
         m.control(&t);
         assert_eq!(m.num, 9);
+    }
+
+    #[test]
+    fn motion_table_reads_from_a_rel_layout() {
+        // Synthetic REL (not game data): header, 6 sections, .data at 0x100.
+        let data = 0x100usize;
+        let mut rel = vec![0u8; data + 0x3F870 + MotionTable::STATES * 0x1C];
+        rel[0..4].copy_from_slice(&0x3Bu32.to_be_bytes());
+        rel[0x0C..0x10].copy_from_slice(&7u32.to_be_bytes());
+        rel[0x10..0x14].copy_from_slice(&0x40u32.to_be_bytes());
+        rel[0x40 + 40..0x40 + 44].copy_from_slice(&(data as u32).to_be_bytes());
+        let len = (rel.len() - data) as u32;
+        rel[0x40 + 44..0x40 + 48].copy_from_slice(&len.to_be_bytes());
+        for i in 0..MotionTable::STATES {
+            let at = data + 0x3F870 + i * 0x1C;
+            rel[at + 4..at + 6].copy_from_slice(&3i16.to_be_bytes());
+            rel[at + 6..at + 8].copy_from_slice(&1i16.to_be_bytes());
+            rel[at + 8..at + 12].copy_from_slice(&(-1i32).to_be_bytes());
+            rel[at + 12..at + 16].copy_from_slice(&(-40i32).to_be_bytes());
+            rel[at + 20..at + 24].copy_from_slice(&30f32.to_bits().to_be_bytes());
+            rel[at + 24..at + 28].copy_from_slice(&0.5f32.to_bits().to_be_bytes());
+        }
+        let table = MotionTable::from_rel(&rel).unwrap();
+        let row = table.rows()[621];
+        assert_eq!(
+            (row.mode, row.posture, row.next, row.link_step),
+            (3, 1, -1, -40)
+        );
+        assert_eq!((row.start, row.end, row.spd), (0., 30., 0.5));
+        rel[3] = 0;
+        assert!(MotionTable::from_rel(&rel).is_err());
     }
 
     #[test]
