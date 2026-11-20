@@ -1,5 +1,5 @@
 //! Life intents over the real WebSocket transport with a temporary profile store.
-use chao_game_server::life::{Stage, tuning::MATE_DESIRE_READY};
+use chao_game_server::life::{Stage, native::BREED_INVITE};
 use chao_game_server::service::{AppState, Config, router};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -35,8 +35,7 @@ impl TestServer {
                 let mut player = game.players.remove(&id).unwrap();
                 game.teleport(&mut player, "garden", x, 2.).unwrap();
                 player.life.stage = Stage::Adult;
-                player.happiness = 80.;
-                player.life.emotion.state[3] = MATE_DESIRE_READY;
+                player.life.emotion.state[3] = BREED_INVITE;
                 game.players.insert(id, player);
             }
             game.dirty = true;
@@ -160,10 +159,7 @@ async fn breeding_over_sockets_lays_one_durable_egg_and_rolls_back_both_parents_
         assert!(game.players[mother_id].life.nest.is_empty());
         assert!(game.players[mother_id].life.breed_offer.is_some());
         assert_eq!(game.players[father_id].life.revision, 0);
-        assert_eq!(
-            game.players[father_id].life.emotion.state[3],
-            MATE_DESIRE_READY
-        );
+        assert_eq!(game.players[father_id].life.emotion.state[3], BREED_INVITE);
     }
     fs::remove_dir(&blocked).unwrap();
 

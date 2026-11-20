@@ -525,7 +525,12 @@ impl Game {
             tiny_result: None,
             watch: None,
             care: crate::care::CareState::restore(data.get("care"))?,
-            life: crate::life::LifeState::legacy("", "normal", [0; 7]),
+            life: crate::life::LifeState::legacy(
+                "",
+                "normal",
+                [0; 7],
+                crate::life::Policy::default(),
+            ),
             competition: competition::restore(
                 &data["competition"],
                 data["id"].as_str().unwrap_or_default(),
@@ -557,7 +562,13 @@ impl Game {
         };
         self.teleport(&mut player, "hub", 0., 6.)?;
         player.update_form();
-        player.life = crate::life::restore_for(data, &player.id, &player.form, &player.stats)?;
+        player.life = crate::life::restore_for(
+            data,
+            &player.id,
+            &player.form,
+            &player.stats,
+            self.life_policy,
+        )?;
         watch::restore(self, &mut player, &data["resident"]);
         if let Some(plan) = &player.competition.plan {
             let expected = competition::lease(plan);
@@ -1371,8 +1382,10 @@ impl Game {
         for id in ids {
             let mut p = self.players.remove(&id).unwrap();
             competition::tick(self, &mut p, dt);
-            if p.connections > 0 {
-                crate::life::tick(&mut p, dt, self.life_policy);
+            let resident = p.watch.is_some() && self.life_policy.resident_needs;
+            if p.connections > 0 || resident {
+                let (grounded, connected) = (p.jump_offset <= 0., p.connections > 0);
+                crate::life::tick(&mut p, dt, self.life_policy, connected, grounded);
                 if p.life.immobile() {
                     p.input = Input::default();
                 }
