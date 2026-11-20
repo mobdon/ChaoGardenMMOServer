@@ -183,10 +183,11 @@ pub struct NativeItem {
     pub name: String,
     pub kind: NativeItemKind,
     pub raw: NativeItemStats,
-    /// Part categories whose child and adult sockets all resolve to verified
-    /// native models. Unresolved, runtime-only or partial categories are left
-    /// out so the server never grants a part the client cannot render natively.
-    pub part_categories: Vec<&'static str>,
+    /// Part kinds this animal has a model for in the native child and adult
+    /// lists. `None` when that list is not fully resolved by the local audit, in
+    /// which case no part change is applied rather than a partial one.
+    pub child_parts: Option<Vec<&'static str>>,
+    pub adult_parts: Option<Vec<&'static str>>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -289,13 +290,15 @@ impl CareCatalog {
                             NativeItemKind::Drive
                         },
                         raw,
-                        // Synthetic: every animal provides ears and tail; Rabbit (3)
-                        // has none, mirroring the unresolved-ear fail-closed path.
-                        part_categories: if index < 21 && index != 3 {
-                            vec!["ears", "tail"]
-                        } else {
-                            vec![]
+                        // Synthetic: animals have ears and tail models; Rabbit (3)
+                        // has an unresolved list; Half Fish (15) has none.
+                        child_parts: match index {
+                            3 => None,
+                            15 => Some(vec![]),
+                            0..=20 => Some(vec!["ears", "tail"]),
+                            _ => Some(vec![]),
                         },
+                        adult_parts: Some(vec![]),
                     },
                 )
             })
@@ -443,10 +446,13 @@ impl CareCatalog {
                     "Chaos Drives must not grant species history or animal parts",
                 ));
             }
-            let part_categories = if index < 21 {
-                verified_part_categories(&row["parts"])?
+            let (child_parts, adult_parts) = if index < 21 {
+                (
+                    list_categories(&row["parts"]["child"])?,
+                    list_categories(&row["parts"]["adult"])?,
+                )
             } else {
-                vec![]
+                (Some(vec![]), Some(vec![]))
             };
             items.insert(
                 id as u8,
@@ -460,7 +466,8 @@ impl CareCatalog {
                         NativeItemKind::Drive
                     },
                     raw,
-                    part_categories,
+                    child_parts,
+                    adult_parts,
                 },
             );
         }
@@ -525,52 +532,48 @@ impl CareCatalog {
             "nativeEvolutionCriteria":"unknown","reservedRow25Enabled":false,
             "fruits":self.fruits.values().collect::<Vec<_>>(),"fruitsEnabled":self.fruits_enabled(),
             "fruitSpecialEffects":"unknown-not-applied","partCategories":PART_CATEGORIES,
-            "partSelection":"adapted-replace-every-verified-category-v1"})
+            "partSelection":"native-gc-albhv-capture-v1"})
     }
 }
 
-/// A category is grantable only when both the child and adult native lists are
-/// file-backed and every socket of that category resolves to exactly one model.
-fn verified_part_categories(parts: &Value) -> Result<Vec<&'static str>, CatalogError> {
-    let mut usable = [true; 8];
-    let mut present = [false; 8];
-    for age in ["child", "adult"] {
-        let list = &parts[age];
-        let status = list["status"]
-            .as_str()
-            .ok_or_else(|| invalid("Missing native part list status"))?;
-        let slots = list["slots"]
-            .as_array()
-            .ok_or_else(|| invalid("Missing native part slots"))?;
-        if status == "absent" {
-            continue;
-        }
-        if slots.len() != 13 {
-            // Runtime-only or incomplete lists grant nothing until resolved.
-            usable = [false; 8];
-            continue;
-        }
-        for slot in slots {
-            let name = slot["slot"]
-                .as_str()
-                .ok_or_else(|| invalid("Missing native part slot name"))?;
-            let category =
-                part_category(name).ok_or_else(|| invalid("Unknown native part slot"))?;
-            if slot["pointer"].is_null() {
-                continue;
-            }
-            present[category] = true;
-            if slot["mapped"] != true || !slot["model"].is_object() {
-                usable[category] = false;
-            }
-        }
+/// Part kinds with a model in one native list. Empty lists (absent pointer or
+/// a zero-initialised list, as for Half Fish, Skeleton Dog and Bat) have none.
+/// Any unresolved slot makes the whole list `None`.
+fn list_categories(list: &Value) -> Result<Option<Vec<&'static str>>, CatalogError> {
+    let status = list["status"]
+        .as_str()
+        .ok_or_else(|| invalid("Missing native part list status"))?;
+    let slots = list["slots"]
+        .as_array()
+        .ok_or_else(|| invalid("Missing native part slots"))?;
+    if status == "absent" {
+        return Ok(Some(vec![]));
     }
-    Ok(PART_CATEGORIES
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| present[*i] && usable[*i])
-        .map(|(_, c)| *c)
-        .collect())
+    if slots.len() != 13 {
+        return Ok(None);
+    }
+    let mut present = [false; 8];
+    for slot in slots {
+        let name = slot["slot"]
+            .as_str()
+            .ok_or_else(|| invalid("Missing native part slot name"))?;
+        let category = part_category(name).ok_or_else(|| invalid("Unknown native part slot"))?;
+        if slot["pointer"].is_null() {
+            continue;
+        }
+        if slot["mapped"] != true || !slot["model"].is_object() {
+            return Ok(None);
+        }
+        present[category] = true;
+    }
+    Ok(Some(
+        PART_CATEGORIES
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| present[*i])
+            .map(|(_, c)| *c)
+            .collect(),
+    ))
 }
 
 fn parse_hex(value: &str) -> Option<u32> {
@@ -745,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn part_categories_need_every_socket_resolved_in_child_and_adult_lists() {
+    fn part_lists_resolve_fully_or_not_at_all() {
         let none = [
             "leftArm",
             "rightArm",
@@ -759,20 +762,21 @@ mod tests {
             "tongue",
         ];
         let ok = json!({"status":"file-backed-models-mapped","slots":slots(&none,&[])});
-        let parts = json!({"child":ok,"adult":ok});
-        assert_eq!(
-            verified_part_categories(&parts).unwrap(),
-            vec!["ears", "tail"]
-        );
-        // One unresolved ear (the Rabbit case) removes the whole ears category.
+        assert_eq!(list_categories(&ok).unwrap(), Some(vec!["ears", "tail"]));
+        // One unresolved slot (the old Rabbit ear) makes the list unusable.
         let broken = json!({"status":"file-backed-model-mappings-incomplete","slots":slots(&none,&["rightEar"])});
-        let parts = json!({"child":broken,"adult":ok});
-        assert_eq!(verified_part_categories(&parts).unwrap(), vec!["tail"]);
-        // Runtime-only lists (Half Fish, Skeleton Dog, Bat) grant nothing.
+        assert_eq!(list_categories(&broken).unwrap(), None);
         let runtime = json!({"status":"runtime-list-not-file-backed","slots":[]});
-        let parts = json!({"child":runtime,"adult":ok});
-        assert!(verified_part_categories(&parts).unwrap().is_empty());
-        assert!(verified_part_categories(&json!({})).is_err());
+        assert_eq!(list_categories(&runtime).unwrap(), None);
+        let zero = json!({"status":"zero-initialized-empty-list","slots":slots(&[
+            "leftArm","rightArm","leftEar","rightEar","forehead","leftHorn","rightHorn",
+            "leftLeg","rightLeg","tail","leftWing","rightWing","tongue"],&[])});
+        assert_eq!(list_categories(&zero).unwrap(), Some(vec![]));
+        assert_eq!(
+            list_categories(&json!({"status":"absent","slots":[]})).unwrap(),
+            Some(vec![])
+        );
+        assert!(list_categories(&json!({})).is_err());
     }
 
     #[test]

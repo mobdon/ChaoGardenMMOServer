@@ -9,14 +9,15 @@ No Vibe website board or external chat has been updated by creating these files.
 
 ## Chao animals, fruit and trees (in progress)
 
-Branch `claude/project-thread-vp2v2k` from `40a0ada`. Adds native fruit rows,
-seeds, planting, watering, tree growth, groves and harvest (`src/garden.rs`),
-animal part record and verified part categories, body-axis pull, weighted
-mission drop table v2 and the `src/chao_hooks.rs` seam agreed with the life
-(`claude/project-thread-3i7u22`) and body (`claude/project-thread-bhz10h`)
-branches. Care save version 2; new profile key `garden`. Contract in
-[CARE.md](../../CARE.md). The client and the rare-animal/Rabbit-ear audit fix
-are separate. All timers, prices, plots and weights are labelled MMO tuning.
+Branch `claude/project-thread-vp2v2k` from `40a0ada`. Native ports only (no
+tuned values): fruit rows, the GameCube ChaoMain tree simulation with the
+native tree spots, planting, watering and shake harvest (`src/garden.rs`), the
+ALBHV_Capture part and flag rules, complete child/adult part lists, and the
+`src/chao_hooks.rs` seam agreed with the life (`claude/project-thread-3i7u22`)
+and body (`claude/project-thread-bhz10h`) branches. Mission drops stay the
+existing adapted v1. Care save version 2; profile key `garden` version 2.
+Contract and the list of untraced rules left out are in
+[CARE.md](../../CARE.md). Seeds are not sold until native prices are traced.
 
 ## Vibe merge repair
 

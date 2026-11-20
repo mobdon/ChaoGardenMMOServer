@@ -601,6 +601,10 @@ impl Game {
         if let Some(player) = self.players.get_mut(id) {
             player.connections += 1;
             player.input = Input::default();
+            if player.garden.groves.is_empty() {
+                crate::care::seed_groves(player, self.time);
+                self.dirty = true;
+            }
             true
         } else {
             false

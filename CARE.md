@@ -158,67 +158,81 @@ instead of assuming that a listed native offer is usable.
 
 ## Fruit, seeds, trees, animal parts and drops (care save v2)
 
-Added November 20, 2026. Native evidence and MMO tuning stay separate; every
-tuned rule carries a versioned label in the snapshot and in each effect.
+Added November 20, 2026, under the standing rule that care and garden rules are
+native ports only. Where no native rule has been traced, the feature is left
+out (fails closed) rather than filled with a tuned value. Native sources are
+the GameCube GSNE8P `main.dol` and `ChaoMain` module (addresses are
+section-relative; times are 60 fps frames).
 
-**Native fruit rows.** The loader now also requires the audit's 24 `fruitStats`
+**Native fruit rows.** The loader also requires the audit's 24 `fruitStats`
 rows and checks each against the pinned executable at `0x008A6448 + 20 × id`.
 Fruit IDs follow the native enum 0x00–0x17 (Chao Garden, Hero Garden, Dark
 Garden, Strong, Tasty, Hero, Dark, Round, Triangle, Square, Heart, Chao, Smart,
 Orange, Blue, Pink, Green, Purple, Yellow, Red, Mushroom, alternate Mushroom,
-Mint Candy, Grapes). Inventory IDs are `sa2-fruit:N` (N 0–23, no leading zero).
-Eating one applies its native row through the same adapted mapping as animals
-(`native-row-adapted-mapping-v1`): seven skills one-for-one, Mood to happiness,
-Belly to satiety. Special effects that are not in the row
-(Heart Fruit breeding, Chao Fruit, Mushrooms, colour fruit) are reported as
-`unknown-not-applied`. Without verified rows every fruit, seed, plant and
-harvest action returns `native-data-unavailable`.
+Mint Candy, Grapes). Inventory IDs are `sa2-fruit:N` (N 0–23). Eating one adds
+the row's seven skill values. The Mood and Belly columns are never read by the
+native code, so they change nothing. Native eating is four bites with belly +3
+per bite (CG+0xB8); that belongs to the life module, so the effect's `"life"`
+field reports `pending-life-module` until it merges. Special effects not in the row (Heart
+Fruit breeding, Chao Fruit, Mushrooms, colour fruit) report
+`unknown-not-applied`. Without verified rows every fruit, seed, plant, water
+and harvest action returns `native-data-unavailable`.
 
-**Seeds and trees** (`adapted-tree-growth-v1`, all numbers tuning; native timers
-are unknown). Seven seeds `seed:<family>` for the native tree families Strong,
-Tasty, Hero, Dark, Round, Triangle and Square are sold at the hub shop (10
-rings; Hero and Dark 15). Each profile has private plots (six in the Neutral
-garden, three each in Hero and Dark) listed in `snapshot.care.garden.plots`.
-New intents:
+**Trees** (`native-gc-chaomain-tree-v1`). Each garden has the native seven tree
+spots (fn_60_D3A8, `.data 0x2878`): three permanent trees
+(`<garden>-grove-1..3`, kind 8, never die, bearing that garden's fruit 0/1/2)
+and four plantable plots (`<garden>-1..4`), at the native positions. Rules, all
+traced (see the header of `src/garden.rs` for addresses):
+
+- Seed: growth +100 every 60 frames to 10,000 (watering sets it to 10,000),
+  then 380 frames sprouting.
+- Young: water 10,000 draining 14 every 15 frames; size +5e-5 per frame while
+  water > 5,000, else +2e-5; adult at size 1.0.
+- Adult: life 6,000 (Strong 15,000); every 110 frames life −1/−2/−3 by water
+  (> 5,000 / > 2,000 / else) and water −14. Then dying 100 frames, dead
+  18,000, shrinking 100, and the plot is empty again.
+- Fruit: three slots growing +5e-5 per frame up to 2.0. A slot above 0.9 is
+  ripe and needs 11 + rand × 14 shakes; then it drops and restarts at
+  −0.3 × rand. Watering an adult raises each slot by 0.6 (capped at 1.0).
+  Fruit kind = tree kind + 2.
 
 | Intent | Fields | Meaning |
 | --- | --- | --- |
-| `plant` | `itemId` (`seed:*`), `plotId` | Use one owned seed on an empty or dead plot within 2 m. |
-| `water` | `plotId` | Speed a seed or young tree by 15 min; 10 min cooldown. |
-| `harvest` | `plotId` | Take one hanging fruit from a plot tree or a garden grove into inventory. |
+| `plant` | `itemId` (`seed:*`), `plotId` | Use one owned seed on an empty plot within 2 m. |
+| `water` | `plotId` | Water a seed, young or adult tree (plots or groves). |
+| `harvest` | `plotId` | Shake the tree once; any fruit that drops goes to inventory (`effects.dropped`). |
 
-A tree is a seed for 30 min, young until 3 h, mature for 3 days, then dying for
-12 h and dead. A mature tree grows one fruit of its family (Strong → Strong
-Fruit, …) every 20 min up to 3 hanging; dying trees keep hanging fruit and grow
-none; dead trees drop everything and the plot can be replanted. Each garden also
-has a permanent grove bearing that garden's native fruit (`garden-grove`,
-`hero-grove`, `dark-grove`), starting with 3 fruit and regrowing the same way.
-Growth is computed from wall-clock time, so it continues while offline and is
-identical however often the server looks. The adapted `garden-fruit` purchase
-stays for compatibility.
+Growth is computed from server time in frames, so it continues offline and is
+identical however often the server looks. Permanent trees are planted when a
+profile first connects. Not ported (absent, not substituted): fruit falling on
+its own above 1.9, the 10-fruit garden cap and object count, random starting
+fruit growth of permanent trees, and seed prices. Seeds are therefore not sold;
+owned seeds can still be planted. The pre-existing adapted `garden-fruit`
+purchase stays for compatibility.
 
-**Animal parts** (`adapted-replace-every-verified-category-v1`). `care.animalParts`
-mirrors native `MinimalParts`: part category (arms, ears, forehead, horns, legs,
-tail, wings, tongue) → native species ID. Eating an animal replaces every
-category for which that species' child and adult lists both resolve every
-socket to a verified native model. Runtime-only lists (Half Fish, Skeleton Dog,
-Bat) and partial categories (the Rabbit right ear) grant nothing until the
-audit resolves them. Drives never grant parts. The native selection/removal
-probability is unknown. Each public player record carries `animalParts` so every viewer renders the same parts. Life-cycle reincarnation calls
+**Animal parts** (`native-gc-albhv-capture-v1`, ALBHV_Capture 0x33388).
+`care.animalParts` mirrors native `MinimalParts` (category → species ID). For
+each part category, 50% take the animal's part if it has a model for it, else
+20% clear it. Dragon or Sheep horns clear other ears; clearing legs from a
+non-Bat clears flag D6. 20% (not Half Fish) clear flag D3. Half Fish: 50%
+species history and D3 = 1 for a child. Skeleton Dog: history. Bat: 50%
+history and D6 = 1. Others: history always. All 21 species' child and adult
+part lists resolve natively (Half Fish, Skeleton Dog and Bat have empty lists;
+the Rabbit right ear is at 0xED8C3C). Drives never grant parts. Each public
+player record carries `animalParts`. Life-cycle reincarnation calls
 `care::reset_animal_parts` and `care::reset_species_history`.
 
-**Body changes.** Giving an animal or drive and eating fruit change the body
-axes only through the body module's native ports (`body::apply_capture`, from
-ALBHV_Capture at GameCube ChaoMain 0x33A2C, and `body::apply_fruit`). Until that
-module merges, effects report `"body":"pending-body-module"` and nothing changes.
-Native Hero/Dark Fruit alignment is ±0.15 (ALO_FruitHeldC 0x2B6A4) and belongs
-to the body module.
+**Body changes.** Giving an animal or drive and eating fruit change body axes
+only through the body module (`body::apply_capture`, `body::apply_fruit`).
+Until it merges, effects report `"body":"pending-body-module"` and nothing
+changes. Native Hero/Dark Fruit alignment is ±0.15 (ALO_FruitHeldC 0x2B6A4)
+and belongs to that module.
 
-**Mission drop table** (`adapted-mission-drop-v2`). A defeated robot's drop is a
-weighted pick from the first two SHA-256 bytes of its source ID: common animals
-0–14 weigh 40, rare animals 15–20 weigh 4 and each drive 30 (of 744). Native
-stage tables and carry limits are still unknown; the 100-drop and 99-per-item
-limits remain.
+**Mission drops** (`adapted-mission-drop-v1`, unchanged). Native drops come from
+per-stage animal lists (main.dol 0x80195B54) and enemy classes in native stages.
+The server's missions are adapted, not native stages, so the existing adapted
+pick (SHA-256 byte mod 25) stays and no new weights are added. The 100-drop and
+99-per-item limits remain.
 
 **Local models.** Converted native care models stay in the ignored data
 directory under `imports/care/` and are served only by exact allowlisted
@@ -226,17 +240,16 @@ names: `animal-part-<species>-<child|adult>-<socket>.glb` (21 species keys,
 13 sockets), `tree-<family>-<young|mature|dying>.glb` and `fruit-<fruit key>.glb`.
 
 **Integration seam.** `src/chao_hooks.rs` is the only place care and garden
-effects touch stats, needs and body axes. It will call
-`life::grant_stat_progress`, `life::feed` and `body::apply_shape_delta` once
-those modules merge. Chao behaviour uses `garden::nearest_fruit` (read-only)
-and `care::eat_garden_fruit` (one atomic take-and-eat).
+effects touch stats, needs and body axes; it swaps to the life and body modules
+when they merge. Chao behaviour uses `garden::nearest_fruit(player, now)`
+(a read-only projection) and `care::eat_garden_fruit` (one atomic shake, and
+eat one fruit if any dropped).
 
-**Saves.** Care saves are now version 2; version 1 saves load unchanged and gain
-an empty `animalParts`. Garden state is the separate profile key `garden`
-(version 1, replaced as a whole on save). Older servers refuse version 2 care
-data rather than dropping it. The wire label stays `adapted-care-v1`: every
-addition is additive, though an older client that strictly validates inventory
-keys will show the inventory as unreported until it learns the new IDs.
+**Saves.** Care saves are version 2; version 1 saves load unchanged and gain
+empty `animalParts` and false D3/D6 flags. Garden state is the separate profile
+key `garden` (version 2, replaced as a whole on save; version 1 gardens from
+the earlier draft are refused). Older servers refuse version 2 care data rather
+than dropping it. The wire label stays `adapted-care-v1`.
 
 ## Client behavior
 

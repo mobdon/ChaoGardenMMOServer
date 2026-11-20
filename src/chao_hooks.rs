@@ -11,12 +11,16 @@
 //! Until then these functions keep today's published adapted behaviour so the
 //! swap is a change to this file only.
 //!
-//! Life signatures shared by that thread (branch claude/project-thread-3i7u22):
-//! `grant_stat_progress(&mut Player, stat, amount: i32) -> StatProgress` in native
-//! Exp units, and `feed(&mut Player, Food { fruit: Option<u8>, nourish: i16, joy: i8 })`
-//! with nourish in State units 0..=10000 and joy in Mood units. The raw item-table
-//! Belly/Mood units are not proven to be those units; the swap must state its
-//! conversion as tuning.
+//! Signatures shared by those threads (November 20, 2026):
+//! - life (PR #27): `life::eat_fruit_bite(&mut Player, kind: u8, row: [i16; 7],
+//!   bite: u8 /*1..=4*/)` applies the fruit row per bite (trunc(v/4), remainder
+//!   on bite 4) with hunger, life and LifeMax, so the swap moves the fruit skill
+//!   grant out of `care::eat_fruit` into these bites. `life::capture_animal(&mut
+//!   Player, row)` applies an animal row once; `life::fruit_handed_over` and
+//!   `life::pet` are the native like +1 events. Heart Fruit (kind 10) gives
+//!   breed +10000 via `life::adjust_need(Need::Breed, 10000)` on the last bite.
+//! - body: `body::apply_fruit(&mut player.body, kind: u8, last_bite: bool)` per
+//!   bite, with the Hero/Dark fruit alignment on the last bite.
 use crate::game::Player;
 
 /// Adds signed skill points with the published adapted clamp (0-9999).
@@ -30,11 +34,17 @@ pub fn grant_stat(p: &mut Player, stat: &str, delta: i16) -> i64 {
     i64::from(stat.points) - i64::from(before)
 }
 
-/// Native Mood/Belly units map one-for-one onto the adapted 0-100 happiness and
-/// satiety needs (published `adapted-care-v1` mapping).
-pub fn feed(p: &mut Player, _fruit: Option<u8>, mood: i16, belly: i16) {
-    p.happiness = (p.happiness + f64::from(mood)).clamp(0., 100.);
-    p.hunger = (p.hunger + f64::from(belly)).clamp(0., 100.);
+/// Fruit bites: native belly +3 per bite (CG+0xB8) and the FavoriteFruit
+/// taste check belong to `life::feed`. Until the life module merges this
+/// changes nothing; no substitute need value is applied.
+pub fn fruit_bites(_p: &mut Player, _fruit: u8, _bites: u8) -> &'static str {
+    "pending-life-module"
+}
+
+/// Child or adult, for choosing the native child or adult part list. Every
+/// Chao is a child until the life module's lifecycle merges.
+pub fn is_adult(_p: &Player) -> bool {
+    false
 }
 
 /// Body change when a Chao is given an animal or drive. The native rule is

@@ -677,7 +677,7 @@ fn care_asset(filename: &str) -> Option<String> {
             })
         })
     } else if let Some(rest) = stem.strip_prefix("tree-") {
-        crate::garden::SEEDS.iter().any(|(family, _, _)| {
+        crate::garden::SEEDS.iter().any(|family| {
             ["young", "mature", "dying"]
                 .iter()
                 .any(|stage| rest == format!("{family}-{stage}"))

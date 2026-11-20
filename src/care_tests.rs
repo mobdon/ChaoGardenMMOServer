@@ -58,11 +58,12 @@ fn all_seven_signed_channels_clamp_without_changing_levels_grades_or_form() {
         assert_eq!(p.stats[name].grade, 2, "{name}");
         assert_eq!(response["effects"]["points"][name], delta, "{name}");
     }
-    assert_eq!(p.happiness, 0.);
-    assert_eq!(p.hunger, 100.);
+    // The Mood/Belly columns are never read by the native capture code.
+    assert_eq!(p.happiness, 1.);
+    assert_eq!(p.hunger, 98.);
     assert_eq!(p.energy, 40.);
-    assert_eq!(response["effects"]["happiness"], -1.);
-    assert_eq!(response["effects"]["satiety"], 2.);
+    assert_eq!(response["effects"]["happiness"], 0.);
+    assert_eq!(response["effects"]["satiety"], 0.);
     assert_eq!(p.care.raw_totals["power"], -19);
     assert_eq!(p.care.raw_totals["unknown18"], -37);
     assert_eq!(p.care.evidence.species_history, 1);
