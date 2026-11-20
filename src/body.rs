@@ -42,6 +42,8 @@ pub const CAPTURE_FORM_ADULT: f32 = 0.05;
 /// Fruit growth: child / adult.
 pub const FRUIT_GROWTH_CHILD: f32 = 0.005;
 pub const FRUIT_GROWTH_ADULT: f32 = 0.001_25;
+/// ALO_FruitHeldC Hero/Dark Fruit alignment change.
+pub const FRUIT_ALIGNMENT: f32 = 0.15;
 /// AL_Deform: a zero |HPos| or |VPos| is replaced by this before the blend.
 pub const DEFORM_EPSILON: f32 = 1e-6;
 /// Native SA2BColour runs 0..=13; SA2BTexture 0..=16; SA2BEggColour 0..=0x36.
@@ -356,9 +358,18 @@ pub fn apply_capture(body: &mut BodyState, kind: u8) -> bool {
     true
 }
 
-/// Fruit growth (stats and needs are applied by life.rs).
-pub fn apply_fruit(body: &mut BodyState) {
+/// ALO_FruitHeldC (0x2B6A4): Hero Fruit (kind 5) adds +0.15 to APos, Dark Fruit
+/// (kind 6) -0.15. Growth: AL_ParameterGrow (0x21148) reads FruitGrowParam by kind;
+/// the traced child/adult growth applies until the per-kind table is reconciled.
+/// Stats and needs are applied by life.rs.
+pub fn apply_fruit(body: &mut BodyState, kind: u8) {
+    let alignment = match kind {
+        5 => FRUIT_ALIGNMENT,
+        6 => -FRUIT_ALIGNMENT,
+        _ => 0.,
+    };
     if body.is_chaos() {
+        body.add(0., 0., alignment, 0.);
         return;
     }
     let growth = if body.is_child() {
@@ -366,7 +377,7 @@ pub fn apply_fruit(body: &mut BodyState) {
     } else {
         FRUIT_GROWTH_ADULT
     };
-    body.add(0., 0., 0., growth);
+    body.add(0., 0., alignment, growth);
 }
 
 /// fn_60_3B5C0: cocoon type decision. Resets growth, HPos and VPos; keeps APos.
@@ -516,8 +527,12 @@ mod tests {
             apply_capture(&mut b, 9);
         }
         assert_eq!(b.v_pos, DEFORM_LIMIT);
-        apply_fruit(&mut b);
+        apply_fruit(&mut b, 5);
         assert_eq!(b.growth, FRUIT_GROWTH_CHILD);
+        assert_eq!(b.a_pos, 0.15);
+        apply_fruit(&mut b, 6);
+        apply_fruit(&mut b, 6);
+        assert!((b.a_pos + 0.15).abs() < 1e-6);
         let mut t = BodyState::default();
         for _ in 0..119 {
             t.parameter_call();
