@@ -136,7 +136,6 @@ impl Player {
     pub fn evolution(&self) -> Value {
         let checks = [
             ("missions", f64::from(self.missions_completed), 3.),
-            ("races", f64::from(self.races_completed), 1.),
             ("run", f64::from(self.stats["run"].level), 10.),
             ("swim", f64::from(self.stats["swim"].level), 10.),
             ("power", f64::from(self.stats["power"].level), 10.),
@@ -942,7 +941,7 @@ impl Game {
                     return;
                 }
                 if p.evolution()["ready"] != true {
-                    self.notice(&id, "Chaos evolution: finish 3 missions and 1 race, reach Run/Swim/Power level 10, and happiness 80.", "error");
+                    self.notice(&id, "Chaos evolution: finish 3 missions, reach Run/Swim/Power level 10, and happiness 80.", "error");
                     return;
                 }
                 crate::body::become_chaos(&mut p.body);

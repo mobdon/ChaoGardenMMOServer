@@ -403,17 +403,11 @@ fn cooperative_mission_pays_each_participant_once_then_can_start_new_instance() 
 #[test]
 fn normal_chaos_evolution_requires_earned_milestones_even_with_perfect_stats() {
     let (mut g, id, _) = fixture(true);
-    act(
-        &mut g,
-        &id,
-        "evolve",
-        json!({"missionsCompleted":3,"racesCompleted":1}),
-    );
+    act(&mut g, &id, "evolve", json!({"missionsCompleted":3}));
     assert_ne!(g.players[&id].form, "chaos");
     {
         let p = g.players.get_mut(&id).unwrap();
         p.missions_completed = 3;
-        p.races_completed = 1;
         p.happiness = 80.;
     }
     act(&mut g, &id, "evolve", json!({}));
