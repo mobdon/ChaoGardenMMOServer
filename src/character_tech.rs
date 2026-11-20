@@ -179,11 +179,11 @@ pub fn homing(g: &mut Game, p: &mut Player) -> bool {
     if !p.admin || p.jump_offset <= 0.02 || !speed(p.dev_actor.as_deref().unwrap_or("")) {
         return false;
     }
-    if let Some(id) = targets(g, p, 8.).into_iter().next() {
-        if p.cooldown("homing", g.time, 500.) {
-            p.tech.target = Some(id);
-            p.tech.until = g.time + 550.;
-        }
+    if let Some(id) = targets(g, p, 8.).into_iter().next()
+        && p.cooldown("homing", g.time, 500.)
+    {
+        p.tech.target = Some(id);
+        p.tech.until = g.time + 550.;
     }
     true
 }
@@ -226,15 +226,17 @@ pub fn motion(
         *y = p.ground_y;
         return;
     }
-    if p.tech.mode == "dig" && p.zone == "mission" && (p.x - 16.).hypot(p.z - 6.) < 1.3 {
-        if let Some(r) = g.mission.as_mut().and_then(|m| {
+    if p.tech.mode == "dig"
+        && p.zone == "mission"
+        && (p.x - 16.).hypot(p.z - 6.) < 1.3
+        && let Some(r) = g.mission.as_mut().and_then(|m| {
             m.rings
                 .iter_mut()
                 .find(|r| r.id.ends_with("-buried") && r.available_at == f64::MAX)
-        }) {
-            r.available_at = 0.;
-            g.notice(&p.id, "You uncovered a buried ring.", "success");
-        }
+        })
+    {
+        r.available_at = 0.;
+        g.notice(&p.id, "You uncovered a buried ring.", "success");
     }
     p.tech.mode = "";
     if crate::roster::walker(Some(&k)) {
@@ -244,14 +246,14 @@ pub fn motion(
                 p.tech.next = g.time;
             }
             p.tech.charging = true;
-            if g.time >= p.tech.next && p.tech.locks.len() < 5 {
-                if let Some(id) = targets(g, p, 12.)
+            if g.time >= p.tech.next
+                && p.tech.locks.len() < 5
+                && let Some(id) = targets(g, p, 12.)
                     .into_iter()
                     .find(|id| !p.tech.locks.contains(id))
-                {
-                    p.tech.locks.push(id);
-                    p.tech.next = g.time + 180.;
-                }
+            {
+                p.tech.locks.push(id);
+                p.tech.next = g.time + 180.;
             }
             p.tech.mode = "lock";
         } else if p.tech.charging {
@@ -379,17 +381,17 @@ pub fn motion(
             *y = p.y + p.vy * dt;
             return;
         }
-        if p.tech.rail.is_none() && held {
-            if let Some((d, s, t)) = nearest(&MISSION_RAIL, [p.x, p.y, p.z]) {
-                if d < 0.8 {
-                    let sign = if t[0] * p.facing.sin() + t[2] * p.facing.cos() < 0. {
-                        -1.
-                    } else {
-                        1.
-                    };
-                    p.tech.rail = Some((s, sign));
-                }
-            }
+        if p.tech.rail.is_none()
+            && held
+            && let Some((d, s, t)) = nearest(&MISSION_RAIL, [p.x, p.y, p.z])
+            && d < 0.8
+        {
+            let sign = if t[0] * p.facing.sin() + t[2] * p.facing.cos() < 0. {
+                -1.
+            } else {
+                1.
+            };
+            p.tech.rail = Some((s, sign));
         }
         if let Some((s, sign)) = p.tech.rail {
             let next = s + sign * 8. * dt;
