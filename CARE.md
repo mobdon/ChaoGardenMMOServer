@@ -213,33 +213,50 @@ its own above 1.9, the 10-fruit garden cap and object count, random starting
 fruit growth of permanent trees. Seeds are sold by the Black Market below.
 The pre-existing adapted `garden-fruit` purchase stays for compatibility.
 
-**Black Market** (`native-gc-black-market-v1`, `src/black_market.rs`). Ported
+**Black Market** (`native-gc-black-market-v2`, `src/black_market.rs`). Ported
 from the GameCube Kindergarten module (restock fn 0x2D14, buy fn 0x1AD0) and
 ChaoMain's item tables. `snapshot.care.market` lists the current stock with
-native buy and sell prices in rings:
+native buy and sell prices in rings (sell 0 = cannot be sold):
 
 | Item | Buy | Sell | Stocked |
 | --- | --- | --- | --- |
+| Eggs `egg:1`–`egg:13` | 400–2000 | 0 | rows unlocked at 5–130 emblems (Kinder .rodata 0x990), colour column by GardenID; 1–5 per restock |
+| Shiny eggs `egg:28`–`egg:40` | 10× | 0 | f < 0.3 per row past its second threshold (40–180 emblems) |
 | Strong Seed | 500 | 150 | always |
 | Tasty / Hero / Dark Seed | 200 / 400 / 400 | 50 / 100 / 100 | f < 0.7, then one of the three |
 | Round / Triangle / Square Seed | 300 | 80 | two of the three |
 | Hero / Dark Fruit | 120 | 40 | 70% each |
 | Heart Fruit / Chao Fruit | 300 / 200 | 80 / 50 | 50% each |
 | Round / Triangle / Square Fruit | 80 | 20 | two of the three |
+| Hats `hat:3`–`hat:12` | 2000–8000 | 500–2000 | unlocked at 7–97 emblems; up to 5 |
+| Blue / Black wool hat `hat:13` / `hat:14` | 10000 / 20000 | 2500 / 5000 | only by the Red wool swap (107 / 117 emblems) |
 | Mushroom (30% alternate) | 300 | 50 | 70% |
+| Omochao / Amy theme | 10000 / 20000 | 0 | 100 / 140 emblems, unowned, 10% each |
 
 | Intent | Fields | Meaning |
 | --- | --- | --- |
 | `market` | – | Entering the shop: rebuilds the stock only when the restock timer has run out (10,800 + int(14,400 f) frames). |
-| `purchase` | `itemId` | Buy an item in the current stock. Seeds and ordinary fruit stay in stock; a mushroom is removed. |
-| `sell` | `itemId` | Sell one owned seed or fruit at its native sell price (rings capped at 999,999). |
+| `purchase` | `itemId` | Buy an item in the current stock. Seeds and ordinary fruit stay in stock; eggs, hats, mushrooms and themes are removed. A theme sets `market.themesOwned` instead of entering the inventory. |
+| `sell` | `itemId` | Sell one owned item with a non-zero native sell price (rings capped at 999,999). |
+| `place-egg` | `itemId` | Put a carried egg down in a garden. As the item manager (ChaoMain 0x18F7C) and CreateEgg (0x8F20) do, it gets AL_GeneCreate genes with Color = the egg colour (both alleles), NonTex 1, Jewel 0, Multi 1 for shiny, and is analysed at once. It goes into the life nest (MMO capacity 3). |
+| `give-hat` | `itemId` | Put a carried hat down by the Chao. Natively a Chao puts on a loose hat only with MinimalFlag bit 16 (Skeleton Dog) set (fn_60_40DFC); otherwise it is refused and the hat stays carried. The worn hat (param +0xD5) is `care.hat` and the public player record's `hat`. |
+
+**Emblems** (`src/emblems.rs`, `native-gc-emblem-count-v1`). The gates read the
+native emblem count (fn_80057EB4): 29 stages × 5 mission ranks plus Route 101
+and 280, Chao Race (5), Chao Karate (4), Kart (3) and 13 special bytes, 180 in
+all. `emblems::record_mission` and `emblems::award` are the hooks for native
+stage, race, karate and kart ports. None of those native sources awards
+emblems here yet, so the count is 0 and every emblem-gated row stays locked
+until they do.
 
 Draws follow the native order and quantisation (f = k / 32768; f < C and
-int(100 f) < P tests; "two of three" redraws duplicates). Not ported: eggs,
-hats and menu themes (this server has no emblem count, egg item or hat item),
-and the Kindergarten door; the shop stands at the existing hub shop point
-(−4, 8). The native restock timer counts from power-on and is not saved; here
-it is saved with the profile so a restart does not restock early.
+int(100 f) < P tests; "two of three" redraws duplicates). Not ported: the
+Maria theme (it also needs a linked Game Boy Advance), hat models on the Chao
+(embedded in ChaoMain .data; texture names untraced), hats falling off when a
+Chao is thrown, the Kindergarten door, and the native 24-egg and 5-item carry
+limits (the life nest and the existing 99-per-item limit apply). The shop
+stands at the existing hub shop point (−4, 8). The native restock timer counts
+from power-on and is not saved; here it is saved with the profile.
 
 **Animal parts** (`native-gc-albhv-capture-v1`, ALBHV_Capture 0x33388).
 `care.animalParts` mirrors native `MinimalParts` (category → species ID). For

@@ -408,3 +408,108 @@ fn behaviour_hook_shakes_and_eats_from_a_nearby_tree() {
     assert_eq!(eaten, 1);
     assert_eq!(game.players[&id].care.inventory["sa2-fruit:0"], 2);
 }
+
+#[test]
+fn black_market_eggs_hats_and_themes_follow_the_native_rules() {
+    let (mut game, id) = fixture();
+    {
+        let p = player(&mut game, &id);
+        p.zone = "hub".into();
+        (p.x, p.z, p.rings) = (-4., 8., 50_000);
+        p.care.market.stock = vec![
+            "egg:2".into(),
+            "egg:36".into(),
+            "hat:3".into(),
+            "theme:omochao".into(),
+        ];
+        p.care.market.restock_at = Some(u64::MAX);
+    }
+    let buy = |item: &str| json!({"kind":"purchase","itemId":item});
+    assert_eq!(send(&mut game, &id, 1, buy("egg:2"))["accepted"], true);
+    assert_eq!(
+        send(&mut game, &id, 2, buy("egg:2"))["code"],
+        "not-in-stock",
+        "eggs are removed"
+    );
+    assert_eq!(send(&mut game, &id, 3, buy("egg:36"))["accepted"], true);
+    assert_eq!(game.players[&id].rings, 50_000 - 400 - 5_000);
+    assert_eq!(
+        send(&mut game, &id, 4, json!({"kind":"sell","itemId":"egg:2"}))["code"],
+        "not-sellable"
+    );
+    let theme = send(&mut game, &id, 5, buy("theme:omochao"));
+    assert_eq!(theme["accepted"], true, "{theme}");
+    assert!(game.players[&id].care.market.themes[0]);
+    assert!(
+        !game.players[&id]
+            .care
+            .inventory
+            .contains_key("theme:omochao")
+    );
+    // Eggs go down in a garden, into the nest, with the native egg-colour genes.
+    let place = |item: &str| json!({"kind":"place-egg","itemId":item});
+    assert_eq!(
+        send(&mut game, &id, 6, place("egg:2"))["code"],
+        "out-of-range"
+    );
+    go(&mut game, &id, "garden-1");
+    assert_eq!(send(&mut game, &id, 7, place("egg:2"))["accepted"], true);
+    assert_eq!(send(&mut game, &id, 8, place("egg:36"))["accepted"], true);
+    let nest = &game.players[&id].life.nest;
+    let looks: Vec<_> = nest.iter().map(|e| e.expressed.look).collect();
+    assert_eq!(
+        (looks[0].color, looks[0].shiny, looks[0].monotone),
+        (2, false, true)
+    );
+    assert_eq!(
+        (looks[1].color, looks[1].shiny, looks[1].monotone),
+        (9, true, true)
+    );
+    assert_eq!(nest[1].gene.color, [9, 9]);
+    // Hats: the Chao only puts one on with MinimalFlag bit 16 (Skeleton Dog).
+    {
+        let p = player(&mut game, &id);
+        p.zone = "hub".into();
+        (p.x, p.z) = (-4., 8.);
+    }
+    assert_eq!(send(&mut game, &id, 9, buy("hat:3"))["accepted"], true);
+    let give = json!({"kind":"give-hat","itemId":"hat:3"});
+    game.time += 1500.;
+    assert_eq!(
+        send(&mut game, &id, 10, give.clone())["code"],
+        "chao-wont-wear"
+    );
+    player(&mut game, &id).care.evidence.species_history |= 1 << 16;
+    assert_eq!(send(&mut game, &id, 11, give.clone())["accepted"], true);
+    assert_eq!(game.players[&id].care.hat, Some(3));
+    assert_eq!(game.players[&id].public()["hat"], 3);
+    assert_eq!(
+        send(&mut game, &id, 12, json!({"kind":"sell","itemId":"hat:3"}))["code"],
+        "item-not-owned"
+    );
+}
+
+#[test]
+fn restock_reads_the_native_emblem_count() {
+    let (mut game, id) = fixture();
+    {
+        let p = player(&mut game, &id);
+        p.zone = "hub".into();
+        (p.x, p.z) = (-4., 8.);
+        // Prison Lane (slot 9) all five missions: 5 emblems, the White Egg row.
+        for m in 0..5 {
+            assert!(crate::emblems::record_mission(&mut p.care.emblems, 9, m, 5));
+        }
+    }
+    script(&[0., 0., 0., 0., 0., 0., 0.5, 0., 0., 0., 0.5, 0., 0., 0.]);
+    let r = send(&mut game, &id, 1, json!({"kind":"market"}));
+    assert_eq!(r["accepted"], true, "{r}");
+    let p = &game.players[&id];
+    assert_eq!(p.care.emblems.count(), 5);
+    assert!(p.care.market.garden_id.is_some());
+    assert_eq!(
+        p.care.market.stock[0], "egg:2",
+        "White Egg is the only row at 5 emblems"
+    );
+    assert_eq!(care::public(&game, &id)["emblems"]["count"], 5);
+}

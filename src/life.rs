@@ -963,6 +963,37 @@ pub fn eat_fruit_bite(p: &mut Player, kind: u8, row: [i16; 7], bite: u8) -> Vec<
         .push(LifeEvent::FruitBite { kind, child, last });
     gains
 }
+/// A Black Market egg placed in the garden (ChaoMain item manager 0x18F7C):
+/// `AL_GeneCreate`, then gene.EggColor = `egg_id`, then `CreateEgg` (0x8F20),
+/// which runs `AL_GeneAnalyzeCommon` at once. For EggColor 1-13 both Color
+/// alleles = id, NonTex = 1, Jewel = 0, Multi = 0; for 28-40 Color = id - 27
+/// and Multi = 1 (0x10528-0x1060C). The egg goes into this profile's nest
+/// (MMO policy, capacity [`NEST_CAPACITY`]). Returns the new egg's id.
+pub fn lay_bought_egg(p: &mut Player, egg_id: u8, now: f64) -> Result<String, &'static str> {
+    let (color, shiny) = match egg_id {
+        1..=13 => (egg_id, false),
+        28..=40 => (egg_id - 27, true),
+        _ => return Err("invalid-request"),
+    };
+    if p.life.nest.len() >= NEST_CAPACITY {
+        return Err("nest-full");
+    }
+    let mut gene = p.life.create_gene();
+    gene.color = [color; 2];
+    gene.non_tex = [true; 2];
+    gene.jewel = [0; 2];
+    gene.multi = [shiny; 2];
+    let expressed = p.life.analyze(&gene);
+    let id = Uuid::new_v4().hyphenated().to_string();
+    p.life.nest.push(Egg {
+        id: id.clone(),
+        gene,
+        expressed,
+        laid_at: now,
+    });
+    p.life.revision = p.life.revision.saturating_add(1);
+    Ok(id)
+}
 /// `fn_60_2B8FC`: a fruit handed over by the owner, like +1.
 pub fn fruit_handed_over(p: &mut Player) {
     add_user_like(p, FRUIT_USER_LIKE);

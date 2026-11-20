@@ -7,6 +7,7 @@ pub mod care_catalog;
 pub mod chao_hooks;
 pub mod competition;
 pub mod competition_sim;
+pub mod emblems;
 pub mod evolution;
 pub mod game;
 pub mod garden;
