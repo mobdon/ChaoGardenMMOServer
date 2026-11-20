@@ -1453,7 +1453,6 @@ pub fn failure(game: &Game, id: &str, message: &Value, code: &str) -> Value {
 
 fn social_conflict(p: &Player) -> bool {
     p.connections == 0
-        || crate::competition::reserved(p)
         || p.watch.is_some()
         || p.tiny_game.is_some()
         || p.race.is_some()

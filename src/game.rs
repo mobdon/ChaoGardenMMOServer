@@ -1,6 +1,5 @@
 //! Deterministic, server-owned gameplay. Incoming messages carry intent only.
 use crate::activities::{self, ActivityCatalog, ActivityRecord, KarateBout};
-use crate::competition::{self, CompetitionCatalog, CompetitionState};
 use crate::phone::{self, TinyRecord, TinyRun};
 use crate::watch::{self, WatchState};
 use serde::{Deserialize, Serialize};
@@ -87,7 +86,6 @@ pub struct Player {
     pub garden: crate::garden::GardenState,
     pub body: crate::body::BodyState,
     pub life: crate::life::LifeState,
-    pub competition: CompetitionState,
     pub activity_lease: Option<Value>,
     pub boosting: bool,
     pub boost_energy: f64,
@@ -176,7 +174,6 @@ impl Player {
             "stats": self.stats, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
-            "competition":competition::public(self),
             "watch":self.watch.as_ref().map(|watch|watch.public(self.connections>0)),"connected":self.connections>0,
             "mech": if self.vehicle.as_deref() == Some("dark-chao-walker") { json!({"boosting": self.boosting, "boostEnergy": self.boost_energy.round(), "grounded": self.jump_offset <= 0. && self.vy <= 0.}) } else { Value::Null },
             "rings": self.rings, "hp": self.hp, "maxHp": self.max_hp, "happiness": self.happiness,
@@ -197,7 +194,7 @@ impl Player {
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed, "bestRaceMs": self.best_race_ms});
         phone::project_profile(self, &mut profile);
-        competition::project_profile(self, &mut profile);
+        profile["activityLease"] = json!(self.activity_lease);
         let mut preserved = self.profile_extra.clone();
         merge_profile(&mut preserved, profile);
         preserved
@@ -216,7 +213,6 @@ fn merge_profile(preserved: &mut Value, canonical: Value) {
                     "garden",
                     "body",
                     "life",
-                    "competition",
                     "activityLease",
                     "tinyRecords",
                     "raceRecords",
@@ -354,7 +350,6 @@ pub const SHOP_CATALOG: [ShopItem; 1] = [ShopItem {
 pub struct Game {
     pub care_catalog: crate::care_catalog::CareCatalog,
     pub activities: ActivityCatalog,
-    pub competition_catalog: CompetitionCatalog,
     pub life_policy: crate::life::Policy,
     /// Local native Chao data (never committed); empty unless installed.
     pub native_chao: crate::behaviour::NativeData,
@@ -418,7 +413,6 @@ impl Game {
         let mut game = Self {
             care_catalog: crate::care_catalog::CareCatalog::default(),
             activities: ActivityCatalog::default(),
-            competition_catalog: CompetitionCatalog::default(),
             life_policy: crate::life::Policy::default(),
             native_chao: crate::behaviour::NativeData::default(),
             time: now,
@@ -553,11 +547,11 @@ impl Game {
                 [0; 7],
                 crate::life::Policy::default(),
             ),
-            competition: competition::restore(
-                &data["competition"],
-                data["id"].as_str().unwrap_or_default(),
-            )?,
-            activity_lease: data.get("activityLease").filter(|v| !v.is_null()).cloned(),
+            // The removed away competitions held "competition" leases; drop them.
+            activity_lease: data
+                .get("activityLease")
+                .filter(|v| !v.is_null() && v["kind"] != "competition")
+                .cloned(),
             happiness: number(&data["happiness"], 65., 0., 100.),
             energy: number(&data["energy"], 100., 0., 100.),
             hunger: number(&data["hunger"], 100., 0., 100.),
@@ -597,17 +591,6 @@ impl Game {
             self.life_policy,
         )?;
         watch::restore(self, &mut player, &data["resident"]);
-        if let Some(plan) = &player.competition.plan {
-            let expected = competition::lease(plan);
-            if player
-                .activity_lease
-                .as_ref()
-                .is_some_and(|lease| *lease != expected)
-            {
-                return Err("Competition conflicts with saved activity lease".into());
-            }
-            player.activity_lease = Some(expected);
-        }
         Ok(player)
     }
 
@@ -653,8 +636,7 @@ impl Game {
     pub fn disconnect(&mut self, id: &str) {
         if let Some(mut player) = self.players.remove(id) {
             player.connections = player.connections.saturating_sub(1);
-            if player.connections == 0 && player.watch.is_none() && !competition::reserved(&player)
-            {
+            if player.connections == 0 && player.watch.is_none() {
                 let _ = self.teleport(&mut player, "hub", 0., 6.);
                 if !player.tiny_game.as_ref().is_some_and(TinyRun::saving) {
                     player.tiny_game = None;
@@ -665,11 +647,7 @@ impl Game {
     }
     pub fn set_input(&mut self, id: &str, input: &Value) {
         if let Some(player) = self.players.get_mut(id).filter(|p| p.connections > 0) {
-            if player.tiny_game.is_some()
-                || player.watch.is_some()
-                || competition::training_conflict(player)
-                || competition::reserved(player)
-            {
+            if player.tiny_game.is_some() || player.watch.is_some() || training_conflict(player) {
                 return;
             }
             let mut dx = number(&input["dx"], 0., -1., 1.);
@@ -699,11 +677,7 @@ impl Game {
         true
     }
     pub fn tiny_input(&mut self, id: &str, message: &Value) {
-        if self
-            .players
-            .get(id)
-            .is_some_and(|p| competition::reserved(p) || competition::training_conflict(p))
-        {
+        if self.players.get(id).is_some_and(training_conflict) {
             return;
         }
         let Some(mut player) = self.players.remove(id) else {
@@ -830,11 +804,7 @@ impl Game {
     fn action_inner(&mut self, p: &mut Player, message: &Value) {
         let action = message["action"].as_str().unwrap_or_default();
         let id = p.id.clone();
-        if action.starts_with("competition-") {
-            competition::action(self, p, message);
-            return;
-        }
-        if competition::reserved(p) || competition::training_conflict(p) {
+        if training_conflict(p) {
             self.notice(
                 &id,
                 "Finish your reserved activity before starting another action.",
@@ -1416,7 +1386,6 @@ impl Game {
         let ids: Vec<_> = self.players.keys().cloned().collect();
         for id in ids {
             let mut p = self.players.remove(&id).unwrap();
-            competition::tick(self, &mut p, dt);
             let resident = p.watch.is_some() && self.life_policy.resident_needs;
             if p.connections > 0 || resident {
                 let (grounded, connected) = (p.jump_offset <= 0., p.connections > 0);
@@ -1425,7 +1394,7 @@ impl Game {
                     p.input = Input::default();
                 }
             }
-            if competition::reserved(&p) || p.activity_lease.is_some() {
+            if p.activity_lease.is_some() {
                 p.input = Input::default();
                 self.players.insert(id, p);
                 continue;
@@ -1758,13 +1727,11 @@ impl Game {
             .players
             .get(self_id)
             .and_then(|p| activities::public_race(self, p));
-        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || ((p.connections > 0 || p.watch.is_some() || competition::reserved(p)) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
+        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || ((p.connections > 0 || p.watch.is_some()) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
             "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().filter(|_|mission_visible).map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
             "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
             "care":crate::care::public(self,self_id),
             "life":crate::life::public(self,self_id),
-            "competitionCatalog":self.competition_catalog.public(),
-            "competition":self.players.get(self_id).map(competition::public),
             "karate": self.players.get(self_id).and_then(|p|p.karate.as_ref().map(KarateBout::public)),
             "activityResult": self.players.get(self_id).and_then(|p|p.activity_result.as_ref()),
             "tinyGame":self.players.get(self_id).and_then(|p|p.tiny_game.as_ref().map(TinyRun::public)),
@@ -1779,4 +1746,19 @@ impl Game {
     pub fn online_connections(&self) -> usize {
         self.players.values().map(|p| p.connections).sum()
     }
+}
+
+/// A foreign activity lease (care lock, a lease or a training marker) holds
+/// the canonical Chao.
+pub fn training_conflict(player: &Player) -> bool {
+    player.care.activity_lock.is_some()
+        || player.activity_lease.is_some()
+        || ["training", "trainingJob", "trainingLedger"]
+            .iter()
+            .any(|key| {
+                player
+                    .profile_extra
+                    .get(*key)
+                    .is_some_and(|v| !v.is_null() && *v != false)
+            })
 }

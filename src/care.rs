@@ -373,8 +373,7 @@ pub fn failure(game: &Game, id: &str, message: &Value, code: &str) -> Value {
 
 fn conflict(p: &Player, pickup: bool) -> bool {
     p.connections == 0
-        || crate::competition::training_conflict(p)
-        || crate::competition::reserved(p)
+        || crate::game::training_conflict(p)
         || p.watch.is_some()
         || p.tiny_game.is_some()
         || p.race.is_some()
@@ -962,8 +961,7 @@ pub fn eat_garden_fruit(game: &mut Game, id: &str, place: &str) -> Result<Value,
 
 /// Like `conflict`, but a resident (offline, Watch-owned) Chao may still eat.
 fn conflict_resident(p: &Player) -> bool {
-    crate::competition::training_conflict(p)
-        || crate::competition::reserved(p)
+    crate::game::training_conflict(p)
         || p.tiny_game.is_some()
         || p.race.is_some()
         || p.karate.is_some()

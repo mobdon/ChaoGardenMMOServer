@@ -212,10 +212,6 @@ impl AppState {
         };
         let races = read_catalog("races")?;
         let karate = read_catalog("karate")?;
-        // Native tables from the owner's install (client CLI chao-competition-tables).
-        let native = read_catalog("competition-native")?;
-        game.competition_catalog = crate::competition::CompetitionCatalog::from_values(&native)
-            .map_err(io::Error::other)?;
         game.activities = crate::activities::ActivityCatalog::from_values(races, karate)
             .map_err(io::Error::other)?;
         let worlds: std::collections::BTreeSet<_> = game
@@ -260,7 +256,6 @@ impl AppState {
         }
         let started = Instant::now();
         let result = (|| {
-            crate::competition::validate_reservations(game).map_err(io::Error::other)?;
             fs::create_dir_all(&self.config.data_dir)?;
             let temporary = self.config.data_dir.join("profiles.json.tmp");
             let bytes = serde_json::to_vec_pretty(&game.export_profiles())?;
@@ -280,7 +275,6 @@ impl AppState {
             fs::rename(temporary, self.config.data_dir.join("profiles.json"))?;
             game.dirty = false;
             crate::phone::commit_rewards(game);
-            crate::competition::commit(game);
             Ok(())
         })();
         self.metrics.save.record(started.elapsed());
@@ -389,38 +383,6 @@ impl AppState {
             return Err(error);
         }
         Ok(response)
-    }
-
-    /// Opt-in and cancellation are acknowledged only after the profile transaction.
-    /// Failed writes retain the prior lease, entry budget and queued events.
-    pub fn competition_action(
-        &self,
-        game: &mut Game,
-        id: &str,
-        message: &Value,
-    ) -> io::Result<Value> {
-        let before = game
-            .players
-            .get(id)
-            .cloned()
-            .ok_or_else(|| io::Error::other("Missing profile"))?;
-        let before_competition = crate::competition::public(&before);
-        let was_dirty = game.dirty;
-        let event_count = game.events.len();
-        game.action(id, message);
-        let accepted = before_competition != crate::competition::public(&game.players[id]);
-        if let Err(error) = self.persist(game) {
-            game.players.insert(id.to_owned(), before);
-            game.dirty = was_dirty;
-            game.events.truncate(event_count);
-            return Err(error);
-        }
-        let competition = crate::competition::public(&game.players[id]);
-        Ok(json!({
-            "type":"event", "kind":"competition-saved",
-            "accepted":accepted,
-            "competition":competition, "serverTime":game.time
-        }))
     }
 }
 
@@ -1123,16 +1085,6 @@ async fn handle_socket(
                                     };
                                     response = Some((Message::Text(acknowledgement.to_string().into()), 0));
                                 }
-                                Some("action") if value["action"].as_str().is_some_and(|action|action.starts_with("competition-")) => {
-                                    let result = match state.competition_action(&mut game, &id, &value) {
-                                        Ok(result) => result,
-                                        Err(error) => {
-                                            eprintln!("Could not save competition choice: {error}");
-                                            json!({"type":"notice","kind":"error","text":"Your competition choice could not save. Your previous choice was kept; please retry."})
-                                        }
-                                    };
-                                    response = Some((Message::Text(result.to_string().into()), 0));
-                                }
                                 Some("action") if value["action"].as_str().is_some_and(|action| action.starts_with("watch-")) => {
                                     let result = match state.watch_action(&mut game, &id, &value) {
                                         Ok(result) => result,
@@ -1182,13 +1134,12 @@ pub fn spawn_simulation(state: AppState) -> tokio::task::JoinHandle<()> {
                     game.tick(0.05);
                     state.metrics.resident_tick.record(game.last_resident_tick);
                     state.metrics.set_residents(game.last_tick_residents);
-                    if (crate::phone::has_pending(&game) || crate::competition::has_pending(&game))
+                    if crate::phone::has_pending(&game)
                         && game.time >= game.tiny_save_retry_at
                         && let Err(value)=state.persist(&mut game) {
                         eprintln!("Could not save Tiny Garden result: {value}");
                         game.tiny_save_retry_at=game.time+1000.;
                         crate::phone::save_failed(&mut game);
-                        crate::competition::save_failed(&mut game);
                     }
                     publish_events(&state, &mut game);
                     state.metrics.tick.record(started.elapsed());
