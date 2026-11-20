@@ -45,9 +45,9 @@ pub fn capture_body(_p: &mut Player, _kind: u8) -> &'static str {
     "pending-body-module"
 }
 
-/// Body growth from eating fruit: `body::apply_fruit(&mut player.body)` once the
+/// Body growth from eating fruit: `body::apply_fruit(&mut player.body, kind)` once the
 /// body module merges. No native fruit alignment change has been traced, so none
 /// is applied.
-pub fn fruit_body(_p: &mut Player) -> &'static str {
+pub fn fruit_body(_p: &mut Player, _kind: u8) -> &'static str {
     "pending-body-module"
 }

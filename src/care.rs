@@ -378,7 +378,7 @@ fn eat_fruit(game: &Game, p: &mut Player, id: u8) -> Result<Value, &'static str>
     let mut delta = BTreeMap::new();
     apply_raw(p, &fruit.raw, &mut delta);
     chao_hooks::feed(p, Some(id), fruit.raw.mood, fruit.raw.belly);
-    let body = chao_hooks::fruit_body(p);
+    let body = chao_hooks::fruit_body(p, id);
     Ok(
         json!({"points":delta,"satiety":p.hunger-hunger,"happiness":p.happiness-happiness,
         "raw":fruit.raw,"body":body,"fruitRules":"native-row-adapted-mapping-v1",
