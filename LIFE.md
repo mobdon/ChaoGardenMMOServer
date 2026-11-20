@@ -23,7 +23,7 @@ or left out.
 
 | System | Rule | Source |
 | --- | --- | --- |
-| Clock | Each Chao gets one `AL_CalcParameter` call every 96 frames (1.6 s). Life tick every 121 calls (193.6 s), moods every 8 (12.8 s), needs every 11 (17.6 s; 10 while sleeping, sitting or walking), illness every 81 (129.6 s), knowledge every 11. | `AL_ParameterControl` 0x20CCC, `AL_CalcParameter` 0x213CC |
+| Clock | Each Chao gets one `AL_CalcParameter` call every 96 frames (about 1.60 s at 59.94 Hz). Life tick every 121 calls (about 193.8 s), moods every 8 (12.8 s), needs every 11 (17.6 s; 10 while sleeping, sitting or walking), illness every 81 (129.7 s), knowledge every 11. | `AL_ParameterControl` 0x20CCC, `AL_CalcParameter` 0x213CC; frame rate: main 0x800D3AD0, `fn_80117DF8` N = 1 (one tick per NTSC field) |
 | Stat level-up | `Exp += gain` (minimum 0). At most one level per call: Exp > 99 and Lev < 99 gives Exp −100, Lev +1, points `+= 11 + 3×grade + 0..4`, capped at 4000. At Lev 99, Exp is set to 99. | `AL_ParameterGrow` 0x21148, `fn_60_2131C` |
 | Fruit | Four bites. Bites 1–3 add `trunc(v/4)`, bite 4 adds the remainder, so a whole fruit gives exactly `v`. Each bite: hunger −2400, life +3, and LifeMax +5 for a child. | `ALO_FruitHeldC`, `fn_60_2BD7C` |
 | Lifespan | `LifeMax = 3000 + 100 × max(LifeTime alleles)`. Each life tick an adult (not Chaos) gets `old += 1` and `LifeMax −= (old + 100) / 15`, and `life` clamps to LifeMax. Children and Chaos Chao do not age. | `AL_GeneAnalyzeCommon` 0x1002C, `AL_CalcParameter` |
@@ -75,7 +75,6 @@ and stays on.
   egg goes to the caller's nest (3 eggs). A grey-cocoon or dead Chao may hatch a
   nest egg as the next generation (generation +1; levels and points 0, grades
   from the egg, like and knowledge reset).
-- **Frame rate.** Frame counts convert at 60 Hz; the code does not state it.
 
 ## Left out (no native source)
 

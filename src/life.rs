@@ -19,8 +19,9 @@ pub const MAX_RECEIPTS: usize = 256;
 
 /// Native constants. Each names its source.
 pub mod native {
-    /// Not measured in code: SA2B GameCube runs its task loop once per 60 Hz frame.
-    pub const FRAMES_PER_SECOND: f64 = 60.;
+    /// One logic tick per NTSC video field (GSNE8P main 0x800D3AD0 waits in
+    /// fn_80117DF8 with N = 1): 60000/1001 = 59.94 Hz.
+    pub const FRAMES_PER_SECOND: f64 = 60000. / 1001.;
     /// `AL_ParameterControl` 0x20CCC: one of 32 slots every `ChaoTimerBaseInterval` 3 frames.
     pub const CALC_FRAMES: f64 = 96.;
     /// `AL_CalcParameter` 0x213CC timers fire when the old value >= interval (period = +1).

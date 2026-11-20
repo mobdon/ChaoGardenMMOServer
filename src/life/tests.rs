@@ -209,9 +209,9 @@ fn evolution_cocoon_follows_mayu_frames() {
     p.life.reincarnations = 2;
     assert!(start_evolution_cocoon(p));
     assert!(p.life.immobile());
-    tick(p, 1999. / 60., Policy::default(), true, true);
+    tick(p, 1999. / FRAMES_PER_SECOND, Policy::default(), true, true);
     assert!(p.life.events.is_empty());
-    tick(p, 1. / 60., Policy::default(), true, true);
+    tick(p, 1. / FRAMES_PER_SECOND, Policy::default(), true, true);
     assert_eq!(
         p.life.events,
         vec![LifeEvent::EvolutionDecision(ChaosInputs {
@@ -219,7 +219,7 @@ fn evolution_cocoon_follows_mayu_frames() {
             reincarnations: 2
         })]
     );
-    tick(p, 1900. / 60., Policy::default(), true, true);
+    tick(p, 1900. / FRAMES_PER_SECOND, Policy::default(), true, true);
     assert_eq!(p.life.stage, Stage::Adult);
     assert!(!start_evolution_cocoon(p));
 }
@@ -232,7 +232,7 @@ fn end_of_life(p: &mut Player, like: i16, stress: i16, policy: Policy) {
     p.life.emotion.state[7] = stress;
     tick(p, 0.01, policy, true, true);
     assert_eq!(p.life.cocoon.unwrap().kind, CocoonKind::End);
-    tick(p, 3831. / 60., policy, true, true);
+    tick(p, 3831. / FRAMES_PER_SECOND, policy, true, true);
 }
 
 #[test]
