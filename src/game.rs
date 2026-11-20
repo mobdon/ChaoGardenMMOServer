@@ -84,6 +84,7 @@ pub struct Player {
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
     pub care: crate::care::CareState,
+    pub body: crate::body::BodyState,
     pub competition: CompetitionState,
     pub activity_lease: Option<Value>,
     pub boosting: bool,
@@ -120,7 +121,11 @@ impl Player {
         true
     }
     fn update_form(&mut self) {
-        if self.form != "chaos" {
+        // APos is the alignment authority; percent alignment is its projection.
+        self.alignment = self.body.alignment_percent();
+        if self.body.is_chaos() {
+            self.form = "chaos".into();
+        } else {
             self.form = if self.alignment >= 60. {
                 "hero"
             } else if self.alignment <= -60. {
@@ -138,6 +143,7 @@ impl Player {
             if MAIN_STATS.contains(&name) && !self.admin {
                 stat.grade = (1 + stat.level / 20).min(5);
             }
+            crate::body::on_stat_progress(&mut self.body, name, i32::from(levels) * 100);
         }
     }
     pub fn evolution(&self) -> Value {
@@ -172,14 +178,14 @@ impl Player {
             "rings": self.rings, "hp": self.hp, "maxHp": self.max_hp, "happiness": self.happiness,
             "energy": self.energy.round(), "hunger": self.hunger.round(),
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed,
-            "bestRaceMs": self.best_race_ms, "evolution": self.evolution(),
+            "bestRaceMs": self.best_race_ms, "evolution": self.evolution(), "body": self.body.public(),
         })
     }
     pub fn profile(&self) -> Value {
         let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
-            "energy":self.energy,"hunger":self.hunger,"care":self.care,
+            "energy":self.energy,"hunger":self.hunger,"care":self.care,"body":self.body,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
@@ -201,6 +207,7 @@ fn merge_profile(preserved: &mut Value, canonical: Value) {
                 // Merging an empty inventory would resurrect consumed stacks.
                 if [
                     "care",
+                    "body",
                     "competition",
                     "activityLease",
                     "tinyRecords",
@@ -521,6 +528,11 @@ impl Game {
             tiny_result: None,
             watch: None,
             care: crate::care::CareState::restore(data.get("care"))?,
+            body: crate::body::BodyState::restore(
+                data.get("body"),
+                data["form"].as_str().unwrap_or("normal"),
+                number(&data["alignment"], 0., -100., 100.),
+            )?,
             competition: competition::restore(
                 &data["competition"],
                 data["id"].as_str().unwrap_or_default(),
@@ -551,6 +563,11 @@ impl Game {
             race: None,
         };
         self.teleport(&mut player, "hub", 0., 6.)?;
+        // The saved percent alignment stays the legacy contract: if something wrote it
+        // without the body (older tools, admin edits), the body follows it.
+        if (player.alignment - player.body.alignment_percent()).abs() >= 0.5 {
+            player.body.set_alignment_percent(player.alignment);
+        }
         player.update_form();
         watch::restore(self, &mut player, &data["resident"]);
         if let Some(plan) = &player.competition.plan {
@@ -869,6 +886,8 @@ impl Game {
                     );
                     return;
                 }
+                p.body.set_alignment_percent(-100.);
+                crate::body::become_chaos(&mut p.body);
                 p.form = "chaos".into();
                 p.alignment = -100.;
                 self.dirty = true;
@@ -1019,6 +1038,7 @@ impl Game {
                     self.notice(&id, "Chaos evolution: finish 3 missions and 1 race, reach Run/Swim/Power level 10, and happiness 80.", "error");
                     return;
                 }
+                crate::body::become_chaos(&mut p.body);
                 p.form = "chaos".into();
                 self.dirty = true;
                 self.notice(
@@ -1047,8 +1067,9 @@ impl Game {
                 self.notice(&id, "Give your last choice a moment.", "info");
                 return;
             }
-            p.alignment =
-                (p.alignment + if action == "align-good" { 15. } else { -15. }).clamp(-100., 100.);
+            p.body.set_alignment_percent(
+                (p.alignment + if action == "align-good" { 15. } else { -15. }).clamp(-100., 100.),
+            );
             p.happiness = (p.happiness + 2.).min(100.);
             p.update_form();
             self.dirty = true;
@@ -1374,6 +1395,8 @@ impl Game {
                 self.players.insert(id, p);
                 continue;
             }
+            p.body.tick(dt as f32);
+            p.update_form();
             if p.tiny_game.is_some() {
                 phone::tick(self, &mut p, dt);
                 self.players.insert(id, p);

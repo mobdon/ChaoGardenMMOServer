@@ -1,4 +1,5 @@
 pub mod activities;
+pub mod body;
 pub mod care;
 pub mod care_catalog;
 pub mod competition;
