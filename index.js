@@ -23,7 +23,7 @@ const allowedOrigins = (process.env.CHAO_ALLOWED_ORIGINS || '').split(',').map((
 });
 const localAssetRoutes = new Map(
   [
-    ...['chao', 'hub', 'garden', 'hero-garden', 'dark-garden', 'neutral-chaos', 'hero-chaos', 'dark-chaos', 'tails', 'knuckles', 'amy', 'chaos-emerald', 'tree-neutral', 'dark-chao-walker', 'dark-walker-shot', 'dark-walker-booster', 'shadow-air-shoes-left', 'shadow-air-shoes-right', 'knuckles-hammer-gloves-left', 'knuckles-hammer-gloves-right'].map((name) => `${name}.glb`),
+    ...['chao', 'hub', 'garden', 'hero-garden', 'dark-garden', 'neutral-chaos', 'hero-chaos', 'dark-chaos', 'tails', 'knuckles', 'amy', 'chaos-emerald', 'tree-neutral', 'dark-chao-walker', 'dark-walker-shot', 'dark-walker-booster', 'shadow-air-shoes-left', 'shadow-air-shoes-right', 'knuckles-hammer-gloves-left', 'knuckles-hammer-gloves-right', 'chao-behaviour'].map((name) => `${name}.glb`),
     ...['red', 'purple', 'cyan', 'green', 'blue', 'yellow', 'white'].map((color) => `emerald-${color}.glb`),
     'chao-flame.png', 'chao-shadow.png', 'emotion-flame.png', 'emotion-flame-atlas.png', 'emotion-sphere.png',
     'chao-stat-panel.png', 'chao-stat-font.png', 'chao-race-parameter.png', 'discord-icon.png', 'login-chao.png',

@@ -590,6 +590,8 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "shadow-air-shoes-right",
         "knuckles-hammer-gloves-left",
         "knuckles-hammer-gloves-right",
+        // Native Chao behaviour clips selected locally by the client tooling.
+        "chao-behaviour",
     ];
     let colors = ["red", "purple", "cyan", "green", "blue", "yellow", "white"];
     let pngs = [
