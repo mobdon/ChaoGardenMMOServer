@@ -210,7 +210,7 @@ temporary write/fsync/unlink; it does not verify production account readiness.
 
 See [the measured capacity report](docs/CAPACITY.md) and
 [operations/deployment review](docs/CAPACITY-OPERATIONS.md). The `deploy/` draft
-is loopback only and has not been installed. Existing `apps/api`, Terraform,
+is loopback only and has not been installed. Existing Terraform,
 Fly/release/migration and k6 scaffolding are separate work; their presence is
 not proof of this Rust service's production readiness. Run one authority per
 JSON data directory. Synchronous full-file saves still serialize simulation and
