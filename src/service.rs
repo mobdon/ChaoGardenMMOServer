@@ -670,6 +670,9 @@ pub fn asset_filename(path: &str) -> Option<String> {
     if filename == "hub-grass.png" {
         return Some("nativehubgrass.png".into());
     }
+    if chao_appearance_asset(filename) {
+        return Some(filename.into());
+    }
     if filename == "shadow-skate-motion.json" {
         return Some(filename.into());
     }
@@ -739,6 +742,66 @@ fn care_asset(filename: &str) -> Option<String> {
         false
     };
     ok.then(|| format!("care/{filename}"))
+}
+
+/// Locally converted evolution bodies, face and look textures (never in Git).
+/// `chao-body-al_<align><family>z.glb`, `chao-face.json`, `chao-look.json`,
+/// `chao-eye-<name>.png`, `chao-mouth-<name>.png` and `chao-look-<name>.png` with a bounded lowercase name.
+fn chao_appearance_asset(filename: &str) -> bool {
+    if filename == "chao-face.json" || filename == "chao-look.json" {
+        return true;
+    }
+    if let Some(family) = filename
+        .strip_prefix("chao-body-al_")
+        .and_then(|rest| rest.strip_suffix("z.glb"))
+    {
+        let bytes = family.as_bytes();
+        return bytes.len() == 2 && b"ndh".contains(&bytes[0]) && b"cnsfrp".contains(&bytes[1]);
+    }
+    ["chao-eye-", "chao-look-", "chao-mouth-"]
+        .iter()
+        .any(|prefix| {
+            filename
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.strip_suffix(".png"))
+                .is_some_and(|name| {
+                    (1..=32).contains(&name.len())
+                        && name
+                            .bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                })
+        })
+}
+
+#[cfg(test)]
+mod appearance_asset_tests {
+    use super::asset_filename;
+
+    #[test]
+    fn appearance_assets_are_bounded() {
+        for ok in [
+            "chao-body-al_ncz.glb",
+            "chao-body-al_dpz.glb",
+            "chao-face.json",
+            "chao-eye-al_eye01.png",
+            "chao-look-al_jewel_ruby.png",
+        ] {
+            assert_eq!(
+                asset_filename(&format!("/api/assets/{ok}")).as_deref(),
+                Some(ok)
+            );
+        }
+        for bad in [
+            "chao-body-al_xcz.glb",
+            "chao-body-al_nczz.glb",
+            "chao-eye-../x.png",
+            "chao-look-.png",
+            "chao-eye-AL.png",
+            "chao-look-a/b.png",
+        ] {
+            assert_eq!(asset_filename(&format!("/api/assets/{bad}")), None, "{bad}");
+        }
+    }
 }
 
 fn byte_range(header_value: &str, length: usize) -> Option<(usize, usize)> {

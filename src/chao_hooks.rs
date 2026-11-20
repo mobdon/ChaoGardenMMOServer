@@ -8,8 +8,7 @@
 //! - `body` owns the run/power, swim/fly and hero/dark axes. When it lands,
 //!   `capture_body` calls `body::apply_capture` and `fruit_body` calls `body::apply_fruit`.
 //!
-//! The life module merged in PR #27 and is wired here. The body module has not
-//! merged; its hooks still change nothing and say so.
+//! Both modules have merged (life PR #27, body PR #28) and are wired here.
 //!
 //! Signatures shared by those threads (November 20, 2026):
 //! - life (PR #27): `life::eat_fruit_bite(&mut Player, kind: u8, row: [i16; 7],
@@ -99,17 +98,20 @@ pub fn is_adult(p: &Player) -> bool {
     p.life.stage == Stage::Adult
 }
 
-/// Body change when a Chao is given an animal or drive. The native rule is
-/// ALBHV_Capture (GameCube ChaoMain 0x33A2C), ported by the body module as
-/// `body::apply_capture(&mut player.body, kind)`. Until that module merges this
-/// changes nothing and says so; no substitute value is applied.
-pub fn capture_body(_p: &mut Player, _kind: u8) -> &'static str {
-    "pending-body-module"
+/// Body change when a Chao is given an animal or drive: ALBHV_Capture
+/// (GameCube ChaoMain 0x33A2C) through `body::apply_capture`. Reports whether
+/// a traced shape change applied (untraced kinds change nothing).
+pub fn capture_body(p: &mut Player, kind: u8) -> &'static str {
+    if crate::body::apply_capture(&mut p.body, kind) {
+        "applied"
+    } else {
+        "unchanged"
+    }
 }
 
-/// Body growth from eating fruit: `body::apply_fruit(&mut player.body, kind,
-/// last_bite)` per bite once the body module merges (it can read the life
-/// module's `FruitBite` events). Until then nothing changes.
+/// Body growth from eating fruit happens per bite in `life::apply_events`
+/// (the `FruitBite` event calls `body::apply_fruit`), so nothing is applied
+/// here; calling it here too would count every bite twice.
 pub fn fruit_body(_p: &mut Player, _kind: u8) -> &'static str {
-    "pending-body-module"
+    "per-bite-life-event"
 }

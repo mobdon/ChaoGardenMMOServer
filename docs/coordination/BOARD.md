@@ -309,6 +309,33 @@ completed policies, completed legal review or feature implementation. Record
 such product/release decisions explicitly when actually made; do not invent
 approvals or treat an unchecked checklist as evidence.
 
+## Chao body, evolution and appearance (November 20)
+
+Branch `claude/project-thread-bhz10h` (base `40a0ada`) adds `src/body.rs`
+(`Player.body`, strict profile key `body`, complete replacement in
+`merge_profile`) and the bounded `/api/assets/` names for locally converted
+body, face and look files. The rules are ported from the owner's SA2B GameCube
+`ChaoMain.rel` (GSNE8P). The sources are listed in client
+`docs/CHAO-EVOLUTION.md`.
+
+- **Rules:** AL_BODY_INFO clamps, life-step growth, ALBHV_Capture shape
+  changes, fruit growth and Hero/Dark fruit alignment, the fn_60_1531C cocoon
+  trigger, the fn_60_3B5C0 adult type, and the AL_Deform/AL_DeformObjectChild
+  morph weights published as `body.morph`.
+- **Alignment:** APos is the alignment authority. Percent `alignment` is a
+  projection of it, and the existing garden choices set it directly.
+- **Shared state:**
+  - `life.rs` (server PR #27) owns the clock (`LifeTick` → `body.life_step()`),
+    the cocoon (`cocoon_due` → `start_evolution_cocoon` → `evolve`), genes
+    (`express`) and reincarnation.
+  - The animals thread calls `apply_capture` and `apply_fruit`.
+  - Whichever PR merges second wires `life::apply_events`.
+- **Unresolved:** jewel, shiny and monotone drawing, mouth textures, sign
+  sources for alignment drift, capture species 12–20, and AddUserLike. These
+  are left out, not approximated.
+- **Checks:** fmt, strict all-target Clippy and all tests pass.
+- **Protocol:** additive public field `body`. No protocol version change.
+
 ## Workstream handoff
 
 Use an isolated branch/worktree and a reviewable PR. Include changed paths,

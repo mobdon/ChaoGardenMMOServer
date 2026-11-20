@@ -230,9 +230,11 @@ stay. `care::all_species_eaten` reports MinimalFlag for all 21 species.
 
 **Body changes.** Giving an animal or drive and eating fruit change body axes
 only through the body module (`body::apply_capture`, `body::apply_fruit`).
-Until it merges, effects report `"body":"pending-body-module"` and nothing
-changes. Native Hero/Dark Fruit alignment is ±0.15 (ALO_FruitHeldC 0x2B6A4)
-and belongs to that module.
+An animal or drive reports `"body":"applied"` or `"unchanged"` (untraced kinds).
+Fruit growth and the native Hero/Dark Fruit alignment (±0.15, ALO_FruitHeldC
+0x2B6A4) apply per bite from the life module's `FruitBite` events, so fruit
+effects report `"body":"per-bite-life-event"`. Evolution's all-21-animals
+Chaos condition reads `care::all_species_eaten`.
 
 **Mission drops** (`adapted-mission-drop-v1`, unchanged). Native drops come from
 per-stage animal lists (main.dol 0x80195B54) and enemy classes in native stages.
@@ -246,8 +248,7 @@ names: `animal-part-<species>-<child|adult>-<socket>.glb` (21 species keys,
 13 sockets), `tree-<family>-<young|mature|dying>.glb` and `fruit-<fruit key>.glb`.
 
 **Integration seam.** `src/chao_hooks.rs` is the only place care and garden
-effects touch stats, needs and body axes. It calls the life module (merged)
-and will call the body module when that merges. Chao behaviour uses `garden::nearest_fruit(player, now)`
+effects touch stats, needs and body axes. It calls the merged life and body modules. Chao behaviour uses `garden::nearest_fruit(player, now)`
 (a read-only projection) and `care::eat_garden_fruit` (one atomic shake, and
 eat one fruit if any dropped).
 

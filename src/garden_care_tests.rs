@@ -67,7 +67,7 @@ fn native_fruit_rows_add_skills_only_and_leave_needs_and_body_to_their_modules()
     assert_eq!(r["effects"]["exp"]["stamina"], 5);
     assert_eq!(r["effects"]["exp"]["intelligence"], 0, "Exp minimum 0");
     assert_eq!(r["effects"]["bites"], 4);
-    assert_eq!(r["effects"]["body"], "pending-body-module");
+    assert_eq!(r["effects"]["body"], "per-bite-life-event");
     let p = &game.players[&id];
     assert!(p.hunger > before.hunger, "each bite lowers hunger by 2400");
     assert_eq!(

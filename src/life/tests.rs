@@ -532,3 +532,50 @@ fn native_bug_switch_reproduces_the_original_init() {
     assert_eq!(p.life.emotion.state[0], 0x34);
     assert_eq!(p.life.emotion.state[9], 0);
 }
+
+#[test]
+fn life_events_drive_the_body() {
+    let (mut game, ids) = game_with(&["Body"], false);
+    let id = &ids[0];
+    let p = game.players.get_mut(id).unwrap();
+    p.body.h_pos = 0.8;
+    p.body.a_pos = 0.6;
+    p.life.events = vec![
+        LifeEvent::LifeTick,
+        LifeEvent::FruitBite {
+            kind: 5,
+            child: true,
+            last: true,
+        },
+    ];
+    apply_events(&mut game, id);
+    let body = &game.players[id].body;
+    assert!((body.growth - (1. / 60. + 0.005)).abs() < 1e-5);
+    assert!((body.a_pos - 0.75).abs() < 1e-5);
+
+    let p = game.players.get_mut(id).unwrap();
+    p.life.events = vec![LifeEvent::EvolutionDecision(ChaosInputs {
+        user_like: 100,
+        reincarnations: 3,
+    })];
+    apply_events(&mut game, id);
+    let p = &game.players[id];
+    assert!(!p.body.is_child());
+    assert_eq!(p.body.type_name(), "hero-power");
+    assert_eq!(p.body.h_pos, 0.);
+
+    let p = game.players.get_mut(id).unwrap();
+    p.life.events = vec![LifeEvent::Hatched {
+        look: Look {
+            color: 4,
+            jewel: 0,
+            shiny: true,
+            monotone: false,
+        },
+    }];
+    apply_events(&mut game, id);
+    let body = &game.players[id].body;
+    assert!(body.is_child());
+    assert_eq!(body.look.color, 4);
+    assert!(body.look.shiny);
+}
