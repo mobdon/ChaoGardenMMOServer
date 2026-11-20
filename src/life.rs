@@ -360,9 +360,11 @@ pub enum LifeEvent {
         look: Look,
     },
     Died,
-    /// A fruit bite (child or adult) for the body's fruit growth.
+    /// A fruit bite for the body's fruit growth; `last` marks the bite with the kind's side effects.
     FruitBite {
+        kind: u8,
         child: bool,
+        last: bool,
     },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -934,9 +936,10 @@ pub fn grant_stat_progress(p: &mut Player, stat: &str, amount: i32) -> StatProgr
 }
 
 /// One fruit bite (`ALO_FruitHeldC` → `fn_60_2BD7C` → `AL_ParameterGrow` kind 3).
-/// `row` is the fruit's whole-fruit Exp row in ALL_STATS order; `bite` counts 1..=4.
+/// `kind` is the native fruit index, `row` its whole-fruit Exp row in ALL_STATS order and
+/// `bite` counts 1..=4.
 /// Applies the stat share, hunger −2400, life +3 and (child only) LifeMax +5.
-pub fn eat_fruit_bite(p: &mut Player, row: [i16; 7], bite: u8) -> Vec<StatProgress> {
+pub fn eat_fruit_bite(p: &mut Player, kind: u8, row: [i16; 7], bite: u8) -> Vec<StatProgress> {
     let last = bite >= FRUIT_BITES;
     let gains: Vec<_> = ALL_STATS
         .iter()
@@ -954,7 +957,9 @@ pub fn eat_fruit_bite(p: &mut Player, row: [i16; 7], bite: u8) -> Vec<StatProgre
             (i32::from(p.life.life_max) + FRUIT_ADD_LIFE_MAX_CHILD).min(LIFE_MAX_LIMIT) as i16;
     }
     p.life.life = (i32::from(p.life.life) + FRUIT_ADD_LIFE).min(i32::from(p.life.life_max)) as i16;
-    p.life.events.push(LifeEvent::FruitBite { child });
+    p.life
+        .events
+        .push(LifeEvent::FruitBite { kind, child, last });
     gains
 }
 /// `fn_60_2B8FC`: a fruit handed over by the owner, like +1.

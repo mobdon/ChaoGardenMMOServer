@@ -315,7 +315,7 @@ fn fruit_bites_sum_to_the_row_and_children_gain_life_max() {
     p.life.exp = [50; 7];
     let row = [10, -7, 0, 0, 40, 0, 0];
     for bite in 1..=4 {
-        eat_fruit_bite(p, row, bite);
+        eat_fruit_bite(p, 0, row, bite);
     }
     assert_eq!(p.life.exp[0], 60);
     assert_eq!(p.life.exp[1], 43);
@@ -323,7 +323,7 @@ fn fruit_bites_sum_to_the_row_and_children_gain_life_max() {
     assert_eq!((p.life.life, p.life.life_max), (3012, 3020));
     assert_eq!(needs_view(p).hunger, 0);
     p.hunger = 0.;
-    eat_fruit_bite(p, [0; 7], 1);
+    eat_fruit_bite(p, 0, [0; 7], 1);
     assert_eq!(needs_view(p).hunger, 10000 - 2400);
 }
 

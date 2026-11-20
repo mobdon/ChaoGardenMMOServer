@@ -115,14 +115,16 @@ the stage, cocoon kind, age, reincarnations, generation and an ill flag.
 
 - **Behaviour (AI):** `needs_view`, `adjust_need`, `adjust_mood`,
   `set_need_cadence_busy`, `take_need_update`, `can_wake`.
-- **Animals and fruit:** `eat_fruit_bite(row, bite)`, `capture_animal(row)`,
+- **Animals and fruit:** `eat_fruit_bite(kind, row, bite)`, `capture_animal(row)`,
   `fruit_handed_over`, `pet`, `grant_stat_progress`. The Grow rows stay in the
   local native catalog.
 - **Body (evolution):** `LifeTick` → growth, `start_evolution_cocoon` when
   `body::cocoon_due` and grounded, `EvolutionDecision` → `body::evolve`,
   `Reincarnated` → `body::reincarnate`, `Hatched` → `body::express`,
-  `FruitBite` → `body::apply_fruit`. Native stat level-ups do not move the
-  body. The like attribute shift (APos) is the body's.
+  `FruitBite { kind, child, last }` → `body::apply_fruit`. Native stat
+  level-ups do not move the body. The like attribute shift (APos ± attr) depends
+  on the native player character's hero/dark side, which has no MMO equivalent,
+  so it is unresolved and not applied.
 - **Kindergarten doctor:** `cure`.
 
 ## Save compatibility
