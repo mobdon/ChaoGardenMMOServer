@@ -54,8 +54,7 @@ pub fn restore(game: &Game, player: &mut Player, value: &Value) {
         return;
     }
     let zone = match value["zone"].as_str() {
-        Some("hero") if player.alignment >= 60. => "hero",
-        Some("dark") if player.alignment <= -60. => "dark",
+        Some(zone) if player.can_enter_garden(zone) => zone,
         _ => "garden",
     };
     let x = value["x"]

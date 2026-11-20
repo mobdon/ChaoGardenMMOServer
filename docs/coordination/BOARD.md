@@ -185,3 +185,11 @@ branch/PR/evidence once verified. Do not mutate another checkout, live saves,
 the playable preview or a shared index, and do not start messaging other chats
 on the strength of this board alone. Repository updates do not imply that a
 Vibe website dashboard has been synchronized.
+
+Dev realm travel (server base 799e8af, local): src/game.rs and src/watch.rs use the authenticated player's admin status for Hero/Dark entry and resident restore; unchanged alignment, form and protocol. tests/game.rs covers ordinary and dev travel. Fixed existing build blockers in src/service.rs and src/metrics.rs. Game/watch suites: 36 passed; disposable Rust WebSocket session confirmed garden, hero, dark and hub with unchanged form and alignment. Running port 3001 binary and owner save untouched.
+
+### Local character roster preview — 2026-11-19
+Client documents source and remaining gaps in docs/SA2-CHARACTER-PORT.md. Server uses a private CHAO_ROSTER_TABLE extracted by the Rust PE reader. Owner-only dev-actor selection; snapshots carry devActor/rosterGait, normal input and attack intents remain authoritative. Verified all 17 selections and visitor denial over a real service socket with disposable storage. No canonical save migration, deployed protocol switch or production rollout.
+
+### Character tech / whole-game Rust port, November 19
+Rust owns character state, native land queries, target acquisition, missile flight, dig pickups and flight ring drain. Existing input adds bounded tech hold, action adds roster-dig; snapshots add rosterTech, rosterVertical, rosterLocks and the mission rail. Browser uses native pose/rocket assets. Isolated preview only; no canonical save migration. See client docs/SA2-CHARACTER-PORT.md and server/tests/character_tech.rs for input traces and limits.

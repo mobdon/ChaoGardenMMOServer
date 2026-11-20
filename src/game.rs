@@ -70,6 +70,9 @@ pub struct Player {
     pub owned_cosmetics: Vec<String>,
     pub equipped: Option<String>,
     pub vehicle: Option<String>,
+    pub dev_actor: Option<String>,
+    pub tech: crate::character_tech::Tech,
+    pub roster_velocity: (f64, f64),
     pub gear: Gear,
     pub race_records: BTreeMap<String, ActivityRecord>,
     pub karate_records: BTreeMap<String, ActivityRecord>,
@@ -105,6 +108,15 @@ pub struct Player {
 }
 
 impl Player {
+    pub(crate) fn can_enter_garden(&self, zone: &str) -> bool {
+        match zone {
+            "garden" => true,
+            "hero" => self.admin || self.alignment >= 60.,
+            "dark" => self.admin || self.alignment <= -60.,
+            _ => false,
+        }
+    }
+
     pub(crate) fn cooldown(&mut self, name: &str, now: f64, duration: f64) -> bool {
         if self.cooldowns.get(name).is_some_and(|until| *until > now) {
             return false;
@@ -153,7 +165,7 @@ impl Player {
     pub fn public(&self) -> Value {
         json!({
             "id": self.id, "name": self.name, "x": self.x, "y": self.y, "z": self.z,
-            "groundY": self.ground_y, "jumpOffset": self.jump_offset, "facing": self.facing,
+            "rosterVertical":self.vy,"rosterTech":self.tech.mode,"rosterLocks":self.tech.locks(),"rosterEnabled": self.admin && crate::roster::enabled(), "rosterGait":self.dev_actor.as_deref().and_then(crate::roster::get).map(|r|crate::roster::gait(r,self.roster_velocity)), "devActor":self.dev_actor,"groundY": self.ground_y, "jumpOffset": self.jump_offset, "facing": self.facing,
             "zone": self.zone, "alignment": self.alignment, "form": self.form, "admin": self.admin,
             "stats": self.stats, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
@@ -464,6 +476,9 @@ impl Game {
             .into(),
             owned_cosmetics,
             equipped,
+            dev_actor: None,
+            tech: Default::default(),
+            roster_velocity: (0., 0.),
             vehicle: if admin && data["vehicle"] == "dark-chao-walker" {
                 Some("dark-chao-walker".into())
             } else {
@@ -559,6 +574,11 @@ impl Game {
     pub fn disconnect(&mut self, id: &str) {
         if let Some(mut player) = self.players.remove(id) {
             player.connections = player.connections.saturating_sub(1);
+            if player.connections == 0 {
+                player.dev_actor = None;
+                player.tech = Default::default();
+                player.roster_velocity = (0., 0.);
+            }
             if player.connections == 0 && player.watch.is_none() {
                 let _ = self.teleport(&mut player, "hub", 0., 6.);
                 if !player.tiny_game.as_ref().is_some_and(TinyRun::saving) {
@@ -580,6 +600,7 @@ impl Game {
                 dx /= length;
                 dz /= length;
             }
+            player.tech.held = player.dev_actor.is_some() && input["tech"] == true;
             player.input = Input {
                 dx,
                 dz,
@@ -637,6 +658,17 @@ impl Game {
         }
         self.player_terrain(player)
             .map_or(Some(0.), |terrain| terrain.sample(x, z))
+            .map(|h| {
+                if player.dev_actor.is_some() && player.zone == "mission" {
+                    crate::character_tech::roof(x, z).unwrap_or(h)
+                } else if player.dev_actor.is_some() {
+                    crate::native_land::stage(&player.zone)
+                        .and_then(|s| s.floor(x, z, h))
+                        .map_or(h, |v| v.0)
+                } else {
+                    h
+                }
+            })
     }
     pub fn safe_position(&self, zone: &str, x: f64, z: f64) -> Result<(f64, f64, f64), String> {
         let x = x.clamp(-22., 22.);
@@ -668,6 +700,11 @@ impl Game {
     }
     pub fn teleport(&self, player: &mut Player, zone: &str, x: f64, z: f64) -> Result<(), String> {
         let (x, z, y) = self.safe_position(zone, x, z)?;
+        player.tech = Default::default();
+        player.roster_velocity = (0., 0.);
+        if !matches!(zone, "hub" | "garden" | "dark" | "hero" | "mission") {
+            player.dev_actor = None;
+        }
         player.zone = zone.into();
         player.x = x;
         player.z = z;
@@ -725,6 +762,7 @@ impl Game {
         let action = message["action"].as_str().unwrap_or_default();
         let id = p.id.clone();
         if action.starts_with("watch-") {
+            p.tech = Default::default();
             watch::action(self, p, message);
             return;
         }
@@ -737,6 +775,7 @@ impl Game {
             return;
         }
         if action.starts_with("tiny-") {
+            p.tech = Default::default();
             phone::action(self, p, message);
             return;
         }
@@ -765,8 +804,42 @@ impl Game {
             return;
         }
         match action {
+            "dev-actor" => {
+                let Some(key) = message["character"].as_str() else {
+                    return;
+                };
+                if !p.admin
+                    || !matches!(
+                        p.zone.as_str(),
+                        "garden" | "hub" | "hero" | "dark" | "mission"
+                    )
+                {
+                    return;
+                }
+                if !key.is_empty() && crate::roster::get(key).is_none() {
+                    return;
+                }
+                p.dev_actor = (!key.is_empty()).then(|| key.to_owned());
+                p.tech = Default::default();
+                p.roster_velocity = (0., 0.);
+                return;
+            }
+            "roster-dig" => {
+                crate::character_tech::dig(self, p);
+                return;
+            }
             "attack" => {
-                if p.vehicle.as_deref() == Some("dark-chao-walker") {
+                if crate::character_tech::homing(self, p) {
+                    return;
+                }
+                if crate::roster::walker(p.dev_actor.as_deref()) {
+                    self.mech_fire(p);
+                } else if p.dev_actor.is_some() && p.zone != "mission" {
+                    if p.cooldown("roster-attack", self.time, 550.) {
+                        self.events.push(Event {target:None,message:json!({"type":"event","kind":"attack","playerId":p.id,"zone":p.zone})});
+                    }
+                } else if p.dev_actor.is_none() && p.vehicle.as_deref() == Some("dark-chao-walker")
+                {
                     self.mech_fire(p);
                 } else {
                     self.attack(p);
@@ -882,11 +955,7 @@ impl Game {
                 return;
             }
             "hero" | "dark" => {
-                if !(if action == "hero" {
-                    p.alignment >= 60.
-                } else {
-                    p.alignment <= -60.
-                }) {
+                if !p.can_enter_garden(action) {
                     self.notice(&id, format!("{} Garden needs {} alignment. Make garden choices to change your alignment.", if action == "hero" { "Hero" } else { "Dark" }, if action == "hero" { "+60" } else { "−60" }), "error");
                     return;
                 }
@@ -1140,6 +1209,15 @@ impl Game {
             });
         }
         let mission = self.mission.as_mut().unwrap();
+        if !mission.rings.iter().any(|r| r.id.ends_with("-buried")) {
+            mission.rings.push(Ring {
+                id: format!("{}-buried", mission.id),
+                x: 16.,
+                z: 6.,
+                zone: "mission".into(),
+                available_at: f64::MAX,
+            });
+        }
         if mission.completed {
             self.notice(
                 &p.id,
@@ -1195,7 +1273,10 @@ impl Game {
         }
     }
     fn mech_fire(&mut self, p: &mut Player) {
-        if !p.admin || p.vehicle.as_deref() != Some("dark-chao-walker") {
+        if !p.admin
+            || (p.vehicle.as_deref() != Some("dark-chao-walker")
+                && !crate::roster::walker(p.dev_actor.as_deref()))
+        {
             self.notice(
                 &p.id,
                 "Mount your authorized Dark Chao Walker to fire.",
@@ -1311,6 +1392,7 @@ impl Game {
             }
             if self.time - p.last_input_at > 350. {
                 p.input = Input::default();
+                p.tech = Default::default();
             }
             watch::tick(self, &mut p);
             let water = p.zone == "garden" && dist(p.x, p.z, -8., 0.) < 5.;
@@ -1352,13 +1434,22 @@ impl Game {
                     y
                 }
             };
-            let mounted = p.admin && p.vehicle.as_deref() == Some("dark-chao-walker");
+            let roster = p
+                .dev_actor
+                .as_deref()
+                .and_then(crate::roster::get)
+                .filter(|_| p.admin && p.watch.is_none());
+            let mounted =
+                roster.is_none() && p.admin && p.vehicle.as_deref() == Some("dark-chao-walker");
+            let jump_pressed = p.input.jump;
             if p.input.jump && p.jump_offset <= 0. && p.vy <= 0. {
-                p.vy = if mounted { 3.2 } else { 2.4 };
+                p.vy = roster
+                    .map(|r| r.jump * 6.)
+                    .unwrap_or(if mounted { 3.2 } else { 2.4 });
             }
             p.input.jump = false;
             p.boosting = mounted && p.input.boost && p.boost_energy > 0.;
-            let predicted_y = if p.boosting {
+            let mut predicted_y = if p.boosting {
                 p.boost_energy = (p.boost_energy - MECH_BOOST_DRAIN * dt).max(0.);
                 p.vy = MECH_BOOST_SPEED;
                 let height = (ground + p.jump_offset + p.vy * dt).min(ground + MECH_BOOST_HEIGHT);
@@ -1367,8 +1458,9 @@ impl Game {
                 }
                 height
             } else {
-                let height = ground + p.jump_offset + p.vy * dt - 0.5 * 12. * dt * dt;
-                p.vy -= 12. * dt;
+                let gravity = roster.map(|r| r.gravity * 360.).unwrap_or(12.);
+                let height = ground + p.jump_offset + p.vy * dt - 0.5 * gravity * dt * dt;
+                p.vy -= gravity * dt;
                 height
             };
             let bounds = activities::native_course(self, &p)
@@ -1385,17 +1477,71 @@ impl Game {
                         activities::Bounds::default()
                     }
                 });
-            let next_x = (p.x + p.input.dx * speed * dt).clamp(bounds.min_x, bounds.max_x);
-            let next_z = (p.z + p.input.dz * speed * dt).clamp(bounds.min_z, bounds.max_z);
+            let (mut vx, mut vz) = if let Some(r) = roster {
+                p.roster_velocity = crate::roster::velocity(
+                    r,
+                    p.roster_velocity,
+                    (p.input.dx, p.input.dz),
+                    p.jump_offset > 0.,
+                    dt,
+                );
+                p.roster_velocity
+            } else {
+                (p.input.dx * speed, p.input.dz * speed)
+            };
+            if roster.is_some() {
+                crate::character_tech::motion(
+                    self,
+                    &mut p,
+                    dt,
+                    jump_pressed,
+                    &mut vx,
+                    &mut vz,
+                    &mut predicted_y,
+                );
+            }
+            let land = roster.and_then(|_| crate::native_land::stage(&p.zone));
+            let body_height = roster.map_or(0.6, |r| r.height * 0.1);
+            if predicted_y > p.y
+                && let Some(cap) = land.and_then(|s| {
+                    s.ceiling(
+                        [p.x, p.y + body_height, p.z],
+                        [p.x, predicted_y + body_height, p.z],
+                    )
+                })
+            {
+                predicted_y = (cap - body_height - 0.001).max(ground);
+                p.vy = 0.;
+            }
+            let next_x = (p.x + vx * dt).clamp(bounds.min_x, bounds.max_x);
+            let next_z = (p.z + vz * dt).clamp(bounds.min_z, bounds.max_z);
             let (start_x, start_z, start_ground) = (p.x, p.z, ground);
-            let subdivisions = self.player_terrain(&p).map_or(1, |t| {
-                (dist(next_x, next_z, start_x, start_z) / 0.2_f64.min(t.step * 0.4))
-                    .ceil()
-                    .max(1.) as usize
-            });
+            let subdivisions = self.player_terrain(&p).map_or_else(
+                || {
+                    if roster.is_some() {
+                        (dist(next_x, next_z, start_x, start_z) / 0.15)
+                            .ceil()
+                            .max(1.) as usize
+                    } else {
+                        1
+                    }
+                },
+                |t| {
+                    (dist(next_x, next_z, start_x, start_z) / 0.2_f64.min(t.step * 0.4))
+                        .ceil()
+                        .max(1.) as usize
+                },
+            );
             for part in 1..=subdivisions {
                 let x = start_x + (next_x - start_x) * part as f64 / subdivisions as f64;
                 let z = start_z + (next_z - start_z) * part as f64 / subdivisions as f64;
+                let probe = p.y + body_height * 0.5;
+                if land
+                    .and_then(|s| s.wall([p.x, probe, p.z], [x, probe, z]))
+                    .is_some()
+                {
+                    break;
+                }
                 let Some(candidate) = self.player_ground(&p, x, z) else {
                     break;
                 };
@@ -1433,6 +1579,13 @@ impl Game {
             self.players.insert(id, p);
         }
         self.tick_enemies(dt);
+        if self
+            .mission
+            .as_ref()
+            .is_some_and(|m| !m.completed && m.enemies.iter().all(|e| e.hp <= 0.))
+        {
+            self.finish_mission();
+        }
     }
     fn pickup_rings(&mut self, p: &mut Player) {
         let nodes = if p.zone == "mission" {
@@ -1561,7 +1714,7 @@ impl Game {
             .get(self_id)
             .and_then(|p| activities::public_race(self, p));
         json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.connections > 0 || p.watch.is_some()).map(Player::public).collect::<Vec<_>>(),
-            "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
+            "missionRail":if self.players.get(self_id).is_some_and(|p|p.zone=="mission"){Some(crate::character_tech::MISSION_RAIL.as_slice())}else{None},"rings": rings, "enemies": enemies, "mission": self.mission.as_ref().map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
             "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
             "karate": self.players.get(self_id).and_then(|p|p.karate.as_ref().map(KarateBout::public)),
             "activityResult": self.players.get(self_id).and_then(|p|p.activity_result.as_ref()),
