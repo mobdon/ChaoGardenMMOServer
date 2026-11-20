@@ -545,7 +545,7 @@ fn stale_stock_unoffered_eggs_wrong_hatch_identity_training_and_clock_do_not_spe
     reject(&state, &mut game, &id, &buy, NOW, "egg-not-offered");
     let begin = request(
         1,
-        json!({"kind":"training_start","stat":"run","durationMs":60_000}),
+        json!({"kind":"training_start","stat":"run","durationMs":60_000,"quotedCostRings":1}),
     );
     assert_eq!(
         state.care_action_at(&mut game, &id, &begin, NOW).unwrap()["accepted"],
@@ -805,13 +805,13 @@ fn purchase_and_later_training_keep_the_hatch_revision_reserved() {
     game.players.get_mut(&id).unwrap().care.revision = u64::MAX - 2;
     let begin = request(
         u64::MAX - 2,
-        json!({"kind":"training_start","stat":"run","durationMs":60_000}),
+        json!({"kind":"training_start","stat":"run","durationMs":60_000,"quotedCostRings":1}),
     );
     reject(&state, &mut game, &id, &begin, NOW, "receipt-capacity");
     game.players.get_mut(&id).unwrap().care.revision = u64::MAX - 3;
     let begin = request(
         u64::MAX - 3,
-        json!({"kind":"training_start","stat":"run","durationMs":60_000}),
+        json!({"kind":"training_start","stat":"run","durationMs":60_000,"quotedCostRings":1}),
     );
     assert_eq!(
         state.care_action_at(&mut game, &id, &begin, NOW).unwrap()["accepted"],

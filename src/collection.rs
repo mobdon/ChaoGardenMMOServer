@@ -23,7 +23,8 @@ pub const MAX_CHAO: usize = 8;
 
 #[derive(Clone, Debug)]
 pub struct EggSource {
-    prices: NativeShopPrices,
+    pub(crate) prices: NativeShopPrices,
+    pub(crate) wave: [i16; 256],
     hatch: NativeHatchSource,
 }
 impl EggSource {
@@ -31,6 +32,13 @@ impl EggSource {
         Ok(Self {
             prices: NativeShopPrices::from_verified_payload(payload)
                 .map_err(|error| error.to_string())?,
+            wave: std::array::from_fn(|i| {
+                i16::from_le_bytes(
+                    payload[0x1fb74 + 2 * i..0x1fb76 + 2 * i]
+                        .try_into()
+                        .unwrap(),
+                )
+            }),
             hatch: NativeHatchSource::from_verified_payload(payload)
                 .map_err(|error| error.to_string())?,
         })

@@ -21,7 +21,7 @@ fn request(revision: u64, intent: Value) -> Value {
 fn start(revision: u64, stat: &str, duration: u64) -> Value {
     request(
         revision,
-        json!({"kind":"training_start","stat":stat,"durationMs":duration}),
+        json!({"kind":"training_start","stat":stat,"durationMs":duration,"quotedCostRings":duration/60000}),
     )
 }
 fn close(revision: u64, kind: &str, job: u64) -> Value {
@@ -137,7 +137,7 @@ fn start_requires_explicit_tiny_entry_and_accepts_only_five_stats_and_minute_dur
         assert_eq!(view["job"]["deadlineServerMs"], NOW + 60_000);
         assert_eq!(view["job"]["projectedPoints"], 0);
         assert_eq!(view["policy"]["pointsPerTick"], 1);
-        assert_eq!(view["policy"]["costRings"], 0);
+        assert_eq!(view["quotes"][stat][0], 1);
         assert!(game.players[&id].watch.is_none());
         assert_eq!(
             game.players[&id].care.activity_lock.as_deref(),
@@ -253,6 +253,7 @@ fn cancel_and_settle_obey_clock_readiness_uuid_replay_and_revision_serialization
             .unwrap()["replayed"],
         true
     );
+    game.players.get_mut(&id).unwrap().rings = 480;
     assert_eq!(
         state
             .care_action_at(&mut game, &id, &start(3, "run", 28_800_000), NOW + 60_000)
@@ -922,4 +923,70 @@ fn start_reserves_the_final_closing_revision_and_receipt_slots() {
     );
     assert_eq!(game.players[&id].care.revision, u64::MAX);
     assert_eq!(game.players[&id].stats["run"].points, 1);
+}
+
+#[test]
+fn paid_training_quotes_selected_skill_and_legacy_free_receipts_still_load() {
+    let (dir, state, id) = fixture(true);
+    let mut g = state.game.lock().unwrap();
+    g.players
+        .get_mut(&id)
+        .unwrap()
+        .stats
+        .get_mut("run")
+        .unwrap()
+        .level = 75;
+    let offer = training::public(&g.players[&id], NOW);
+    assert_eq!(offer["quotes"]["run"], json!([4, 60, 240, 1920]));
+    assert_eq!(offer["quotes"]["swim"], json!([1, 15, 60, 480]));
+    rejected(
+        &state,
+        &mut g,
+        &id,
+        &start(1, "run", 60000),
+        NOW,
+        "training-price-changed",
+    );
+    let mut paid = start(1, "run", 900000);
+    paid["intent"]["quotedCostRings"] = json!(60);
+    rejected(&state, &mut g, &id, &paid, NOW, "insufficient-rings");
+    let old = request(
+        1,
+        json!({"kind":"training_start","stat":"run","durationMs":60000}),
+    );
+    rejected(&state, &mut g, &id, &old, NOW, "training-price-changed");
+    let mut begin = start(1, "run", 60000);
+    begin["intent"]["quotedCostRings"] = json!(4);
+    assert_eq!(
+        state.care_action_at(&mut g, &id, &begin, NOW).unwrap()["accepted"],
+        true
+    );
+    assert_eq!(g.players[&id].rings, 16);
+    drop(g);
+    // Recreate EXACT legacy wire/save shape with pre-change free fee and receipt.
+    let mut profile = saved(dir.path(), &id);
+    let key = begin["requestId"].as_str().unwrap();
+    let effects = json!({"training":{"jobId":1,"outcome":"started","costRings":0}});
+    profile["care"]["receipts"][key]["request"]["intent"]
+        .as_object_mut()
+        .unwrap()
+        .remove("quotedCostRings");
+    profile["care"]["receipts"][key]["effects"] = effects.clone();
+    profile["care"]["history"][1]["result"] = effects;
+    profile["rings"] = json!(20);
+    fs::write(
+        dir.path().join("profiles.json"),
+        json!([profile]).to_string(),
+    )
+    .unwrap();
+    let loaded = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+    let mut g = loaded.game.lock().unwrap();
+    g.connect(&id);
+    assert_eq!(
+        loaded
+            .care_action_at(&mut g, &id, &close(2, "training_settle", 1), NOW + 60000)
+            .unwrap()["accepted"],
+        true
+    );
+    assert_eq!(g.players[&id].rings, 20);
 }

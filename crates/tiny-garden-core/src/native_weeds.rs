@@ -93,13 +93,15 @@ impl NativeWeedAssets {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NativeWeedPosition {
     pub x: u8,
     pub y: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NativeWeedFields {
     pub spawn_ticks: u32,
     pub positions: [NativeWeedPosition; WEED_CAPACITY],
@@ -147,7 +149,8 @@ impl NativeWeedFields {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NativeWeed {
     pub present: bool,
     pub emerging: bool,
@@ -222,7 +225,8 @@ pub struct NativePullInput {
     pub pressed_keys: u16,
     pub held_keys: u16,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NativeWeedPull {
     pub slot: u8,
     pub phase: u8,
@@ -240,7 +244,8 @@ pub struct PullUpdate {
     pub sound: Option<u16>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NativeWeeds {
     pub fields: NativeWeedFields,
     pub weeds: [NativeWeed; WEED_CAPACITY],

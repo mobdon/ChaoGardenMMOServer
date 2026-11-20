@@ -11,6 +11,9 @@ use std::{
 use tiny_garden_core::{
     native_ball::{BallSession, BallSource, Finish, Screen},
     native_bios_math::ReferenceBiosMath,
+    native_bounce::{
+        A2neBounceSource, BounceActorView, BouncePhase, MAX_NATIVE_RINGS, NativeBounceRound,
+    },
     native_growth::NativeRng,
     native_memory::{A2neMemorySource, NativeButtons, NativeMemoryPhase, NativeMemoryRound},
     native_rps_finish::NativeRpsSession,
@@ -20,6 +23,7 @@ use tiny_garden_games::{TinyGame, TinyOutcome};
 
 const ADAPTED: &str = "adapted-v1";
 const MEMORY: &str = "a2ne-memory-v1";
+const BOUNCE: &str = "a2ne-bounce-v1";
 const RPS: &str = "asoe-rps-v1";
 const BALL: &str = "a3ve-ball-v1";
 const GBA_FRAMES_NUM: u64 = 262144;
@@ -30,6 +34,8 @@ const MAX_QUEUE: usize = 8;
 
 #[derive(Clone, Debug, Default)]
 pub struct Sources {
+    pub(crate) weeds: Option<tiny_garden_core::native_weeds::NativeWeedAssets>,
+    bounce: Option<A2neBounceSource>,
     memory: Option<A2neMemorySource>,
     ball: Option<BallSource>,
     rps: Option<NativeRpsAssets>,
@@ -47,7 +53,13 @@ fn payload(path: &Path, expected: usize) -> io::Result<Vec<u8>> {
 }
 
 impl Sources {
-    pub(crate) fn load_memory(&mut self, bytes: &[u8]) -> io::Result<()> {
+    pub(crate) fn load_a2ne(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.weeds = Some(
+            tiny_garden_core::native_weeds::NativeWeedAssets::from_verified_payload(bytes)
+                .map_err(io::Error::other)?,
+        );
+        self.bounce =
+            Some(A2neBounceSource::from_verified_payload(bytes).map_err(io::Error::other)?);
         self.memory =
             Some(A2neMemorySource::from_verified_payload(bytes).map_err(io::Error::other)?);
         Ok(())
@@ -70,6 +82,7 @@ impl Sources {
         match id {
             "rock_paper_scissors" if self.rps.is_some() => (RPS, 99),
             "ball" if self.ball.is_some() => (BALL, 128),
+            "bounce" if self.bounce.is_some() => (BOUNCE, u32::from(MAX_NATIVE_RINGS)),
             "memory" if self.memory.is_some() => (MEMORY, 99),
             _ => (ADAPTED, crate::phone::MAX_RING_REWARD),
         }
@@ -107,6 +120,12 @@ impl Sources {
     }
     pub(crate) fn begin(&self, game: TinyGame, seed: u32) -> Result<Option<NativeRun>, String> {
         let engine = match game {
+            TinyGame::Bounce => {
+                let Some(source) = &self.bounce else {
+                    return Ok(None);
+                };
+                Engine::Bounce(Box::new(source.begin_round()))
+            }
             TinyGame::Memory => {
                 let Some(source) = self.memory else {
                     return Ok(None);
@@ -149,6 +168,7 @@ impl Sources {
 
 #[derive(Clone, Debug)]
 enum Engine {
+    Bounce(Box<NativeBounceRound>),
     Ball(BallSession),
     Memory(NativeMemoryRound),
     Rps {
@@ -179,6 +199,7 @@ enum Intent {
 impl NativeRun {
     pub(crate) fn rules(&self) -> &'static str {
         match self.engine {
+            Engine::Bounce(_) => BOUNCE,
             Engine::Ball(_) => BALL,
             Engine::Memory(_) => MEMORY,
             Engine::Rps { .. } => RPS,
@@ -186,6 +207,7 @@ impl NativeRun {
     }
     pub(crate) fn max_ring_reward(&self) -> u32 {
         match self.engine {
+            Engine::Bounce(_) => u32::from(MAX_NATIVE_RINGS),
             Engine::Ball(_) => 128,
             Engine::Memory(_) | Engine::Rps { .. } => 99,
         }
@@ -194,8 +216,8 @@ impl NativeRun {
         let Intent::NativeButtons { held } =
             serde_json::from_value(intent.clone()).map_err(|_| ())?;
         let mask = match &self.engine {
-            Engine::Ball(_) => 0xfb,
-            // Only Ball implements the pause menu. Use A for result dismissal in all games.
+            Engine::Ball(_) | Engine::Bounce(_) => 0xfb,
+            // Memory and RPS use their result controls. Use A for result dismissal in all games.
             Engine::Memory(_) => 0xf3,
             Engine::Rps { .. } => 0x31,
         };
@@ -265,6 +287,25 @@ impl NativeRun {
                         )
                     })
                 }
+                Engine::Bounce(round) => {
+                    if round
+                        .step(NativeButtons { held, pressed }, &ReferenceBiosMath)
+                        .is_err()
+                    {
+                        self.halted = true;
+                        break;
+                    }
+                    round.finished().map(|(won, rings)| {
+                        let reason = if won {
+                            "cleared"
+                        } else if round.view().lives == 0 {
+                            "lost"
+                        } else {
+                            "quit"
+                        };
+                        (TinyGame::Bounce, rings, reason, won)
+                    })
+                }
                 Engine::Ball(round) => round.step(held).map(|(end, rings)| {
                     (TinyGame::Ball, rings, finish(end), end == Finish::Cleared)
                 }),
@@ -300,6 +341,7 @@ impl NativeRun {
             return json!({"screen":"error"});
         }
         match &self.engine {
+            Engine::Bounce(round) => bounce_view(round),
             Engine::Ball(round) => ball_view(round),
             Engine::Memory(round) => memory_view(round),
             Engine::Rps { round, .. } => rps_view(round),
@@ -313,6 +355,30 @@ fn finish(value: Finish) -> &'static str {
         Finish::Lost => "lost",
         Finish::Cleared => "cleared",
     }
+}
+fn bounce_actor(a: BounceActorView) -> Value {
+    json!({"x":a.x,"y":a.y,"visible":a.visible,"tile":a.tile,"descriptor":a.descriptor_offset,
+           "style":a.style,"transform":a.transform,"paletteLayer":a.packed_palette_layer})
+}
+
+fn bounce_view(round: &NativeBounceRound) -> Value {
+    let v = round.view();
+    let screen = match v.phase {
+        BouncePhase::Playing => "playing",
+        BouncePhase::Paused => "pause",
+        BouncePhase::Result => "result",
+        BouncePhase::Fade => "fade",
+        BouncePhase::Ended => "ended",
+    };
+    let parts: Vec<_> = v.spring_parts.iter().filter(|p|p.actor.visible).map(|p|json!({
+        "actor":bounce_actor(p.actor), "bottomCopy":p.bottom_copy, "priority":p.priority,
+        "affine":p.affine.map(|a|json!({"scaleX":a.scale_x,"scaleY":a.scale_y,"rotation":a.rotation}))
+    })).collect();
+    json!({"screen":screen,"stage":v.stage+1,"lives":v.lives,"rings":v.rings,"scroll":v.scroll,
+        "quitSelected":v.pause_selection!=0,"chao":bounce_actor(v.chao),"springParts":parts,
+        "targets":v.targets.into_iter().flatten().filter(|a|a.visible).map(bounce_actor).collect::<Vec<_>>(),
+        "clouds":v.clouds.into_iter().filter(|a|a.visible).map(bounce_actor).collect::<Vec<_>>(),
+        "springX":v.spring.x,"bumpers":v.bumpers.into_iter().zip(v.bumper_affines).filter_map(|(a,m)|{let a=a.filter(|v|v.visible)?;Some(json!({"actor":bounce_actor(a),"affine":m.map(|a|json!({"scaleX":a.scale_x,"scaleY":a.scale_y,"rotation":a.rotation}))}))}).collect::<Vec<_>>()})
 }
 fn ball_view(round: &BallSession) -> Value {
     let p = &round.play;

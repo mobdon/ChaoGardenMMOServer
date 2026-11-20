@@ -1386,3 +1386,52 @@ async fn native_asoe_socket_owns_lane_clock_cards_and_finalizes_only_after_finis
     );
     assert_eq!(p.tiny_records["rock_paper_scissors"].plays, 1);
 }
+
+#[tokio::test]
+#[ignore = "requires private A2NE payload"]
+async fn native_bounce_spring_and_quit_persist_over_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::local(dir.path().to_owned(), true);
+    cfg.tiny_garden_payload = Some(private_payload("CHAO_TINY_GARDEN_PAYLOAD"));
+    let server = LiveServer::start_state(dir, AppState::load(cfg.clone()).unwrap()).await;
+    let owner = session(&server.state, json!({"name":"Bounce fixture"})).await;
+    let id = owner["player"]["id"].as_str().unwrap();
+    let mut s = server.socket(&owner).await;
+    let run = native_start(&mut s, "bounce").await;
+    assert_eq!(run["rulesVersion"], "a2ne-bounce-v1");
+    let rid = &run["id"];
+    native_intent(&mut s, rid, json!({"kind":"native_buttons","held":256})).await;
+    assert_eq!(
+        save_result(&mut s).await["text"],
+        "Invalid Tiny Garden input."
+    );
+    native_clock(&server, 75);
+    let v = snapshot_until(&mut s, |s| {
+        s["tinyGame"]["view"]["state"]["springParts"]
+            .as_array()
+            .is_some_and(|v| !v.is_empty())
+    })
+    .await;
+    let x = v["tinyGame"]["view"]["state"]["springX"].clone();
+    buttons(&mut s, rid, 16).await;
+    snapshot_until(&mut s, |s| s["tinyGame"]["view"]["state"]["springX"] != x).await;
+    buttons(&mut s, rid, 8).await;
+    buttons(&mut s, rid, 0).await;
+    snapshot_until(&mut s, |s| {
+        s["tinyGame"]["view"]["state"]["screen"] == "pause"
+    })
+    .await;
+    buttons(&mut s, rid, 128).await;
+    buttons(&mut s, rid, 0).await;
+    snapshot_until(&mut s, |s| {
+        s["tinyGame"]["view"]["state"]["quitSelected"] == true
+    })
+    .await;
+    native_clock(&server, 4);
+    buttons(&mut s, rid, 1).await;
+    buttons(&mut s, rid, 0).await;
+    snapshot_until(&mut s, |s| s["tinyGame"]["phase"] == "finished").await;
+    let reloaded = AppState::load(cfg).unwrap();
+    let g = reloaded.game.lock().unwrap();
+    assert_eq!(g.players[id].tiny_records["bounce"].plays, 1);
+}
