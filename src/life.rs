@@ -1392,7 +1392,8 @@ pub fn action(game: &mut Game, id: &str, message: &Value) -> Value {
 }
 
 /// Drain life events into other modules. The evolution thread's body module hooks in here
-/// (body::on_stat_progress, body::evolve, body::reincarnate, body::express).
+/// (body::evolve, body::reincarnate, body::express). Native stat level-ups do not move the
+/// body, so StatProgress has no body hook.
 pub fn apply_events(game: &mut Game, id: &str) {
     let Some(p) = game.players.get_mut(id) else {
         return;

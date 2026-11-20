@@ -144,10 +144,13 @@ Agreed with the parallel server threads on November 20, 2026:
 
 - **Evolution/appearance** (`src/body.rs`, profile key `body`) owns
   `AL_BODY_INFO`, the adult type, the expressed look and alignment.
-  `life::apply_events` is the single hook point: `StatProgress` →
-  `body::on_stat_progress`, `Evolved` → `body::evolve`, `Reincarnated` →
+  `life::apply_events` is the single hook point: `Evolved` → `body::evolve`,
+  `Reincarnated` →
   `body::reincarnate`, `Hatched { look }` → `body::express`. Whichever PR merges
-  second wires those calls.
+  second wires those calls. `StatProgress` is not wired to the body: the
+  evolution thread traced that native stat level-ups in `ChaoMain.rel`
+  (`fn_60_2131C`) change skill points only, and body shape moves come from
+  animals and drives (`ALBHV_Capture`, `MinimalAddForm`).
 - **Animals, fruit and trees** own items and catalogs and apply changes through
   `life::grant_stat_progress` and `life::feed(Food { fruit, nourish, joy })`.
 - **Chao AI** reads `life::needs_view` and writes only through
