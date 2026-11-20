@@ -58,6 +58,20 @@ failure. Sustained 100–500-player capacity remains unverified.
 
 The live preview and canonical save were outside this integration.
 
+## Chao behaviour (November 20)
+
+Branch `claude/project-thread-b0gujd`, base `40a0ada`. Adds `src/behaviour.rs`
+and extends the Watch resident routine with server-chosen `sit`, `sleep`,
+`play`, `happy` and `startled` behaviours, enter/loop/exit phases and a
+`watch.behaviour` snapshot object. Legacy `watch.activity` values are kept.
+All weights and timers are labelled `adapted-tuning`; native controllers stay
+undecoded (CAT-LIFE-03). No rings, stats or needs change from routine activity.
+Shared state: needs, mood and personality are read only through the life
+cycle module (`life::needs_view`) once it merges; until then a prototype
+adapter reads `energy` and `happiness`. Faces go through the appearance
+thread's client `setChaoFace`. Fruit seeking waits on the garden module.
+No deployment or live-save change.
+
 ## Incoming Vibe source — review blocked
 
 **UNACCEPTED — Rust requirement reaffirmed by the user.** Game systems, shared

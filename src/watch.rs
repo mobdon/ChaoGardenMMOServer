@@ -1,4 +1,6 @@
 //! Small custom resident routine; this does not execute retail Chao AI.
+//! Behaviour selection lives in `crate::behaviour` (adapted tuning).
+use crate::behaviour::{self, Behaviour, Choice, Kind, NeedsView};
 use crate::game::{Game, Input, Player};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -10,6 +12,7 @@ pub struct WatchState {
     pub started_at: f64,
     pub activity_started_at: f64,
     pub activity_until: f64,
+    pub behaviour: Behaviour,
     target: Option<(f64, f64)>,
     anchor: (f64, f64),
     decision: u32,
@@ -22,15 +25,24 @@ impl WatchState {
         json!({"id":self.id,"mode":"watch","activity":self.activity,"startedAt":self.started_at,
             "activityStartedAt":self.activity_started_at,"activityUntil":self.activity_until,
             "target":self.target.map(|(x,z)|json!({"x":x,"z":z})),
-            "lastCare":self.last_care.map(|(kind,at)|json!({"kind":kind,"at":at})),"resident":true,"ownerOnline":owner_online,"rules":"adapted-resident"})
+            "lastCare":self.last_care.map(|(kind,at)|json!({"kind":kind,"at":at})),
+            "behaviour":self.behaviour.public(),"resident":true,"ownerOnline":owner_online,"rules":"adapted-resident"})
     }
-    fn state(&mut self, activity: &'static str, now: f64, duration: f64) {
-        self.activity = activity;
-        self.activity_started_at = now;
-        self.activity_until = now + duration;
-        if activity != "wander" {
+    fn state(&mut self, kind: Kind, now: f64, variant: u8) {
+        self.behaviour = Behaviour::new(kind, variant, now, behaviour::duration(kind));
+        self.sync(now);
+        if kind != Kind::Wander {
             self.target = None;
         }
+    }
+    /// Keep the legacy `activity` fields in step with the behaviour.
+    fn sync(&mut self, now: f64) {
+        let activity = self.behaviour.kind.legacy();
+        if activity != self.activity {
+            self.activity = activity;
+            self.activity_started_at = now;
+        }
+        self.activity_until = self.behaviour.until;
     }
     fn new(player: &Player, now: f64) -> Self {
         Self {
@@ -38,7 +50,8 @@ impl WatchState {
             activity: "idle",
             started_at: now,
             activity_started_at: now,
-            activity_until: now + 1800.,
+            activity_until: now + behaviour::tuning::IDLE_MS,
+            behaviour: Behaviour::new(Kind::Idle, 0, now, behaviour::tuning::IDLE_MS),
             target: None,
             anchor: (player.x, player.z),
             decision: 0,
@@ -149,20 +162,23 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
         return;
     }
     let watch = player.watch.as_mut().unwrap();
+    let now = game.time;
+    let asleep = watch.behaviour.kind == Kind::Sleep;
     match kind {
         "pet" => {
             player.happiness = (player.happiness + 2.).min(100.);
             game.dirty = true;
-            watch.last_care = Some(("pet", game.time));
-            watch.state("idle", game.time, 1800.);
+            watch.last_care = Some(("pet", now));
+            // Petting a sleeping Chao wakes it with a start; otherwise it is happy.
+            watch.state(if asleep { Kind::Startled } else { Kind::Happy }, now, 0);
         }
         "rest" => {
-            watch.last_care = Some(("rest", game.time));
-            watch.state("rest", game.time, 5000.);
+            watch.last_care = Some(("rest", now));
+            watch.state(Kind::Sleep, now, 0);
         }
         "wake" => {
-            watch.last_care = Some(("wake", game.time));
-            watch.state("idle", game.time, 1800.);
+            watch.last_care = Some(("wake", now));
+            watch.state(if asleep { Kind::Startled } else { Kind::Idle }, now, 0);
         }
         _ => {}
     }
@@ -209,26 +225,35 @@ pub fn tick(game: &mut Game, player: &mut Player) {
         game.dirty = true;
         watch.next_checkpoint_at = game.time + 15000.;
     }
-    if game.time >= watch.activity_until {
-        if watch.activity == "idle" {
+    if watch.behaviour.advance(game.time) {
+        if watch.behaviour.kind == Kind::Idle {
             watch.decision = watch.decision.wrapping_add(1);
-            if watch.decision.is_multiple_of(3) {
-                watch.state("rest", game.time, 5000.);
-            } else if let Some(destination) = target(game, player, &watch) {
-                watch.target = Some(destination);
-                watch.state("wander", game.time, 5500.);
-            } else {
-                watch.state("idle", game.time, 1800.);
+            let needs = NeedsView::from_prototype(player.energy, player.happiness);
+            let (choice, variant) = behaviour::choose(needs, watch.salt, watch.decision);
+            match choice {
+                Choice::Rest(kind) => watch.state(kind, game.time, variant),
+                Choice::Play => watch.state(Kind::Play, game.time, variant),
+                Choice::Wander => {
+                    if let Some(destination) = target(game, player, &watch) {
+                        watch.target = Some(destination);
+                        watch.state(Kind::Wander, game.time, variant);
+                    } else {
+                        watch.state(Kind::Idle, game.time, variant);
+                    }
+                }
+                Choice::Idle => watch.state(Kind::Idle, game.time, variant),
             }
         } else {
-            watch.state("idle", game.time, 1800.);
+            let variant = (behaviour::mix(watch.salt, watch.decision) >> 48) as u8;
+            watch.state(Kind::Idle, game.time, variant);
         }
     }
+    watch.sync(game.time);
     player.input = Input::default();
     if let Some((x, z)) = watch.target {
         let distance = (x - player.x).hypot(z - player.z);
         if distance <= 0.15 {
-            watch.state("idle", game.time, 1800.);
+            watch.state(Kind::Idle, game.time, 0);
         } else {
             player.input.dx = (x - player.x) / distance * 0.28;
             player.input.dz = (z - player.z) / distance * 0.28;

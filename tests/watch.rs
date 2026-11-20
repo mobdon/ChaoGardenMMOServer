@@ -330,3 +330,93 @@ fn resident_opt_in_and_stop_rollback_on_save_failure_and_commit_atomically() {
     assert!(data[0]["resident"].is_null());
     assert_eq!(data[0]["rings"], 20);
 }
+
+#[test]
+fn resident_behaviour_is_published_consistently_with_legacy_activity() {
+    let (mut g, id, _) = fixture(false);
+    act(&mut g, &id, "watch-start", json!({}));
+    let visitor = g.create_session(&json!({"name":"Observer"})).unwrap()["player"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    g.connect(&visitor);
+    g.players.get_mut(&visitor).unwrap().zone = "garden".into();
+    let mut kinds = BTreeSet::new();
+    let mut phases = BTreeSet::new();
+    for _ in 0..1600 {
+        g.tick(0.05);
+        let own = g.snapshot(&id);
+        let seen = g.snapshot(&visitor);
+        let mine = own["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap();
+        let theirs = seen["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap();
+        // Every observer sees the same server-chosen behaviour.
+        assert_eq!(mine["watch"]["behaviour"], theirs["watch"]["behaviour"]);
+        let b = &mine["watch"]["behaviour"];
+        assert_eq!(b["rules"], "adapted-tuning");
+        let kind = b["kind"].as_str().unwrap().to_owned();
+        let legacy = match kind.as_str() {
+            "wander" => "wander",
+            "sit" | "sleep" => "rest",
+            _ => "idle",
+        };
+        assert_eq!(mine["watch"]["activity"], legacy);
+        assert!(b["phaseUntil"].as_f64().unwrap() <= b["until"].as_f64().unwrap());
+        phases.insert(format!("{kind}:{}", b["phase"].as_str().unwrap()));
+        kinds.insert(kind);
+    }
+    for kind in ["idle", "wander", "sit"] {
+        assert!(kinds.contains(kind), "{kind} missing from {kinds:?}");
+    }
+    assert!(
+        phases.contains("sit:enter") && phases.contains("sit:loop") && phases.contains("sit:exit")
+    );
+    // Routine choices grant nothing.
+    assert_eq!(g.players[&id].rings, 20);
+}
+
+#[test]
+fn care_drives_sleep_and_wakes_with_a_startle() {
+    let (mut g, id, _) = fixture(false);
+    act(&mut g, &id, "watch-start", json!({}));
+    let session = watch_id(&g, &id);
+    let x = g.players[&id].x;
+    act(
+        &mut g,
+        &id,
+        "watch-care",
+        json!({"sessionId":session,"kind":"rest"}),
+    );
+    let behaviour = |g: &Game| g.players[&id].watch.as_ref().unwrap().behaviour.public();
+    assert_eq!(behaviour(&g)["kind"], "sleep");
+    assert_eq!(behaviour(&g)["phase"], "enter");
+    advance(&mut g, 2000);
+    assert_eq!(behaviour(&g)["phase"], "loop");
+    // A sleeping Chao stays put.
+    assert_eq!(g.players[&id].x, x);
+    act(
+        &mut g,
+        &id,
+        "watch-care",
+        json!({"sessionId":session,"kind":"pet"}),
+    );
+    assert_eq!(behaviour(&g)["kind"], "startled");
+    assert_eq!(g.players[&id].watch.as_ref().unwrap().activity, "idle");
+    advance(&mut g, 1600);
+    act(
+        &mut g,
+        &id,
+        "watch-care",
+        json!({"sessionId":session,"kind":"pet"}),
+    );
+    assert_eq!(behaviour(&g)["kind"], "happy");
+}
