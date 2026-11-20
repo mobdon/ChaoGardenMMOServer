@@ -119,7 +119,7 @@ impl MotionTable {
     /// pointer (relocated, ignored), s16 mode, s16 posture, s32 next,
     /// s32 link_step, f32 start, f32 end, f32 spd.
     pub fn from_rel(rel: &[u8]) -> Result<Self, String> {
-        const MODULE_ID: u32 = 0x3B;
+        const MODULE_ID: u32 = 0x3C;
         const DATA_SECTION: usize = 5;
         const TABLE: usize = 0x3F870;
         const ROW: usize = 0x1C;
@@ -129,7 +129,7 @@ impl MotionTable {
                 .ok_or_else(|| format!("REL truncated at {at:#x}"))
         };
         if u32_at(0)? != MODULE_ID {
-            return Err("not ChaoMain.rel (module id is not 0x3B)".into());
+            return Err("not ChaoMain.rel (module id is not 0x3C)".into());
         }
         let sections = u32_at(0x0C)? as usize;
         let info = u32_at(0x10)? as usize;
@@ -1409,7 +1409,7 @@ mod tests {
         // Synthetic REL (not game data): header, 6 sections, .data at 0x100.
         let data = 0x100usize;
         let mut rel = vec![0u8; data + 0x3F870 + MotionTable::STATES * 0x1C];
-        rel[0..4].copy_from_slice(&0x3Bu32.to_be_bytes());
+        rel[0..4].copy_from_slice(&0x3Cu32.to_be_bytes());
         rel[0x0C..0x10].copy_from_slice(&7u32.to_be_bytes());
         rel[0x10..0x14].copy_from_slice(&0x40u32.to_be_bytes());
         rel[0x40 + 40..0x40 + 44].copy_from_slice(&(data as u32).to_be_bytes());
