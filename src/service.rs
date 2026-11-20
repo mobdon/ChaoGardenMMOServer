@@ -163,6 +163,24 @@ impl AppState {
         let mut game =
             Game::new(profiles, terrains, config.owner_bootstrap, now).map_err(io::Error::other)?;
         game.life_policy = crate::life::Policy::from_env().map_err(io::Error::other)?;
+        // Native Chao behaviour data is extracted locally from the owner's disc
+        // and never committed. Missing files leave the resident on its
+        // pre-existing routine; malformed files stop the server.
+        let imports = config.data_dir.join("imports");
+        let motion = imports.join("chao-motion-table.json");
+        if motion.is_file() {
+            game.native_chao.motion = Some(std::sync::Arc::new(
+                crate::behaviour::MotionTable::load(&motion)
+                    .map_err(|e| io::Error::other(format!("chao-motion-table.json: {e}")))?,
+            ));
+        }
+        let aim = imports.join("chao-garden-aim.json");
+        if aim.is_file() {
+            game.native_chao.aim = Some(std::sync::Arc::new(
+                crate::behaviour::AimLists::load(&aim)
+                    .map_err(|e| io::Error::other(format!("chao-garden-aim.json: {e}")))?,
+            ));
+        }
         match (
             env::var_os("CHAO_CARE_AUDIT_DIR"),
             env::var_os("CHAO_CARE_EXECUTABLE"),
@@ -621,6 +639,8 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "shadow-air-shoes-right",
         "knuckles-hammer-gloves-left",
         "knuckles-hammer-gloves-right",
+        // Native Chao behaviour clips selected locally by the client tooling.
+        "chao-behaviour",
     ];
     let colors = ["red", "purple", "cyan", "green", "blue", "yellow", "white"];
     let pngs = [

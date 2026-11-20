@@ -58,6 +58,20 @@ failure. Sustained 100–500-player capacity remains unverified.
 
 The live preview and canonical save were outside this integration.
 
+## Chao behaviour (November 20)
+
+Branch `claude/project-thread-b0gujd`. `src/behaviour.rs` ports the garden Chao
+behaviour from GameCube SA2B `ChaoMain.rel` (AL_BehaviorControl, the Yawn,
+Groggy, Sleep and Rest intentions with the Move fallback, sleep, sitting,
+petting and walking) and main.dol `MotionControl`. No tuned values: everything
+follows the traced code, and parts that are not ported are left out and listed
+in the module header. The motion table and aim lists load from local imports
+and are never committed; without them the pre-existing resident routine runs
+and `watch.behaviour` is null. Needs and mood go only through the life module
+(`life::needs_view`, `adjust_need`, `adjust_mood`, `pet`, need cadence). Faces
+go through the appearance thread's client `setChaoFace`. Fruit seeking waits
+for a traced native eat behaviour. No deployment or live-save change.
+
 ## Incoming Vibe source — review blocked
 
 **UNACCEPTED — Rust requirement reaffirmed by the user.** Game systems, shared

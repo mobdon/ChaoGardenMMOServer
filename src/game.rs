@@ -343,6 +343,8 @@ pub struct Game {
     pub activities: ActivityCatalog,
     pub competition_catalog: CompetitionCatalog,
     pub life_policy: crate::life::Policy,
+    /// Local native Chao data (never committed); empty unless installed.
+    pub native_chao: crate::behaviour::NativeData,
     pub time: f64,
     pub allow_owner_bootstrap: bool,
     pub terrains: BTreeMap<String, Terrain>,
@@ -405,6 +407,7 @@ impl Game {
             activities: ActivityCatalog::default(),
             competition_catalog: CompetitionCatalog::default(),
             life_policy: crate::life::Policy::default(),
+            native_chao: crate::behaviour::NativeData::default(),
             time: now,
             allow_owner_bootstrap,
             terrains,
@@ -1409,7 +1412,7 @@ impl Game {
             }
             if p.watch.is_some() {
                 let started = Instant::now();
-                watch::tick(self, &mut p);
+                watch::tick(self, &mut p, dt);
                 self.last_resident_tick += started.elapsed();
                 self.last_tick_residents += 1;
             }

@@ -1,11 +1,14 @@
 use chao_game_server::{
+    behaviour::{MotionRow, MotionTable, NativeData},
     game::{Game, Terrain},
+    life::{self, Need},
     service::{AppState, Config},
 };
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    sync::Arc,
 };
 fn fixture(owner: bool) -> (Game, String, String) {
     let mut g = Game::new(vec![], BTreeMap::new(), owner, 1000.).unwrap();
@@ -329,4 +332,163 @@ fn resident_opt_in_and_stop_rollback_on_save_failure_and_commit_atomically() {
         serde_json::from_slice(&fs::read(dir.path().join("profiles.json")).unwrap()).unwrap();
     assert!(data[0]["resident"].is_null());
     assert_eq!(data[0]["rings"], 20);
+}
+
+/// Synthetic engine table (not game data): every state is a 10-frame STOP
+/// clip, so every native wait for the clip end completes.
+fn install_synthetic_native(g: &mut Game) {
+    let row = MotionRow {
+        mode: 3,
+        start: 0.,
+        end: 10.,
+        spd: 1.,
+        next: -1,
+        link_step: -10,
+        posture: 0,
+    };
+    let table = MotionTable::from_rows(vec![row; MotionTable::STATES]).unwrap();
+    g.native_chao = NativeData {
+        motion: Some(Arc::new(table)),
+        aim: None,
+    };
+}
+fn behaviour(g: &Game, id: &str) -> Value {
+    g.players[id].watch.as_ref().unwrap().public(false)["behaviour"].clone()
+}
+
+#[test]
+fn without_native_data_the_resident_publishes_no_behaviour() {
+    let (mut g, id, _) = fixture(false);
+    act(&mut g, &id, "watch-start", json!({}));
+    advance(&mut g, 2000);
+    assert!(behaviour(&g, &id).is_null());
+}
+
+#[test]
+fn native_behaviour_is_published_consistently_and_sleeps_when_sleepy() {
+    let (mut g, id, _) = fixture(false);
+    install_synthetic_native(&mut g);
+    act(&mut g, &id, "watch-start", json!({}));
+    let visitor = g.create_session(&json!({"name":"Observer"})).unwrap()["player"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    g.connect(&visitor);
+    g.players.get_mut(&visitor).unwrap().zone = "garden".into();
+    life::adjust_need(g.players.get_mut(&id).unwrap(), Need::Sleepy, 10000);
+    let mut seen = BTreeSet::new();
+    for _ in 0..400 {
+        g.tick(0.05);
+        let find = |snapshot: Value| {
+            snapshot["players"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == id)
+                .unwrap()["watch"]
+                .clone()
+        };
+        let mine = find(g.snapshot(&id));
+        let theirs = find(g.snapshot(&visitor));
+        // Every observer sees the same server-chosen native state.
+        assert_eq!(mine["behaviour"], theirs["behaviour"]);
+        let b = &mine["behaviour"];
+        assert_eq!(b["rules"], "native-gsne8p-chaomain");
+        assert!(b["motion"]["num"].as_u64().unwrap() < 622);
+        let name = b["fn"].as_str().unwrap().to_owned();
+        let legacy = match name.as_str() {
+            "ALBHV_Move" | "Bhv_Walk" | "Bhv_Run" | "Bhv_RunFast" | "Bhv_Crawl" => "wander",
+            "ALBHV_Sleep" | "ALBHV_SitSleep" | "Bhv_SitDown" | "Bhv_SitIdle" | "Bhv_GoToSleep" => {
+                "rest"
+            }
+            _ => "idle",
+        };
+        assert_eq!(mine["activity"], legacy);
+        seen.insert(name);
+    }
+    assert!(seen.contains("ALBHV_Sleep"), "{seen:?}");
+    // Behaviour grants nothing.
+    assert_eq!(g.players[&id].rings, 20);
+}
+
+#[test]
+fn native_petting_is_one_touch_and_rest_and_wake_are_flagged_extras() {
+    let (mut g, id, _) = fixture(false);
+    install_synthetic_native(&mut g);
+    act(&mut g, &id, "watch-start", json!({}));
+    let session = watch_id(&g, &id);
+    advance(&mut g, 500);
+    assert!(
+        !behaviour(&g, &id)["adapted"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("care-rest-wake"))
+    );
+    act(
+        &mut g,
+        &id,
+        "watch-care",
+        json!({"sessionId":session,"kind":"rest"}),
+    );
+    advance(&mut g, 100);
+    assert_eq!(behaviour(&g, &id)["fn"], "ALBHV_Sleep");
+    assert!(
+        behaviour(&g, &id)["adapted"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("care-rest-wake"))
+    );
+    assert_eq!(g.players[&id].watch.as_ref().unwrap().activity, "rest");
+    advance(&mut g, 1500);
+    act(
+        &mut g,
+        &id,
+        "watch-care",
+        json!({"sessionId":session,"kind":"wake"}),
+    );
+    advance(&mut g, 100);
+    assert_ne!(behaviour(&g, &id)["fn"], "ALBHV_Sleep");
+    advance(&mut g, 1500);
+    act(
+        &mut g,
+        &id,
+        "watch-care",
+        json!({"sessionId":session,"kind":"pet"}),
+    );
+    advance(&mut g, 100);
+    let f = behaviour(&g, &id)["fn"].clone();
+    assert!(f == "Bhv_Nade" || f == "Bhv_Groggy", "{f}");
+    assert_eq!(g.players[&id].happiness, 65.);
+}
+
+/// Local check with the owner's extracted data (never committed). Run with
+/// CHAO_NATIVE_IMPORTS=<data dir>/imports cargo test --test watch -- --ignored --nocapture
+#[test]
+#[ignore = "needs the owner's local native imports"]
+fn local_native_data_runs_a_resident() {
+    let dir = std::path::PathBuf::from(std::env::var("CHAO_NATIVE_IMPORTS").unwrap());
+    let (mut g, id, _) = fixture(false);
+    g.native_chao = NativeData {
+        motion: Some(Arc::new(
+            MotionTable::load(&dir.join("chao-motion-table.json")).unwrap(),
+        )),
+        aim: Some(Arc::new(
+            chao_game_server::behaviour::AimLists::load(&dir.join("chao-garden-aim.json")).unwrap(),
+        )),
+    };
+    act(&mut g, &id, "watch-start", json!({}));
+    let mut seen = BTreeSet::new();
+    let mut states = BTreeSet::new();
+    let start = (g.players[&id].x, g.players[&id].z);
+    for _ in 0..(20 * 60 * 10) {
+        g.tick(0.05);
+        let b = behaviour(&g, &id);
+        seen.insert(b["fn"].as_str().unwrap().to_owned());
+        states.insert(b["motion"]["num"].as_u64().unwrap());
+    }
+    let end = (g.players[&id].x, g.players[&id].z);
+    println!(
+        "10 minutes: behaviours {seen:?}, motion states {states:?}, moved from {start:?} to {end:?}"
+    );
+    assert!(seen.len() > 1);
 }
