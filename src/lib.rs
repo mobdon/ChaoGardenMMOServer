@@ -9,6 +9,7 @@ pub mod care_catalog;
 pub mod chao_hooks;
 pub mod collection;
 pub mod competition;
+pub mod competition_native;
 pub mod competition_sim;
 pub mod emblems;
 pub mod evolution;
