@@ -44,8 +44,10 @@ Allowed care kinds are `pet`, `rest`, and `wake`. Pet adds 2 happiness up to 100
 and shows `happy`, or `startled` if the Chao was asleep. Rest starts `sleep`;
 wake shows `startled` from sleep, otherwise `idle`;
 all care shares a 1.5-second server cooldown. With the native routine, `pet` is
-one native touch (petting, `Bhv_Nade`), and `rest` and `wake` are refused with a
-notice because ChaoMain has no command that puts a Chao to sleep or wakes it. Rest and wake change the routine
+one native touch (petting, `Bhv_Nade`). `rest` and `wake` are MMO extras the
+owner chose to keep, because ChaoMain has no such command: `rest` starts the
+native Sleep behaviour and `wake` moves a sleeping Chao into the native Groggy
+behaviour. Once used, the snapshot's `adapted` list includes `care-rest-wake`. Rest and wake change the routine
 state. No care awards rings or skill levels. Routine activity itself changes
 no rings, stats, happiness, energy, or needs and collects no world pickups.
 Extra fields, including client rewards, targets, and clocks, are rejected.

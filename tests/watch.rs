@@ -412,23 +412,43 @@ fn native_behaviour_is_published_consistently_and_sleeps_when_sleepy() {
 }
 
 #[test]
-fn native_petting_is_one_touch_and_rest_and_wake_have_no_native_command() {
+fn native_petting_is_one_touch_and_rest_and_wake_are_flagged_extras() {
     let (mut g, id, _) = fixture(false);
     install_synthetic_native(&mut g);
     act(&mut g, &id, "watch-start", json!({}));
     let session = watch_id(&g, &id);
     advance(&mut g, 500);
-    let before = behaviour(&g, &id);
-    for kind in ["rest", "wake"] {
-        act(
-            &mut g,
-            &id,
-            "watch-care",
-            json!({"sessionId":session,"kind":kind}),
-        );
-        assert!(g.players[&id].watch.as_ref().unwrap().last_care().is_none());
-    }
-    assert_ne!(before["fn"], "Bhv_Nade");
+    assert!(
+        !behaviour(&g, &id)["adapted"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("care-rest-wake"))
+    );
+    act(
+        &mut g,
+        &id,
+        "watch-care",
+        json!({"sessionId":session,"kind":"rest"}),
+    );
+    advance(&mut g, 100);
+    assert_eq!(behaviour(&g, &id)["fn"], "ALBHV_Sleep");
+    assert!(
+        behaviour(&g, &id)["adapted"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("care-rest-wake"))
+    );
+    assert_eq!(g.players[&id].watch.as_ref().unwrap().activity, "rest");
+    advance(&mut g, 1500);
+    act(
+        &mut g,
+        &id,
+        "watch-care",
+        json!({"sessionId":session,"kind":"wake"}),
+    );
+    advance(&mut g, 100);
+    assert_ne!(behaviour(&g, &id)["fn"], "ALBHV_Sleep");
+    advance(&mut g, 1500);
     act(
         &mut g,
         &id,
@@ -436,7 +456,8 @@ fn native_petting_is_one_touch_and_rest_and_wake_have_no_native_command() {
         json!({"sessionId":session,"kind":"pet"}),
     );
     advance(&mut g, 100);
-    assert_eq!(behaviour(&g, &id)["fn"], "Bhv_Nade");
+    let f = behaviour(&g, &id)["fn"].clone();
+    assert!(f == "Bhv_Nade" || f == "Bhv_Groggy", "{f}");
     assert_eq!(g.players[&id].happiness, 65.);
 }
 

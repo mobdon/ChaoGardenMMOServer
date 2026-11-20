@@ -446,6 +446,8 @@ pub struct Brain {
     touch_enabled: bool,
     frames: f64,
     pub frame_count: u64,
+    /// Set once a non-native rest/wake care override has been used.
+    overridden: bool,
 }
 
 /// What the Chao asks the server's movement to do this frame.
@@ -487,6 +489,7 @@ impl Brain {
             touch_enabled: true,
             frames: 0.,
             frame_count: 0,
+            overridden: false,
         }
     }
     pub fn behaviour(&self) -> Bhv {
@@ -525,6 +528,25 @@ impl Brain {
         self.reset_work();
         self.current += 1;
         self.current < self.queue.len()
+    }
+    /// MMO extra, not native (the owner chose to keep it): start the native
+    /// Sleep behaviour now, regardless of the intention scores.
+    pub fn force_sleep(&mut self) {
+        if !matches!(self.behaviour(), Bhv::Sleep | Bhv::SitSleep) {
+            self.set(Bhv::Sleep);
+        }
+        self.overridden = true;
+    }
+    /// MMO extra, not native: wake a sleeping Chao through the native Groggy
+    /// behaviour (the path petting takes when sleep depth is above 500).
+    pub fn force_wake(&mut self) {
+        if matches!(
+            self.behaviour(),
+            Bhv::Sleep | Bhv::SitSleep | Bhv::GoToSleep
+        ) {
+            self.set(Bhv::Groggy);
+        }
+        self.overridden = true;
     }
     /// Start a touch (one `pet` intent).
     pub fn touch(&mut self) {
@@ -1313,12 +1335,19 @@ impl Brain {
         (0, Drive::Toward { x, z, gait })
     }
 
+    fn adapted(&self) -> Vec<&'static str> {
+        let mut list = vec!["per-resident-rand", "server-movement", "pet-is-one-touch"];
+        if self.overridden {
+            list.push("care-rest-wake");
+        }
+        list
+    }
     pub fn public(&self) -> Value {
         let (name, address) = self.behaviour().native();
         json!({"fn":name,"address":address,"mode":self.mode,"motion":self.motion.public(),
             "face":{"eye":self.face.eye.map(|(n,_)|n),"mouth":self.face.mouth.map(|(n,_)|n)},
             "aim":self.aim.map(|(x,z)|json!({"x":x,"z":z})),"frame":self.frame_count,
-            "rules":RULES,"adapted":["per-resident-rand","server-movement","pet-is-one-touch"]})
+            "rules":RULES,"adapted":self.adapted()})
     }
 }
 

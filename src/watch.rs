@@ -166,24 +166,31 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
         return;
     };
     let native = player.watch.as_ref().is_some_and(|w| w.brain.is_some());
-    if native && kind != "pet" {
-        // ChaoMain has no command that puts a Chao to sleep or wakes it.
-        game.notice(
-            &player.id,
-            "Chao in the garden choose when to sleep and wake themselves.",
-            "info",
-        );
-        return;
-    }
     if !player.cooldown("watch-care", game.time, 1500.) {
         return;
     }
     if native {
         // One pet is one native touch; AL_CheckNade starts petting on the next
         // frame and the petting behaviour applies the native like change.
+        // Rest and wake have no native command; they are MMO extras kept by
+        // the owner, flagged as `care-rest-wake` in the snapshot.
         let watch = player.watch.as_mut().unwrap();
-        watch.brain.as_mut().unwrap().touch();
-        watch.last_care = Some(("pet", game.time));
+        let brain = watch.brain.as_mut().unwrap();
+        let kind = match kind {
+            "rest" => {
+                brain.force_sleep();
+                "rest"
+            }
+            "wake" => {
+                brain.force_wake();
+                "wake"
+            }
+            _ => {
+                brain.touch();
+                "pet"
+            }
+        };
+        watch.last_care = Some((kind, game.time));
         game.dirty = true;
         return;
     }
