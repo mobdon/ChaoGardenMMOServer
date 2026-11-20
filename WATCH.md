@@ -21,26 +21,31 @@ or `rest`), `startedAt`, `activityStartedAt`, `activityUntil`, optional `target`
 and `lastCare`, `resident:true`, `ownerOnline`, and `rules:"adapted-resident"`.
 Use canonical player coordinates for rendering.
 
-`behaviour` carries the finer server-chosen behaviour from `src/behaviour.rs`:
-`kind` (`idle`, `wander`, `sit`, `sleep`, `play`, `happy`, `startled`),
-`variant` (a small server-chosen index the client maps onto its native clip
-list), `phase` (`enter`, `loop`, `exit` for sit and sleep; `loop` otherwise),
-`startedAt`, `until`, `phaseStartedAt`, `phaseUntil` and
-`rules:"placeholder-tuning"`. `activity` stays the coarse legacy value: `sit` and
-`sleep` report `rest`, `wander` reports `wander`, everything else reports
-`idle`. Behaviour weights and durations are placeholders until the decoded native values replace them, because
-the native behaviour controllers and timers are mapped but not decoded. The
-picker reads needs through a read-only adapter (currently the prototype
-`energy` and `happiness`) and never writes them. The server never names motion
-clips; every observer sees the same behaviour. Public `connected` reports
-whether any owner socket is connected; residency does not imply connectivity.
+`behaviour` is null unless the local native data is installed. With
+`imports/chao-motion-table.json` in the data directory, the resident runs the
+port of GameCube SA2B `ChaoMain.rel` in `src/behaviour.rs` at 59.94 native
+frames per second, and `behaviour` carries `fn` and `address` (the native
+behaviour function), `mode` (its work mode), `motion` (`num` native motion
+state 0..621, `frame`, `spd`, and `link` while blending), `face` (`eye` and
+`mouth` native numbers or null), `aim`, `frame`, `rules:"native-gsne8p-chaomain"`
+and `adapted` (the three MMO adaptations listed in the module header).
+`activity` stays the coarse legacy value: walking behaviours report `wander`,
+sleep and sit behaviours report `rest`, and the rest report `idle`. Needs and
+mood change only through the life module's native rules. Every observer sees the
+same native state. The motion table and the per-garden aim lists
+(`imports/chao-garden-aim.json`) are game data extracted locally and never
+committed; without the aim lists native wandering is unavailable. Public
+`connected` reports whether any owner socket is connected; residency does not
+imply connectivity.
 
 Stop with `{"type":"action","action":"watch-stop","sessionId":"current-id"}`.
 Care uses `{"type":"action","action":"watch-care","sessionId":"current-id","kind":"pet"}`.
 Allowed care kinds are `pet`, `rest`, and `wake`. Pet adds 2 happiness up to 100
 and shows `happy`, or `startled` if the Chao was asleep. Rest starts `sleep`;
 wake shows `startled` from sleep, otherwise `idle`;
-all care shares a 1.5-second server cooldown. Rest and wake change the routine
+all care shares a 1.5-second server cooldown. With the native routine, `pet` is
+one native touch (petting, `Bhv_Nade`), and `rest` and `wake` are refused with a
+notice because ChaoMain has no command that puts a Chao to sleep or wakes it. Rest and wake change the routine
 state. No care awards rings or skill levels. Routine activity itself changes
 no rings, stats, happiness, energy, or needs and collects no world pickups.
 Extra fields, including client rewards, targets, and clocks, are rejected.

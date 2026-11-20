@@ -1,11 +1,14 @@
 use chao_game_server::{
+    behaviour::{MotionRow, MotionTable, NativeData},
     game::{Game, Terrain},
+    life::{self, Need},
     service::{AppState, Config},
 };
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    sync::Arc,
 };
 fn fixture(owner: bool) -> (Game, String, String) {
     let mut g = Game::new(vec![], BTreeMap::new(), owner, 1000.).unwrap();
@@ -331,9 +334,40 @@ fn resident_opt_in_and_stop_rollback_on_save_failure_and_commit_atomically() {
     assert_eq!(data[0]["rings"], 20);
 }
 
+/// Synthetic engine table (not game data): every state is a 10-frame STOP
+/// clip, so every native wait for the clip end completes.
+fn install_synthetic_native(g: &mut Game) {
+    let row = MotionRow {
+        mode: 3,
+        start: 0.,
+        end: 10.,
+        spd: 1.,
+        next: -1,
+        link_step: -10,
+        posture: 0,
+    };
+    let table = MotionTable::from_rows(vec![row; MotionTable::STATES]).unwrap();
+    g.native_chao = NativeData {
+        motion: Some(Arc::new(table)),
+        aim: None,
+    };
+}
+fn behaviour(g: &Game, id: &str) -> Value {
+    g.players[id].watch.as_ref().unwrap().public(false)["behaviour"].clone()
+}
+
 #[test]
-fn resident_behaviour_is_published_consistently_with_legacy_activity() {
+fn without_native_data_the_resident_publishes_no_behaviour() {
     let (mut g, id, _) = fixture(false);
+    act(&mut g, &id, "watch-start", json!({}));
+    advance(&mut g, 2000);
+    assert!(behaviour(&g, &id).is_null());
+}
+
+#[test]
+fn native_behaviour_is_published_consistently_and_sleeps_when_sleepy() {
+    let (mut g, id, _) = fixture(false);
+    install_synthetic_native(&mut g);
     act(&mut g, &id, "watch-start", json!({}));
     let visitor = g.create_session(&json!({"name":"Observer"})).unwrap()["player"]["id"]
         .as_str()
@@ -341,82 +375,67 @@ fn resident_behaviour_is_published_consistently_with_legacy_activity() {
         .to_owned();
     g.connect(&visitor);
     g.players.get_mut(&visitor).unwrap().zone = "garden".into();
-    let mut kinds = BTreeSet::new();
-    let mut phases = BTreeSet::new();
-    for _ in 0..1600 {
+    life::adjust_need(g.players.get_mut(&id).unwrap(), Need::Sleepy, 10000);
+    let mut seen = BTreeSet::new();
+    for _ in 0..400 {
         g.tick(0.05);
-        let own = g.snapshot(&id);
-        let seen = g.snapshot(&visitor);
-        let mine = own["players"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["id"] == id)
-            .unwrap();
-        let theirs = seen["players"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["id"] == id)
-            .unwrap();
-        // Every observer sees the same server-chosen behaviour.
-        assert_eq!(mine["watch"]["behaviour"], theirs["watch"]["behaviour"]);
-        let b = &mine["watch"]["behaviour"];
-        assert_eq!(b["rules"], "placeholder-tuning");
-        let kind = b["kind"].as_str().unwrap().to_owned();
-        let legacy = match kind.as_str() {
-            "wander" => "wander",
-            "sit" | "sleep" => "rest",
+        let find = |snapshot: Value| {
+            snapshot["players"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == id)
+                .unwrap()["watch"]
+                .clone()
+        };
+        let mine = find(g.snapshot(&id));
+        let theirs = find(g.snapshot(&visitor));
+        // Every observer sees the same server-chosen native state.
+        assert_eq!(mine["behaviour"], theirs["behaviour"]);
+        let b = &mine["behaviour"];
+        assert_eq!(b["rules"], "native-gsne8p-chaomain");
+        assert!(b["motion"]["num"].as_u64().unwrap() < 622);
+        let name = b["fn"].as_str().unwrap().to_owned();
+        let legacy = match name.as_str() {
+            "ALBHV_Move" | "Bhv_Walk" | "Bhv_Run" | "Bhv_RunFast" | "Bhv_Crawl" => "wander",
+            "ALBHV_Sleep" | "ALBHV_SitSleep" | "Bhv_SitDown" | "Bhv_SitIdle" | "Bhv_GoToSleep" => {
+                "rest"
+            }
             _ => "idle",
         };
-        assert_eq!(mine["watch"]["activity"], legacy);
-        assert!(b["phaseUntil"].as_f64().unwrap() <= b["until"].as_f64().unwrap());
-        phases.insert(format!("{kind}:{}", b["phase"].as_str().unwrap()));
-        kinds.insert(kind);
+        assert_eq!(mine["activity"], legacy);
+        seen.insert(name);
     }
-    for kind in ["idle", "wander", "sit"] {
-        assert!(kinds.contains(kind), "{kind} missing from {kinds:?}");
-    }
-    assert!(
-        phases.contains("sit:enter") && phases.contains("sit:loop") && phases.contains("sit:exit")
-    );
-    // Routine choices grant nothing.
+    assert!(seen.contains("ALBHV_Sleep"), "{seen:?}");
+    // Behaviour grants nothing.
     assert_eq!(g.players[&id].rings, 20);
 }
 
 #[test]
-fn care_drives_sleep_and_wakes_with_a_startle() {
+fn native_petting_is_one_touch_and_rest_and_wake_have_no_native_command() {
     let (mut g, id, _) = fixture(false);
+    install_synthetic_native(&mut g);
     act(&mut g, &id, "watch-start", json!({}));
     let session = watch_id(&g, &id);
-    let x = g.players[&id].x;
-    act(
-        &mut g,
-        &id,
-        "watch-care",
-        json!({"sessionId":session,"kind":"rest"}),
-    );
-    let behaviour = |g: &Game| g.players[&id].watch.as_ref().unwrap().behaviour.public();
-    assert_eq!(behaviour(&g)["kind"], "sleep");
-    assert_eq!(behaviour(&g)["phase"], "enter");
-    advance(&mut g, 2000);
-    assert_eq!(behaviour(&g)["phase"], "loop");
-    // A sleeping Chao stays put.
-    assert_eq!(g.players[&id].x, x);
-    act(
-        &mut g,
-        &id,
-        "watch-care",
-        json!({"sessionId":session,"kind":"pet"}),
-    );
-    assert_eq!(behaviour(&g)["kind"], "startled");
-    assert_eq!(g.players[&id].watch.as_ref().unwrap().activity, "idle");
-    advance(&mut g, 1600);
+    advance(&mut g, 500);
+    let before = behaviour(&g, &id);
+    for kind in ["rest", "wake"] {
+        act(
+            &mut g,
+            &id,
+            "watch-care",
+            json!({"sessionId":session,"kind":kind}),
+        );
+        assert!(g.players[&id].watch.as_ref().unwrap().last_care().is_none());
+    }
+    assert_ne!(before["fn"], "Bhv_Nade");
     act(
         &mut g,
         &id,
         "watch-care",
         json!({"sessionId":session,"kind":"pet"}),
     );
-    assert_eq!(behaviour(&g)["kind"], "happy");
+    advance(&mut g, 100);
+    assert_eq!(behaviour(&g, &id)["fn"], "Bhv_Nade");
+    assert_eq!(g.players[&id].happiness, 65.);
 }
