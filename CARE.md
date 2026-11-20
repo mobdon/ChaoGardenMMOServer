@@ -169,8 +169,7 @@ Orange, Blue, Pink, Green, Purple, Yellow, Red, Mushroom, alternate Mushroom,
 Mint Candy, Grapes). Inventory IDs are `sa2-fruit:N` (N 0–23, no leading zero).
 Eating one applies its native row through the same adapted mapping as animals
 (`native-row-adapted-mapping-v1`): seven skills one-for-one, Mood to happiness,
-Belly to satiety. Hero and Dark Fruit additionally pull the hero/dark axis by
-±0.05 (AL_BODY_INFO units, tuning). Special effects that are not in the row
+Belly to satiety. Special effects that are not in the row
 (Heart Fruit breeding, Chao Fruit, Mushrooms, colour fruit) are reported as
 `unknown-not-applied`. Without verified rows every fruit, seed, plant and
 harvest action returns `native-data-unavailable`.
@@ -208,10 +207,12 @@ audit resolves them. Drives never grant parts. The native selection/removal
 probability is unknown. Each public player record carries `animalParts` so every viewer renders the same parts. Life-cycle reincarnation calls
 `care::reset_animal_parts` and `care::reset_species_history`.
 
-**Body-axis pull** (`adapted-row-difference-per-400-v1`). Each animal or drive
-pulls run/power by (Power − Run) / 400 and swim/fly by (Fly − Swim) / 400 of its
-native row. Until `body.rs` lands only hero/dark is stored (as alignment);
-the other axes are reported in `effects.shape`.
+**Body changes.** Giving an animal or drive and eating fruit change the body
+axes only through the body module's native ports (`body::apply_capture`, from
+ALBHV_Capture at GameCube ChaoMain 0x33A2C, and `body::apply_fruit`). Until that
+module merges, effects report `"body":"pending-body-module"` and nothing changes.
+Native Hero/Dark Fruit alignment is ±0.15 (ALO_FruitHeldC 0x2B6A4) and belongs
+to the body module.
 
 **Mission drop table** (`adapted-mission-drop-v2`). A defeated robot's drop is a
 weighted pick from the first two SHA-256 bytes of its source ID: common animals

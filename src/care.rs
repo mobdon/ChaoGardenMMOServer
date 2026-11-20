@@ -17,12 +17,6 @@ pub const RULES: &str = "adapted-care-v1";
 pub const CARE_VERSION: u32 = 2;
 /// Drop-table selection for defeated mission robots (MMO tuning, not a retail table).
 pub const DROP_RULES: &str = "adapted-mission-drop-v2";
-/// Body-axis pull per item: (power - run) / 400 and (fly - swim) / 400 of the
-/// native row, in AL_BODY_INFO -1..1 units. MMO tuning; the native magnitude is unknown.
-pub const SHAPE_RULES: &str = "adapted-row-difference-per-400-v1";
-const SHAPE_DIVISOR: f32 = 400.;
-/// Hero and Dark Fruit pull hero/dark by this much (MMO tuning).
-const FRUIT_ALIGNMENT: f32 = 0.05;
 /// Every verified part category an animal provides replaces the current one (MMO tuning).
 pub const PART_RULES: &str = "adapted-replace-every-verified-category-v1";
 pub const MAX_RECEIPTS: usize = 4096;
@@ -289,7 +283,7 @@ pub fn public(game: &Game, id: &str) -> Value {
         "rawUnits":crate::care_catalog::RAW_UNITS,"pointPolicy":"adapted-one-raw-unit-to-one-point-clamp-0-9999-no-level-or-grade-change",
         "pickups":p.care.pickups.values().collect::<Vec<_>>(),"dropRules":DROP_RULES,"catalog":native,
         "animalParts":{"rules":PART_RULES,"categories":PART_CATEGORIES,"shown":p.care.animal_parts},
-        "shapeRules":SHAPE_RULES,"garden":p.garden.public(game.time),
+"garden":p.garden.public(game.time),
         "shop":shop(game),
         "eligibility":{"canCare":!conflict(p,false),"canPickup":!conflict(p,true),"activityLock":p.care.activity_lock,
             "effectReadyAt":p.care.last_effect_at.map(|at|at+EFFECT_COOLDOWN_MS),"receiptCapacityRemaining":MAX_RECEIPTS.saturating_sub(p.care.receipts.len())}})
@@ -374,13 +368,6 @@ fn apply_raw(p: &mut Player, raw: &NativeItemStats, delta: &mut BTreeMap<&'stati
     }
 }
 
-fn shape_from_row(raw: &NativeItemStats) -> (f32, f32) {
-    (
-        (f32::from(raw.power) - f32::from(raw.run)) / SHAPE_DIVISOR,
-        (f32::from(raw.fly) - f32::from(raw.swim)) / SHAPE_DIVISOR,
-    )
-}
-
 /// Eats one native fruit already removed from inventory or a tree.
 fn eat_fruit(game: &Game, p: &mut Player, id: u8) -> Result<Value, &'static str> {
     let fruit = game
@@ -391,15 +378,10 @@ fn eat_fruit(game: &Game, p: &mut Player, id: u8) -> Result<Value, &'static str>
     let mut delta = BTreeMap::new();
     apply_raw(p, &fruit.raw, &mut delta);
     chao_hooks::feed(p, Some(id), fruit.raw.mood, fruit.raw.belly);
-    let hero_dark = match fruit.key {
-        "hero" => FRUIT_ALIGNMENT,
-        "dark" => -FRUIT_ALIGNMENT,
-        _ => 0.,
-    };
-    let alignment = chao_hooks::shape(p, 0., 0., hero_dark);
+    let body = chao_hooks::fruit_body(p);
     Ok(
         json!({"points":delta,"satiety":p.hunger-hunger,"happiness":p.happiness-happiness,
-        "raw":fruit.raw,"alignment":alignment,"fruitRules":"native-row-adapted-mapping-v1",
+        "raw":fruit.raw,"body":body,"fruitRules":"native-row-adapted-mapping-v1",
         "specialEffect":"unknown-not-applied","unknown18Applied":false,"levelsChanged":false,"gradesChanged":false}),
     )
 }
@@ -570,14 +552,13 @@ fn apply(game: &Game, p: &mut Player, request: &Request, now: f64) -> Result<Val
                 take_quantity(p, item_id)?;
                 apply_raw(p, &native.raw, &mut delta);
                 chao_hooks::feed(p, None, native.raw.mood, native.raw.belly);
-                let (run_power, swim_fly) = shape_from_row(&native.raw);
-                chao_hooks::shape(p, run_power, swim_fly, 0.);
+                let body = chao_hooks::capture_body(p, native.id);
                 let mut parts = BTreeMap::new();
                 for category in &native.part_categories {
                     p.care.animal_parts.insert((*category).into(), native.id);
                     parts.insert(*category, native.id);
                 }
-                extra = json!({"shape":{"runPower":run_power,"swimFly":swim_fly,"heroDark":0.,"rules":SHAPE_RULES},
+                extra = json!({"body":body,
                     "parts":parts,"partRules":PART_RULES});
                 p.care.evidence.record_use(native.id);
                 json!(native.raw)

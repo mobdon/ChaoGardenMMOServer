@@ -37,7 +37,7 @@ fn send(game: &mut Game, id: &str, seq: u32, intent: Value) -> Value {
 }
 
 #[test]
-fn native_fruit_rows_apply_through_hooks_and_hero_fruit_pulls_alignment() {
+fn native_fruit_rows_apply_through_hooks_without_invented_alignment() {
     let (mut game, id) = fixture();
     go(&mut game, &id, "garden", 0., 0.);
     {
@@ -57,11 +57,11 @@ fn native_fruit_rows_apply_through_hooks_and_hero_fruit_pulls_alignment() {
     assert_eq!(r["accepted"], true, "{r}");
     assert_eq!(r["effects"]["points"]["stamina"], 5);
     assert_eq!(r["effects"]["satiety"], 40.);
-    assert_eq!(r["effects"]["alignment"], 5.);
+    assert_eq!(r["effects"]["body"], "pending-body-module");
     assert_eq!(r["effects"]["specialEffect"], "unknown-not-applied");
     let p = &game.players[&id];
     assert_eq!(p.stats["stamina"].points, stamina + 5);
-    assert_eq!(p.alignment, 5.);
+    assert_eq!(p.alignment, 0.);
     assert!(!p.care.inventory.contains_key("sa2-fruit:5"));
     game.time += 1500.;
     let r = send(
@@ -70,7 +70,8 @@ fn native_fruit_rows_apply_through_hooks_and_hero_fruit_pulls_alignment() {
         2,
         json!({"kind":"consume","itemId":"sa2-fruit:6"}),
     );
-    assert_eq!(r["effects"]["alignment"], -5.);
+    assert_eq!(r["accepted"], true);
+    assert_eq!(game.players[&id].alignment, 0.);
     assert_eq!(
         send(
             &mut game,
@@ -218,8 +219,7 @@ fn animals_show_only_verified_part_categories_and_drives_show_none() {
         json!({"kind":"consume","itemId":"sa2:0"}),
     );
     assert_eq!(r["effects"]["parts"], json!({"ears":0,"tail":0}));
-    let run_power = r["effects"]["shape"]["runPower"].as_f64().unwrap();
-    assert!((run_power - (-19. - 17.) / 400.).abs() < 1e-6);
+    assert_eq!(r["effects"]["body"], "pending-body-module");
     game.time += 1500.;
     // Synthetic Rabbit has no verified categories: existing parts stay.
     let r = send(
@@ -237,7 +237,7 @@ fn animals_show_only_verified_part_categories_and_drives_show_none() {
         json!({"kind":"consume","itemId":"sa2:22"}),
     );
     assert_eq!(r["effects"]["parts"], json!({}));
-    assert!(r["effects"]["shape"]["runPower"].as_f64().unwrap() < 0.);
+
     let shown = &game.players[&id].care.animal_parts;
     assert_eq!(shown.len(), 2);
     assert_eq!(shown["ears"], 0);

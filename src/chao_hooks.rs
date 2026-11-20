@@ -6,7 +6,7 @@
 //!   `grant_stat` calls `life::grant_stat_progress` and `feed` calls
 //!   `life::feed`.
 //! - `body` owns the run/power, swim/fly and hero/dark axes. When it lands,
-//!   `shape` calls `body::apply_shape_delta(&mut player.body, ..)`.
+//!   `capture_body` calls `body::apply_capture` and `fruit_body` calls `body::apply_fruit`.
 //!
 //! Until then these functions keep today's published adapted behaviour so the
 //! swap is a change to this file only.
@@ -37,16 +37,17 @@ pub fn feed(p: &mut Player, _fruit: Option<u8>, mood: i16, belly: i16) {
     p.hunger = (p.hunger + f64::from(belly)).clamp(0., 100.);
 }
 
-/// Body-axis deltas in native AL_BODY_INFO scale (-1..1 per axis; run -1 /
-/// power +1, swim -1 / fly +1, dark -1 / hero +1).
-///
-/// Until `body.rs` lands only the hero/dark axis has a home: the existing
-/// -100..100 alignment, which is the same axis scaled by 100. Run/power and
-/// swim/fly are reported in the effect but not stored yet.
-pub fn shape(p: &mut Player, _run_power: f32, _swim_fly: f32, hero_dark: f32) -> f64 {
-    let before = p.alignment;
-    // f32 axis units carry float noise (0.05f32 != 0.05); alignment keeps 4 decimals.
-    let step = (f64::from(hero_dark) * 1_000_000.).round() / 10_000.;
-    p.alignment = (p.alignment + step).clamp(-100., 100.);
-    p.alignment - before
+/// Body change when a Chao is given an animal or drive. The native rule is
+/// ALBHV_Capture (GameCube ChaoMain 0x33A2C), ported by the body module as
+/// `body::apply_capture(&mut player.body, kind)`. Until that module merges this
+/// changes nothing and says so; no substitute value is applied.
+pub fn capture_body(_p: &mut Player, _kind: u8) -> &'static str {
+    "pending-body-module"
+}
+
+/// Body growth from eating fruit: `body::apply_fruit(&mut player.body)` once the
+/// body module merges. No native fruit alignment change has been traced, so none
+/// is applied.
+pub fn fruit_body(_p: &mut Player) -> &'static str {
+    "pending-body-module"
 }
