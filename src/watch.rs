@@ -117,8 +117,6 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
             return;
         }
         if player.tiny_game.is_some()
-            || player.race.is_some()
-            || player.karate.is_some()
             || !["hub", "garden", "hero", "dark"].contains(&player.zone.as_str())
         {
             game.notice(

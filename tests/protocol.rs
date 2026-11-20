@@ -146,35 +146,6 @@ async fn resume_only_returns_404_without_mutating_save_slots() {
 }
 
 #[tokio::test]
-async fn activity_catalog_loads_once_exposes_details_and_keeps_snapshot_provenance_compact() {
-    let (dir, _state) = fixture(false);
-    fs::create_dir_all(dir.path().join("activities")).unwrap();
-    fs::write(dir.path().join("activities/races.json"), json!({"courses":[{"id":"fixture-course","name":"Fixture course","group":"test","available":false,"source":{"evidence":"fixture-source"}}]}).to_string()).unwrap();
-    let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
-    let response = request(
-        router(state.clone()),
-        "GET",
-        "/api/activities",
-        Body::empty(),
-        &[],
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let catalog = json_body(response).await;
-    assert_eq!(
-        catalog["raceCourses"][0]["source"]["evidence"],
-        "fixture-source"
-    );
-    assert_eq!(catalog["raceCourses"][0]["available"], false);
-    let game = state.game.lock().unwrap();
-    assert!(
-        game.activities.public()["raceCourses"][0]
-            .get("source")
-            .is_none()
-    );
-}
-
-#[tokio::test]
 async fn origins_require_loopback_or_explicit_configuration() {
     let (dir, state) = fixture(false);
     for origin in [

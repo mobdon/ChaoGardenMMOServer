@@ -1,5 +1,4 @@
 //! Deterministic, server-owned gameplay. Incoming messages carry intent only.
-use crate::activities::{self, ActivityCatalog, ActivityRecord, KarateBout};
 use crate::phone::{self, TinyRecord, TinyRun};
 use crate::watch::{self, WatchState};
 use serde::{Deserialize, Serialize};
@@ -20,8 +19,6 @@ pub const ALL_STATS: [&str; 7] = [
     "intelligence",
 ];
 pub const TERRAIN_ZONES: [&str; 4] = ["hub", "garden", "hero", "dark"];
-pub const RACE_CHECKPOINTS: [(f64, f64); 5] =
-    [(0., 12.), (-12., 0.), (0., -12.), (12., 0.), (0., 12.)];
 const MECH_FIRE_RANGE: f64 = 9.;
 const MECH_FIRE_DAMAGE: f64 = 60.;
 const MECH_FIRE_COOLDOWN: f64 = 350.;
@@ -52,13 +49,6 @@ pub struct Gear {
 }
 
 #[derive(Clone, Debug)]
-pub struct Race {
-    pub started_at: f64,
-    pub next_checkpoint: usize,
-    pub course_id: Option<String>,
-}
-
-#[derive(Clone, Debug)]
 pub struct Player {
     /// Preserve future/unmodeled save metadata through care's additive migration.
     pub(crate) profile_extra: Value,
@@ -74,10 +64,6 @@ pub struct Player {
     pub equipped: Option<String>,
     pub vehicle: Option<String>,
     pub gear: Gear,
-    pub race_records: BTreeMap<String, ActivityRecord>,
-    pub karate_records: BTreeMap<String, ActivityRecord>,
-    pub karate: Option<KarateBout>,
-    pub activity_result: Option<Value>,
     pub tiny_records: BTreeMap<String, TinyRecord>,
     pub tiny_game: Option<TinyRun>,
     pub tiny_result: Option<Value>,
@@ -109,7 +95,6 @@ pub struct Player {
     pub input: Input,
     pub last_input_at: f64,
     pub cooldowns: BTreeMap<String, f64>,
-    pub race: Option<Race>,
 }
 
 impl Player {
@@ -172,7 +157,6 @@ impl Player {
             "groundY": self.ground_y, "jumpOffset": self.jump_offset, "facing": self.facing,
             "zone": self.zone, "alignment": self.alignment, "form": self.form, "admin": self.admin,
             "stats": self.stats, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
-            "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
             "watch":self.watch.as_ref().map(|watch|watch.public(self.connections>0)),"connected":self.connections>0,
             "mech": if self.vehicle.as_deref() == Some("dark-chao-walker") { json!({"boosting": self.boosting, "boostEnergy": self.boost_energy.round(), "grounded": self.jump_offset <= 0. && self.vy <= 0.}) } else { Value::Null },
@@ -189,7 +173,6 @@ impl Player {
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
             "energy":self.energy,"hunger":self.hunger,"care":self.care,"body":self.body,"life":self.life,"garden":self.garden,
-            "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records,
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed, "bestRaceMs": self.best_race_ms});
@@ -215,8 +198,6 @@ fn merge_profile(preserved: &mut Value, canonical: Value) {
                     "life",
                     "activityLease",
                     "tinyRecords",
-                    "raceRecords",
-                    "karateRecords",
                 ]
                 .contains(&key.as_str())
                 {
@@ -349,7 +330,6 @@ pub const SHOP_CATALOG: [ShopItem; 1] = [ShopItem {
 
 pub struct Game {
     pub care_catalog: crate::care_catalog::CareCatalog,
-    pub activities: ActivityCatalog,
     pub life_policy: crate::life::Policy,
     /// Local native Chao data (never committed); empty unless installed.
     pub native_chao: crate::behaviour::NativeData,
@@ -412,7 +392,6 @@ impl Game {
         }
         let mut game = Self {
             care_catalog: crate::care_catalog::CareCatalog::default(),
-            activities: ActivityCatalog::default(),
             life_policy: crate::life::Policy::default(),
             native_chao: crate::behaviour::NativeData::default(),
             time: now,
@@ -526,10 +505,6 @@ impl Game {
                     None
                 },
             },
-            race_records: activities::restore_records(&data["raceRecords"]),
-            karate_records: activities::restore_records(&data["karateRecords"]),
-            karate: None,
-            activity_result: None,
             tiny_records: phone::restore_records(&data["tinyRecords"]),
             tiny_game: None,
             tiny_result: None,
@@ -574,7 +549,6 @@ impl Game {
             input: Input::default(),
             last_input_at: 0.,
             cooldowns: BTreeMap::new(),
-            race: None,
         };
         self.teleport(&mut player, "hub", 0., 6.)?;
         // The saved percent alignment stays the legacy contract: if something wrote it
@@ -695,26 +669,14 @@ impl Game {
         });
     }
     pub fn sample_ground(&self, zone: &str, x: f64, z: f64) -> Option<f64> {
-        if zone == "karate" {
-            return Some(0.75);
-        }
         self.terrains
             .get(zone)
             .map_or(Some(0.), |terrain| terrain.sample(x, z))
     }
     pub fn player_terrain(&self, player: &Player) -> Option<&Terrain> {
-        if let Some(course) = activities::native_course(self, player) {
-            self.activities
-                .terrains
-                .get(course.world_id.as_deref().unwrap_or(&course.id))
-        } else {
-            self.terrains.get(&player.zone)
-        }
+        self.terrains.get(&player.zone)
     }
     pub fn player_ground(&self, player: &Player, x: f64, z: f64) -> Option<f64> {
-        if player.zone == "karate" {
-            return Some(0.75);
-        }
         self.player_terrain(player)
             .map_or(Some(0.), |terrain| terrain.sample(x, z))
     }
@@ -757,12 +719,6 @@ impl Game {
         player.vy = 0.;
         player.input = Input::default();
         player.boosting = false;
-        if zone != "race" {
-            player.race = None;
-        }
-        if zone != "karate" {
-            player.karate = None;
-        }
         Ok(())
     }
     pub fn near_interaction(&self, player: &Player, name: &str) -> bool {
@@ -849,22 +805,6 @@ impl Game {
             );
             return;
         }
-        if action.starts_with("karate-") {
-            activities::karate_action(self, p, message);
-            return;
-        }
-        if action == "race-enter" {
-            activities::enter_race(self, p, message);
-            return;
-        }
-        if action == "race-leave" {
-            let _ = self.teleport(p, "hub", 0., 6.);
-            return;
-        }
-        if action == "attack" && p.zone == "karate" {
-            activities::karate_action(self, p, &json!({"action":"karate-attack","move":"punch"}));
-            return;
-        }
         match action {
             "attack" => {
                 if p.vehicle.as_deref() == Some("dark-chao-walker") {
@@ -900,18 +840,6 @@ impl Game {
                 return;
             }
             "mount-dark-walker" => {
-                if p.race.as_ref().is_some_and(|r| r.course_id.is_some()) {
-                    self.notice(
-                        &p.id,
-                        "Leave your native Chao race before mounting a vehicle.",
-                        "error",
-                    );
-                    return;
-                }
-                if p.zone == "karate" {
-                    self.notice(&id, "Leave Chao Karate before mounting a vehicle.", "error");
-                    return;
-                }
                 if !p.admin {
                     self.notice(
                         &id,
@@ -1006,28 +934,6 @@ impl Game {
             }
             "mission" => {
                 self.enter_mission(p);
-                return;
-            }
-            "race" => {
-                if p.race.is_some() {
-                    self.notice(
-                        &id,
-                        "Your race is already running. Follow the checkpoint order.",
-                        "info",
-                    );
-                    return;
-                }
-                let _ = self.teleport(p, "race", 0., 12.);
-                p.race = Some(Race {
-                    started_at: self.time,
-                    next_checkpoint: 1,
-                    course_id: None,
-                });
-                self.notice(
-                    &id,
-                    "Race started! Follow the glowing checkpoints in order.",
-                    "success",
-                );
                 return;
             }
             "evolve" => {
@@ -1420,33 +1326,16 @@ impl Game {
                 self.last_tick_residents += 1;
             }
             let water = p.zone == "garden" && dist(p.x, p.z, -8., 0.) < 5.;
-            let mut speed = (1.4 + f64::from(p.stats["run"].level) * 0.006)
+            let speed = (1.4 + f64::from(p.stats["run"].level) * 0.006)
                 * if water {
                     0.65 + f64::from(p.stats["swim"].level) * 0.003
                 } else {
                     1.
                 };
-            if p.race
-                .as_ref()
-                .is_some_and(|r| r.course_id.is_some() && self.time < r.started_at)
-            {
-                speed = 0.;
-            }
             let mut ground = match self.player_ground(&p, p.x, p.z) {
                 Some(height) => height,
                 None => {
-                    let recovery = if let Some(course) = activities::native_course(self, &p) {
-                        course
-                            .spawn
-                            .as_ref()
-                            .and_then(|spawn| {
-                                self.player_ground(&p, spawn.x, spawn.z)
-                                    .map(|y| (spawn.x, spawn.z, y))
-                            })
-                            .ok_or_else(|| "No native race spawn".to_string())
-                    } else {
-                        self.safe_position(&p.zone, p.x, p.z)
-                    };
+                    let recovery = self.safe_position(&p.zone, p.x, p.z);
                     let Ok((x, z, y)) = recovery else {
                         self.players.insert(id, p);
                         continue;
@@ -1477,22 +1366,8 @@ impl Game {
                 p.vy -= 12. * dt;
                 height
             };
-            let bounds = activities::native_course(self, &p)
-                .map(|c| c.bounds.clone())
-                .unwrap_or_else(|| {
-                    if p.zone == "karate" {
-                        activities::Bounds {
-                            min_x: -1.35,
-                            max_x: 1.35,
-                            min_z: 0.4,
-                            max_z: 3.1,
-                        }
-                    } else {
-                        activities::Bounds::default()
-                    }
-                });
-            let next_x = (p.x + p.input.dx * speed * dt).clamp(bounds.min_x, bounds.max_x);
-            let next_z = (p.z + p.input.dz * speed * dt).clamp(bounds.min_z, bounds.max_z);
+            let next_x = (p.x + p.input.dx * speed * dt).clamp(-22., 22.);
+            let next_z = (p.z + p.input.dz * speed * dt).clamp(-22., 22.);
             let (start_x, start_z, start_ground) = (p.x, p.z, ground);
             let subdivisions = self.player_terrain(&p).map_or(1, |t| {
                 (dist(next_x, next_z, start_x, start_z) / 0.2_f64.min(t.step * 0.4))
@@ -1533,8 +1408,6 @@ impl Game {
             }
             if p.watch.is_none() {
                 self.pickup_rings(&mut p);
-                activities::tick_karate(self, &mut p, dt);
-                self.tick_race(&mut p);
             }
             self.players.insert(id, p);
         }
@@ -1623,74 +1496,13 @@ impl Game {
         }
         self.mission = Some(mission);
     }
-    fn tick_race(&mut self, p: &mut Player) {
-        if p.race.as_ref().is_some_and(|race| race.course_id.is_some()) {
-            activities::tick_native_race(self, p);
-            return;
-        }
-        if p.zone != "race" {
-            return;
-        }
-        let Some(race) = p.race.as_mut() else {
-            return;
-        };
-        let (x, z) = RACE_CHECKPOINTS[race.next_checkpoint];
-        if dist(p.x, p.z, x, z) > 0.8 {
-            return;
-        }
-        race.next_checkpoint += 1;
-        if race.next_checkpoint < RACE_CHECKPOINTS.len() {
-            self.notice(
-                &p.id,
-                format!("Checkpoint {}/4!", race.next_checkpoint - 1),
-                "info",
-            );
-            return;
-        }
-        let elapsed = (self.time - race.started_at).round();
-        p.races_completed += 1;
-        p.rings += 25;
-        p.best_race_ms = Some(p.best_race_ms.map_or(elapsed, |best| best.min(elapsed)));
-        p.gain("run", 3);
-        p.happiness = (p.happiness + 10.).min(100.);
-        let _ = self.teleport(p, "hub", 0., 6.);
-        self.dirty = true;
-        self.notice(
-            &p.id,
-            format!("Race finished in {:.1}s! +25 rings.", elapsed / 1000.),
-            "success",
-        );
-    }
     fn same_room(&self, viewer: &Player, other: &Player) -> bool {
-        if viewer.zone != other.zone {
-            return false;
-        }
-        match viewer.zone.as_str() {
-            // Native course variants can share scenery but have different gates.
-            "race" => {
-                viewer.race.as_ref().and_then(|r| r.course_id.as_deref())
-                    == other.race.as_ref().and_then(|r| r.course_id.as_deref())
-            }
-            // Each bout has its own server-owned opponent and clock.
-            "karate" => viewer.id == other.id,
-            _ => true,
-        }
+        viewer.zone == other.zone
     }
     /// Diagnostic identity for existing logical rooms, not a shard assignment.
     pub fn room_id(&self, id: &str) -> Option<String> {
         let player = self.players.get(id)?;
-        Some(match player.zone.as_str() {
-            "race" => format!(
-                "race:{}",
-                player
-                    .race
-                    .as_ref()
-                    .and_then(|r| r.course_id.as_deref())
-                    .unwrap_or("prototype")
-            ),
-            "karate" => format!("karate:{}", player.id),
-            _ => player.zone.clone(),
-        })
+        Some(player.zone.clone())
     }
     /// Keep reliable private events private and room effects within their room.
     pub fn event_visible(&self, self_id: &str, event: &Event) -> bool {
@@ -1723,17 +1535,11 @@ impl Game {
             .collect();
         let enemies: Vec<_> = self.mission.iter().filter(|_| mission_visible).flat_map(|m| m.enemies.iter()).filter(|enemy| enemy.hp > 0.)
             .map(|enemy| json!({"id": enemy.id, "x": enemy.x, "z": enemy.z, "hp": enemy.hp, "maxHp": enemy.max_hp, "zone": "mission"})).collect();
-        let race = self
-            .players
-            .get(self_id)
-            .and_then(|p| activities::public_race(self, p));
         json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || ((p.connections > 0 || p.watch.is_some()) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
             "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().filter(|_|mission_visible).map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
-            "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
+            "shop": {"catalog": SHOP_CATALOG},
             "care":crate::care::public(self,self_id),
             "life":crate::life::public(self,self_id),
-            "karate": self.players.get(self_id).and_then(|p|p.karate.as_ref().map(KarateBout::public)),
-            "activityResult": self.players.get(self_id).and_then(|p|p.activity_result.as_ref()),
             "tinyGame":self.players.get(self_id).and_then(|p|p.tiny_game.as_ref().map(TinyRun::public)),
             "tinyResult":self.players.get(self_id).and_then(|p|p.tiny_result.as_ref())})
     }

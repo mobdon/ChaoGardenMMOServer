@@ -376,8 +376,6 @@ fn conflict(p: &Player, pickup: bool) -> bool {
         || crate::game::training_conflict(p)
         || p.watch.is_some()
         || p.tiny_game.is_some()
-        || p.race.is_some()
-        || p.karate.is_some()
         || p.vehicle.is_some()
         || if pickup {
             p.zone != "mission"
@@ -963,8 +961,6 @@ pub fn eat_garden_fruit(game: &mut Game, id: &str, place: &str) -> Result<Value,
 fn conflict_resident(p: &Player) -> bool {
     crate::game::training_conflict(p)
         || p.tiny_game.is_some()
-        || p.race.is_some()
-        || p.karate.is_some()
         || p.vehicle.is_some()
         || !["garden", "hero", "dark"].contains(&p.zone.as_str())
 }

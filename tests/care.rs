@@ -1,8 +1,7 @@
 //! Care host integration tests use adapted fruit and synthetic profile data only.
 use chao_game_server::{
-    activities::ActivityCatalog,
     care::CareState,
-    game::{ALL_STATS, Event, Game, Race, Terrain, hash_token},
+    game::{ALL_STATS, Event, Game, Terrain, hash_token},
     service::{AppState, Config},
 };
 use serde_json::{Value, json};
@@ -311,9 +310,7 @@ fn active_activities_reject_new_care_but_allow_committed_replay() {
     for activity in [
         "watch",
         "tiny",
-        "race",
         "mission",
-        "karate",
         "vehicle",
         "future-training",
         "disconnected",
@@ -334,22 +331,7 @@ fn active_activities_reject_new_care_but_allow_committed_replay() {
                 game.action(&id, &json!({"action":"tiny-start","gameId":"search"}));
                 assert!(game.players[&id].tiny_game.is_some());
             }
-            "race" => {
-                game.players.get_mut(&id).unwrap().race = Some(Race {
-                    started_at: game.time,
-                    next_checkpoint: 0,
-                    course_id: None,
-                })
-            }
             "mission" => game.players.get_mut(&id).unwrap().zone = "mission".into(),
-            "karate" => {
-                game.activities = ActivityCatalog::from_values(json!({}), json!({"tiers":[{"id":"synthetic-tier","name":"Synthetic test tier","opponents":[{"id":"synthetic","name":"Synthetic","skills":[10,10,10,10,10,10,10]}]}]})).unwrap();
-                game.action(
-                    &id,
-                    &json!({"action":"karate-enter","tier":"synthetic-tier"}),
-                );
-                assert!(game.players[&id].karate.is_some());
-            }
             "vehicle" => {
                 game.players.get_mut(&id).unwrap().vehicle = Some("dark-chao-walker".into())
             }

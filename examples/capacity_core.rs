@@ -21,8 +21,8 @@ fn global_baseline(game: &Game, id: &str) -> Value {
         .collect();
     json!({"type":"snapshot","selfId":id,"serverTime":game.time,
         "players":game.players.values().filter(|p|p.connections>0||p.watch.is_some()).map(Player::public).collect::<Vec<_>>(),
-        "rings":rings,"enemies":[],"mission":null,"race":null,"shop":{"catalog":SHOP_CATALOG},
-        "activities":game.activities.public(),"karate":null,"activityResult":null,"tinyGame":null,"tinyResult":null})
+        "rings":rings,"enemies":[],"mission":null,"shop":{"catalog":SHOP_CATALOG},
+        "tinyGame":null,"tinyResult":null})
 }
 
 fn main() {

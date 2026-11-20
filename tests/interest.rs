@@ -1,4 +1,4 @@
-use chao_game_server::game::{Enemy, Event, Game, Mission, Race, Ring};
+use chao_game_server::game::{Enemy, Event, Game, Mission, Ring};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -107,45 +107,6 @@ fn mission_state_and_effects_do_not_cross_room_boundaries() {
             message: json!({"kind":"unknown"})
         }
     ));
-}
-
-#[test]
-fn race_courses_and_independent_karate_bouts_have_distinct_interest() {
-    let mut game = Game::new(vec![], BTreeMap::new(), false, 1000.).unwrap();
-    let (one, _) = session(&mut game, "Course one", "race");
-    let (two, _) = session(&mut game, "Course two", "race");
-    let (same, _) = session(&mut game, "Course one peer", "race");
-    let (prototype, _) = session(&mut game, "Prototype race", "race");
-    for (id, course) in [
-        (&one, "native-one"),
-        (&two, "native-two"),
-        (&same, "native-one"),
-    ] {
-        game.players.get_mut(id).unwrap().race = Some(Race {
-            started_at: 1000.,
-            next_checkpoint: 0,
-            course_id: Some(course.into()),
-        });
-    }
-    assert_eq!(
-        ids(&game.snapshot(&one)),
-        BTreeSet::from([one.as_str(), same.as_str()])
-    );
-    assert_eq!(
-        ids(&game.snapshot(&prototype)),
-        BTreeSet::from([prototype.as_str()])
-    );
-    assert_eq!(game.room_id(&one).as_deref(), Some("race:native-one"));
-    let effect = Event {
-        target: None,
-        message: json!({"kind":"attack","playerId":one,"zone":"race"}),
-    };
-    assert!(game.event_visible(&same, &effect));
-    assert!(!game.event_visible(&two, &effect));
-    game.players.get_mut(&one).unwrap().zone = "karate".into();
-    game.players.get_mut(&same).unwrap().zone = "karate".into();
-    assert_eq!(ids(&game.snapshot(&one)), BTreeSet::from([one.as_str()]));
-    assert_ne!(game.room_id(&one), game.room_id(&same));
 }
 
 #[test]

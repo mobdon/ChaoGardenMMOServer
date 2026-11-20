@@ -98,8 +98,6 @@ data/
   profiles.json
   game-inventory.json             # optional client-generated inventory
   terrain/{hub,garden,hero,dark}.json
-  activities/{races,karate}.json   # optional locally extracted source catalogs
-  activities/terrain/{worldId}.json
   imports/                        # fixed .glb, .png, .mp3 and Shadow motion JSON aliases
   imports/activities/              # four exact native activity model aliases
 ```
@@ -145,13 +143,11 @@ redistributed Sonic assets.
   to its title screen. Save requests cannot upload profile state.
 
 Gameplay covers hub/gardens and alignment gates, training, fixed-price shopping,
-rings, ordered races, cooperative robot missions, and Chaos evolution. The
-native-roster Karate tournament loop and validated-course race authority are
-documented in [ACTIVITIES.md](ACTIVITIES.md). All 62 extracted original race
-configurations remain disabled until genuine routes and obstacles are verified.
-The adapted away race/Karate competitions were removed: only native rules are
-kept (`src/competition_native.rs`, ported from the GameCube Chao modules), and a
-saved "competition" activity lease is dropped on load.
+rings, cooperative robot missions, and Chaos evolution. Chao Race and Chao
+Karate are not playable: the adapted versions were removed and only the native
+rules are kept (`src/competition_native.rs`, ported from the GameCube Chao
+modules) until the rest is ported. Saved race/karate records stay in profiles
+untouched, and a saved "competition" activity lease is dropped on load.
 The
 owner's `mount-dark-walker` action sets `vehicle` to `"dark-chao-walker"`;
 `dismount-vehicle` clears it. While mounted, `mech-fire` (or `attack`) fires a
@@ -194,8 +190,7 @@ directories as well, so neither suite claims or changes the live owner profile.
 
 ## Capacity and private deployment review
 
-Snapshots and public effects are filtered by authoritative zone, native race
-course and independent Karate bout. Self state remains present; a disconnected
+Snapshots and public effects are filtered by authoritative zone. Self state remains present; a disconnected
 resident remains visible only in its garden. This does not create additional
 instances, per-room admission limits, a party handoff or multiple authorities.
 Inputs replace one canonical latest input; no unbounded input or outbound

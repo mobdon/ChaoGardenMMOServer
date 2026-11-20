@@ -199,44 +199,6 @@ impl AppState {
                 ));
             }
         }
-        let read_catalog = |name: &str| -> io::Result<Value> {
-            let path = config
-                .data_dir
-                .join("activities")
-                .join(format!("{name}.json"));
-            if path.exists() {
-                Ok(serde_json::from_slice(&fs::read(path)?)?)
-            } else {
-                Ok(json!({}))
-            }
-        };
-        let races = read_catalog("races")?;
-        let karate = read_catalog("karate")?;
-        game.activities = crate::activities::ActivityCatalog::from_values(races, karate)
-            .map_err(io::Error::other)?;
-        let worlds: std::collections::BTreeSet<_> = game
-            .activities
-            .courses
-            .iter()
-            .map(|c| c.world_id.as_deref().unwrap_or(&c.id).to_owned())
-            .collect();
-        for world in worlds {
-            if !world
-                .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-            {
-                return Err(io::Error::other("Invalid activity collision identifier"));
-            }
-            let path = config
-                .data_dir
-                .join("activities/terrain")
-                .join(format!("{world}.json"));
-            if path.exists() {
-                let terrain: Terrain = serde_json::from_slice(&fs::read(path)?)?;
-                terrain.validate().map_err(io::Error::other)?;
-                game.activities.terrains.insert(world, terrain);
-            }
-        }
         let (events, _) = broadcast::channel(config.event_capacity);
         let (shutdown, _) = watch::channel(false);
         let connections = Arc::new(Semaphore::new(config.max_connections));
@@ -389,7 +351,6 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/status", get(status))
-        .route("/api/activities", get(activities))
         .route("/api/session", post(session))
         .route("/ws", get(upgrade))
         // Deployment probes and metrics: unauthenticated, cheap, excluded from
@@ -503,10 +464,6 @@ async fn prometheus(State(state): State<AppState>) -> impl IntoResponse {
     )
 }
 
-async fn activities(State(state): State<AppState>) -> Json<Value> {
-    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-    Json(game.activities.details())
-}
 async fn status(State(state): State<AppState>) -> Json<Value> {
     let mut setup = fs::read(state.config.data_dir.join("game-inventory.json")).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .unwrap_or_else(|| json!({"found": false, "note": "No local game inventory is available. Run the client asset inventory and set CHAO_DATA_DIR."}));

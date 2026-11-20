@@ -1,9 +1,8 @@
 //! Transaction tests use made-up signed rows, never a decoded retail table.
 use crate::{
-    activities::ActivityCatalog,
     care::{self, CareState, MAX_QUANTITY, MAX_RECEIPTS, Receipt, Request},
     care_catalog::CareCatalog,
-    game::{ALL_STATS, Game, Player, Race},
+    game::{ALL_STATS, Game, Player},
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -494,10 +493,8 @@ fn new_care_conflicts_with_every_existing_activity_and_future_server_lock() {
         "disconnected",
         "mission",
         "vehicle",
-        "race",
         "watch",
         "tiny",
-        "karate",
         "training",
     ] {
         let (mut game, id) = fixture(false);
@@ -513,13 +510,6 @@ fn new_care_conflicts_with_every_existing_activity_and_future_server_lock() {
             "vehicle" => {
                 game.players.get_mut(&id).unwrap().vehicle = Some("dark-chao-walker".into())
             }
-            "race" => {
-                game.players.get_mut(&id).unwrap().race = Some(Race {
-                    started_at: game.time,
-                    next_checkpoint: 0,
-                    course_id: None,
-                })
-            }
             "watch" => {
                 game.action(&id, &json!({"type":"action","action":"watch-start"}));
                 assert!(game.players[&id].watch.is_some());
@@ -530,14 +520,6 @@ fn new_care_conflicts_with_every_existing_activity_and_future_server_lock() {
                     &json!({"type":"action","action":"tiny-start","gameId":"memory"}),
                 );
                 assert!(game.players[&id].tiny_game.is_some());
-            }
-            "karate" => {
-                game.activities=ActivityCatalog::from_values(json!({}),json!({"tiers":[{"id":"test-tier","name":"Synthetic tier","opponents":[{"id":"test-opponent","name":"Synthetic opponent","nativeIndex":0,"skills":[1,1,1,1,1,1,1,0]}]}]})).unwrap();
-                game.action(
-                    &id,
-                    &json!({"type":"action","action":"karate-enter","tier":"test-tier"}),
-                );
-                assert!(game.players[&id].karate.is_some());
             }
             "training" => {
                 game.players.get_mut(&id).unwrap().care.activity_lock =

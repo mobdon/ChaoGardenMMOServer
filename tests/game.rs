@@ -1,4 +1,4 @@
-use chao_game_server::game::{ALL_STATS, Game, MAIN_STATS, RACE_CHECKPOINTS, Terrain, hash_token};
+use chao_game_server::game::{ALL_STATS, Game, MAIN_STATS, Terrain, hash_token};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -401,49 +401,6 @@ fn cooperative_mission_pays_each_participant_once_then_can_start_new_instance() 
 }
 
 #[test]
-fn race_requires_ordered_traversal_takes_real_time_and_pays_once() {
-    let (mut g, id, _) = fixture(false);
-    act(&mut g, &id, "race", json!({}));
-    act(
-        &mut g,
-        &id,
-        "race-complete",
-        json!({"time":1,"reward":99999}),
-    );
-    assert_eq!(g.players[&id].races_completed, 0);
-    g.tick(0.05);
-    assert_eq!(g.players[&id].race.as_ref().unwrap().next_checkpoint, 1);
-    for (x, z) in RACE_CHECKPOINTS.into_iter().skip(1) {
-        for _ in 0..1000 {
-            let p = &g.players[&id];
-            let Some(race) = &p.race else {
-                break;
-            };
-            let previous = race.next_checkpoint;
-            let dx = x - p.x;
-            let dz = z - p.z;
-            let length = dx.hypot(dz);
-            g.set_input(&id, &json!({"dx":dx/length,"dz":dz/length}));
-            g.tick(0.05);
-            if g.players[&id]
-                .race
-                .as_ref()
-                .is_none_or(|r| r.next_checkpoint != previous)
-            {
-                break;
-            }
-        }
-    }
-    let p = &g.players[&id];
-    assert_eq!(p.races_completed, 1);
-    assert_eq!(p.zone, "hub");
-    assert_eq!(p.rings, 45);
-    assert!(p.best_race_ms.unwrap() > 30000.);
-    advance(&mut g, 1000);
-    assert_eq!(g.players[&id].rings, 45);
-}
-
-#[test]
 fn normal_chaos_evolution_requires_earned_milestones_even_with_perfect_stats() {
     let (mut g, id, _) = fixture(true);
     act(
@@ -674,14 +631,12 @@ fn real_jump_can_clear_low_ledge_while_walking_cannot() {
 }
 
 #[test]
-fn disconnect_cancels_race_and_returns_to_separate_hub() {
+fn disconnect_returns_to_separate_hub() {
     let (mut g, id, _) = fixture(false);
     act(&mut g, &id, "garden", json!({}));
     assert_eq!(g.players[&id].zone, "garden");
-    act(&mut g, &id, "race", json!({}));
     g.disconnect(&id);
     assert_eq!(g.players[&id].zone, "hub");
-    assert!(g.players[&id].race.is_none());
     let snapshot = g.snapshot(&id);
     assert_eq!(snapshot["players"].as_array().unwrap().len(), 1);
     assert_eq!(snapshot["players"][0]["id"], id);

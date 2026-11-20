@@ -129,8 +129,6 @@ fn all_five_games_are_host_owned_and_main_reward_actions_cannot_run_in_parallel(
             g.players[&id].rings,
             before["rings"].as_u64().unwrap() as u32
         );
-        assert!(g.players[&id].race.is_none());
-        assert!(g.players[&id].karate.is_none());
         assert!(g.players[&id].vehicle.is_none());
         assert_eq!(g.players[&id].x, before["x"].as_f64().unwrap());
         act(&mut g, &id, "tiny-stop", json!({"sessionId":session}));

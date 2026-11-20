@@ -98,10 +98,7 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
                 );
                 return;
             }
-            if player.race.is_some()
-                || player.karate.is_some()
-                || !["hub", "garden", "hero", "dark"].contains(&player.zone.as_str())
-            {
+            if !["hub", "garden", "hero", "dark"].contains(&player.zone.as_str()) {
                 game.notice(&player.id, "Finish your current activity and return to a garden before starting a Tiny Garden game.", "error");
                 return;
             }

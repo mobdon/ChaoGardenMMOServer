@@ -192,8 +192,6 @@ fn watch_excludes_manual_inputs_conflicting_activities_and_tiny_game_completion(
         );
     }
     assert_eq!(g.players[&id].zone, "garden");
-    assert!(g.players[&id].race.is_none());
-    assert!(g.players[&id].karate.is_none());
     assert!(g.players[&id].tiny_game.is_none());
     assert_eq!(g.players[&id].rings, 20);
     act(&mut g, &id, "watch-stop", json!({"sessionId":session}));

@@ -1455,8 +1455,6 @@ fn social_conflict(p: &Player) -> bool {
     p.connections == 0
         || p.watch.is_some()
         || p.tiny_game.is_some()
-        || p.race.is_some()
-        || p.karate.is_some()
         || p.vehicle.is_some()
         || p.care.activity_lock.is_some()
         || !["garden", "hero", "dark"].contains(&p.zone.as_str())
