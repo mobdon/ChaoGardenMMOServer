@@ -349,13 +349,13 @@ pub fn apply_capture(body: &mut BodyState, kind: u8) -> bool {
 }
 
 /// ALO_FruitHeldC (0x2B6A4): Hero Fruit (kind 5) adds +0.15 to APos, Dark Fruit
-/// (kind 6) -0.15. Growth: AL_ParameterGrow (0x21148) reads FruitGrowParam by kind;
+/// (kind 6) -0.15 after the last bite. Growth per bite: AL_ParameterGrow (0x21148) reads FruitGrowParam by kind;
 /// the traced child/adult growth applies until the per-kind table is reconciled.
 /// Stats and needs are applied by life.rs.
-pub fn apply_fruit(body: &mut BodyState, kind: u8) {
-    let alignment = match kind {
-        5 => FRUIT_ALIGNMENT,
-        6 => -FRUIT_ALIGNMENT,
+pub fn apply_fruit(body: &mut BodyState, kind: u8, last_bite: bool) {
+    let alignment = match (kind, last_bite) {
+        (5, true) => FRUIT_ALIGNMENT,
+        (6, true) => -FRUIT_ALIGNMENT,
         _ => 0.,
     };
     if body.is_chaos() {
@@ -517,11 +517,13 @@ mod tests {
             apply_capture(&mut b, 9);
         }
         assert_eq!(b.v_pos, DEFORM_LIMIT);
-        apply_fruit(&mut b, 5);
-        assert_eq!(b.growth, FRUIT_GROWTH_CHILD);
+        apply_fruit(&mut b, 5, false);
+        assert_eq!(b.a_pos, 0.);
+        apply_fruit(&mut b, 5, true);
+        assert_eq!(b.growth, 2. * FRUIT_GROWTH_CHILD);
         assert_eq!(b.a_pos, 0.15);
-        apply_fruit(&mut b, 6);
-        apply_fruit(&mut b, 6);
+        apply_fruit(&mut b, 6, true);
+        apply_fruit(&mut b, 6, true);
         assert!((b.a_pos + 0.15).abs() < 1e-6);
         let mut t = BodyState::default();
         t.life_step();
