@@ -45,12 +45,12 @@ pub const FRUIT_ALIGNMENT: f32 = 0.15;
 /// AL_Deform: a zero |HPos| or |VPos| is replaced by this before the blend.
 pub const DEFORM_EPSILON: f32 = 1e-6;
 /// Native SA2BColour runs 0..=13; SA2BTexture 0..=16; SA2BEggColour 0..=0x36.
-pub const MAX_COLOR: u8 = 27;
+pub const MAX_COLOR: u8 = 13;
 pub const MAX_JEWEL: u8 = 16;
 pub const MAX_EGG_COLOR: u8 = 0x36;
 
-/// Expressed appearance alleles (genes live in life.rs). ColorNum indexes the
-/// 28-entry native colour table (rodata 0x1D60), not the PC SA2BColour enum.
+/// Expressed appearance alleles (genes live in life.rs). ColorNum follows the
+/// SA2BColour order: fn_60_52480 draws gxColorTable[ColorNum-1] (data 0x38E7D0).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GeneLook {
@@ -268,12 +268,21 @@ impl BodyState {
     /// `lerp(neutral, aligned, |APos|)` (AL_DeformObjectChild 0x6328).
     /// Chaos and special models have no morph set.
     pub fn morph(&self) -> (Vec<&'static str>, Vec<f32>) {
+        self.morph_at(self.growth)
+    }
+
+    /// AL_DeformObject blends the first material diffuse with the same structure
+    /// but growth clamped to 1 (|H| and |V| never exceed DeformLimit 1).
+    pub fn diffuse_weights(&self) -> Vec<f32> {
+        self.morph_at(self.growth.min(1.)).1
+    }
+
+    fn morph_at(&self, g: f32) -> (Vec<&'static str>, Vec<f32>) {
         if self.is_chaos() {
             return (vec![], vec![]);
         }
         let h = self.h_pos.abs().max(DEFORM_EPSILON);
         let v = self.v_pos.abs().max(DEFORM_EPSILON);
-        let g = self.growth;
         let c_n = (v * (1. - v) + h * (1. - h)) / (h + v);
         let c_v = v * v / (h + v);
         let c_h = h * h / (h + v);
@@ -311,11 +320,11 @@ impl BodyState {
             "runPower":self.h_pos,"swimFly":self.v_pos,"heroDark":self.a_pos,
             "growth":self.growth,"cocoonDue":self.cocoon_due(),
             "modelBaseIndex":self.model_base_index(),
-            "morph":{"targets":targets,"weights":weights},
+            "morph":{"targets":targets,"weights":weights,"diffuseWeights":self.diffuse_weights()},
             "look":self.look,
             "rules":{"source":"SA2B GC ChaoMain.rel GSNE8P",
                 "unresolved":["garden-stage alignment drift sign","capture alignment sign",
-                    "capture species 12-20 random pick","jewel, shiny and monotone drawing",
+                    "capture species 12-20 random pick",
                     "AddUserLike APos shift sign (per player character)"]}})
     }
 }
@@ -550,6 +559,11 @@ mod tests {
         assert_eq!(w[3], 0.);
         assert!((w[4] - 1.2 * h * h / (h + v)).abs() < 1e-6);
         assert!((c_n + (v * v + h * h) / (h + v) - 1.).abs() < 1e-6);
+        let d = b.diffuse_weights();
+        assert!(
+            (d[0] - c_n).abs() < 1e-6,
+            "diffuse uses growth clamped to 1"
+        );
         b.h_pos = 0.;
         b.v_pos = 0.;
         let (_, w) = b.morph();
