@@ -27,8 +27,8 @@ fn metrics_preserve_shared_counters_connection_gauge_and_cumulative_histogram() 
         worker.record_request(200, Duration::from_millis(5));
         worker.record_request(503, Duration::from_millis(75));
         worker.record_request(404, Duration::from_secs(11));
-        worker.ws_opened();
-        worker.ws_opened();
+        worker.ws_opened(false);
+        worker.ws_opened(true);
         worker.ws_closed();
         worker.record_persist_failure();
         worker.record_event_drop();
@@ -40,6 +40,7 @@ fn metrics_preserve_shared_counters_connection_gauge_and_cumulative_histogram() 
     assert_eq!(value(&text, "chao_http_errors_total"), 1);
     assert_eq!(value(&text, "chao_ws_connects_total"), 2);
     assert_eq!(value(&text, "chao_ws_connections"), 1);
+    assert_eq!(value(&text, "chao_reconnects_total"), 1);
     assert_eq!(value(&text, "chao_persist_failures_total"), 1);
     assert_eq!(value(&text, "chao_event_drops_total"), 1);
     for (bound, expected) in [

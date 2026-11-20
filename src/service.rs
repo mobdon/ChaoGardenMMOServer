@@ -16,7 +16,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
@@ -24,7 +24,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    sync::{broadcast, watch},
+    sync::{OwnedSemaphorePermit, Semaphore, broadcast, watch},
     time::{Instant, MissedTickBehavior},
 };
 
@@ -34,6 +34,21 @@ pub struct Config {
     pub address: SocketAddr,
     pub owner_bootstrap: bool,
     pub allowed_origins: Vec<String>,
+    pub max_connections: usize,
+    pub max_profiles: usize,
+    pub event_capacity: usize,
+    pub send_timeout: Duration,
+    pub max_snapshot_bytes: usize,
+}
+fn bounded_env(name: &str, default: usize, maximum: usize) -> Result<usize, String> {
+    let value = env::var(name)
+        .unwrap_or_else(|_| default.to_string())
+        .parse::<usize>()
+        .map_err(|_| format!("Invalid {name}"))?;
+    if value == 0 || value > maximum {
+        return Err(format!("{name} must be between 1 and {maximum}"));
+    }
+    Ok(value)
 }
 impl Config {
     pub fn from_env() -> Result<Self, String> {
@@ -72,6 +87,13 @@ impl Config {
             address: SocketAddr::new(host, port),
             owner_bootstrap,
             allowed_origins,
+            max_connections: bounded_env("CHAO_MAX_CONNECTIONS", 600, 10000)?,
+            max_profiles: bounded_env("CHAO_MAX_PROFILES", 10000, 100000)?,
+            event_capacity: bounded_env("CHAO_EVENT_CAPACITY", 512, 65536)?,
+            send_timeout: Duration::from_millis(
+                bounded_env("CHAO_SEND_TIMEOUT_MS", 1000, 30000)? as u64
+            ),
+            max_snapshot_bytes: bounded_env("CHAO_MAX_SNAPSHOT_BYTES", 1048576, 8388608)?,
         })
     }
     pub fn local(data_dir: PathBuf, owner_bootstrap: bool) -> Self {
@@ -80,6 +102,11 @@ impl Config {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             owner_bootstrap,
             allowed_origins: vec![],
+            max_connections: 600,
+            max_profiles: 10000,
+            event_capacity: 512,
+            send_timeout: Duration::from_secs(1),
+            max_snapshot_bytes: 1048576,
         }
     }
 }
@@ -91,9 +118,24 @@ pub struct AppState {
     pub events: broadcast::Sender<Event>,
     pub shutdown: watch::Sender<bool>,
     pub metrics: Arc<Metrics>,
+    connections: Arc<Semaphore>,
+    seen_connections: Arc<Mutex<BTreeSet<String>>>,
 }
 impl AppState {
     pub fn load(config: Config) -> io::Result<Self> {
+        if config.max_connections == 0
+            || config.max_profiles == 0
+            || config.event_capacity == 0
+            || config.send_timeout.is_zero()
+            || config.max_snapshot_bytes == 0
+            || config.max_connections > 10000
+            || config.max_profiles > 100000
+            || config.event_capacity > 65536
+            || config.send_timeout > Duration::from_secs(30)
+            || config.max_snapshot_bytes > 8388608
+        {
+            return Err(io::Error::other("Capacity limits outside supported bounds"));
+        }
         if config.owner_bootstrap && !config.address.ip().is_loopback() {
             return Err(io::Error::other("Owner bootstrap requires loopback"));
         }
@@ -179,42 +221,53 @@ impl AppState {
                 game.activities.terrains.insert(world, terrain);
             }
         }
-        let (events, _) = broadcast::channel(512);
+        let (events, _) = broadcast::channel(config.event_capacity);
         let (shutdown, _) = watch::channel(false);
+        let connections = Arc::new(Semaphore::new(config.max_connections));
         Ok(Self {
             game: Arc::new(Mutex::new(game)),
             config: Arc::new(config),
             events,
             shutdown,
             metrics: Metrics::new(),
+            connections,
+            seen_connections: Arc::new(Mutex::new(BTreeSet::new())),
         })
     }
     pub fn persist(&self, game: &mut Game) -> io::Result<()> {
         if !game.dirty {
             return Ok(());
         }
-        crate::competition::validate_reservations(game).map_err(io::Error::other)?;
-        fs::create_dir_all(&self.config.data_dir)?;
-        let temporary = self.config.data_dir.join("profiles.json.tmp");
-        let bytes = serde_json::to_vec_pretty(&game.export_profiles())?;
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+        let started = Instant::now();
+        let result = (|| {
+            crate::competition::validate_reservations(game).map_err(io::Error::other)?;
+            fs::create_dir_all(&self.config.data_dir)?;
+            let temporary = self.config.data_dir.join("profiles.json.tmp");
+            let bytes = serde_json::to_vec_pretty(&game.export_profiles())?;
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            {
+                use std::io::Write;
+                let mut file = options.open(&temporary)?;
+                file.write_all(&bytes)?;
+                file.sync_all()?;
+            }
+            fs::rename(temporary, self.config.data_dir.join("profiles.json"))?;
+            game.dirty = false;
+            crate::phone::commit_rewards(game);
+            crate::competition::commit(game);
+            Ok(())
+        })();
+        self.metrics.save.record(started.elapsed());
+        if result.is_err() {
+            self.metrics.record_persist_failure();
         }
-        {
-            use std::io::Write;
-            let mut file = options.open(&temporary)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-        }
-        fs::rename(temporary, self.config.data_dir.join("profiles.json"))?;
-        game.dirty = false;
-        crate::phone::commit_rewards(game);
-        crate::competition::commit(game);
-        Ok(())
+        result
     }
     /// Controlled release migration, executed once per deploy before machines
     /// roll. Idempotent: re-running against migrated data is a no-op. The
@@ -400,7 +453,25 @@ async fn livez(State(state): State<AppState>) -> Json<Value> {
 /// Readiness: safe to receive traffic. Verifies the data directory is writable
 /// so a read-only volume or saturated disk takes this machine out of rotation.
 async fn readyz(State(state): State<AppState>) -> Response {
-    match fs::create_dir_all(&state.config.data_dir) {
+    let probe = state
+        .config
+        .data_dir
+        .join(format!(".readiness-{}", uuid::Uuid::new_v4()));
+    let result = (|| {
+        use std::io::Write;
+        fs::create_dir_all(&state.config.data_dir)?;
+        let result = (|| {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&probe)?;
+            file.write_all(b"ready\n")?;
+            file.sync_all()
+        })();
+        let cleanup = fs::remove_file(&probe);
+        result.and(cleanup)
+    })();
+    match result {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(io_error) => {
             eprintln!("Readiness failed: {io_error}");
@@ -456,6 +527,10 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         );
     }
     let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let resumes_existing = input["token"]
+        .as_str()
+        .and_then(|token| game.player_for_token(token))
+        .is_some();
     if input["resumeOnly"] == true
         && input["token"]
             .as_str()
@@ -463,6 +538,13 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
             .is_none()
     {
         return error(StatusCode::NOT_FOUND, "Saved Chao was not found.");
+    }
+    if !resumes_existing && game.players.len() >= state.config.max_profiles {
+        state.metrics.record_admission_rejected();
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Profile capacity reached. Try again later.",
+        );
     }
     match game.create_session(&input) {
         Ok(response) => match state.persist(&mut game) {
@@ -687,18 +769,89 @@ async fn upgrade(
     let Some(id) = id else {
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
+    let Ok(permit) = state.connections.clone().try_acquire_owned() else {
+        state.metrics.record_admission_rejected();
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Connection capacity reached. Retry with backoff.",
+        );
+    };
     ws.max_message_size(2048)
         .max_frame_size(2048)
-        .on_upgrade(move |socket| handle_socket(socket, state, id))
+        .write_buffer_size(0)
+        .max_write_buffer_size(state.config.max_snapshot_bytes + 65536)
+        .on_upgrade(move |socket| handle_socket(socket, state, id, permit))
 }
-async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
+
+// One in-flight frame per socket; snapshots are made on demand, never queued.
+// A stalled transport is cancelled at the deadline, then the socket is dropped.
+async fn send_bounded<S>(writer: &mut S, message: Message, state: &AppState) -> bool
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    let started = Instant::now();
+    let result = tokio::time::timeout(state.config.send_timeout, writer.send(message)).await;
+    state.metrics.send.record(started.elapsed());
+    if result.is_err() {
+        state.metrics.record_slow_client();
+    }
+    matches!(result, Ok(Ok(())))
+}
+
+fn snapshot_message(state: &AppState, id: &str) -> Option<(Message, usize)> {
+    let started = Instant::now();
+    let snapshot = state
+        .game
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .snapshot(id);
+    // The snapshot owns its values; JSON encoding need not block authority.
+    let encoded = snapshot.to_string();
+    state.metrics.snapshot.record(started.elapsed());
+    if encoded.len() > state.config.max_snapshot_bytes {
+        state.metrics.record_oversized_snapshot();
+        return None;
+    }
+    let bytes = encoded.len();
+    Some((Message::Text(encoded.into()), bytes))
+}
+
+fn publish_events(state: &AppState, game: &mut Game) {
+    for event in game.drain_events() {
+        let _ = state.events.send(event);
+    }
+    state.metrics.set_queue_depth(state.events.len());
+}
+
+struct ConnectedSocket {
+    state: AppState,
+    id: String,
+}
+impl Drop for ConnectedSocket {
+    fn drop(&mut self) {
+        self.state.metrics.ws_closed();
+        self.state
+            .game
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .disconnect(&self.id);
+    }
+}
+
+async fn handle_socket(
+    socket: WebSocket,
+    state: AppState,
+    id: String,
+    _permit: OwnedSemaphorePermit,
+) {
     let mut events = state.events.subscribe();
     let mut shutdown = state.shutdown.subscribe();
     let (mut writer, mut reader) = socket.split();
-    state.metrics.ws_opened();
-    let initial = {
+    {
         let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-        game.connect(&id);
+        if !game.connect(&id) {
+            return;
+        }
         let owner = game.players.get(&id).is_some_and(|p| p.admin);
         game.notice(
             &id,
@@ -709,22 +862,29 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
             },
             "info",
         );
-        game.snapshot(&id)
+        publish_events(&state, &mut game);
+    }
+    let reconnect = !state
+        .seen_connections
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(id.clone());
+    state.metrics.ws_opened(reconnect);
+    let _connected = ConnectedSocket {
+        state: state.clone(),
+        id: id.clone(),
     };
-    if writer
-        .send(Message::Text(initial.to_string().into()))
-        .await
-        .is_err()
-    {
-        state.metrics.ws_closed();
-        state
-            .game
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .disconnect(&id);
+    let Some((initial, bytes)) = snapshot_message(&state, &id) else {
+        return;
+    };
+    if !send_bounded(&mut writer, initial, &state).await {
         return;
     }
-    let mut snapshots = tokio::time::interval(Duration::from_millis(100));
+    state.metrics.record_snapshot_sent(bytes);
+    let mut snapshots = tokio::time::interval_at(
+        Instant::now() + Duration::from_millis(100),
+        Duration::from_millis(100),
+    );
     snapshots.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut heartbeat = tokio::time::interval_at(
         Instant::now() + Duration::from_secs(20),
@@ -734,21 +894,41 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
     let mut window = Instant::now();
     let mut count = 0;
     loop {
-        let outgoing: Option<Message> = tokio::select! {
+        let outgoing: Option<(Message, usize)> = tokio::select! {
             _ = shutdown.changed() => break,
-            _ = snapshots.tick() => Some(Message::Text(state.game.lock().unwrap_or_else(|p| p.into_inner()).snapshot(&id).to_string().into())),
+            _ = snapshots.tick() => match snapshot_message(&state, &id) { Some(frame) => Some(frame), None => break },
             event = events.recv() => match event {
-                Ok(event) if event.target.as_deref().is_none_or(|target| target == id) => Some(Message::Text(event.message.to_string().into())),
-                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => None, Err(_) => break,
+                Ok(event) => {
+                    state.metrics.set_queue_depth(state.events.len());
+                    let visible = state.game.lock().unwrap_or_else(|p| p.into_inner()).event_visible(&id, &event);
+                    visible.then(|| (Message::Text(event.message.to_string().into()), 0))
+                }
+                Err(broadcast::error::RecvError::Lagged(count)) => {
+                    // A missing reward or saved event must not look successful.
+                    // The persisted receipt survives; reconnect requests current state.
+                    state.metrics.record_event_lag(count);
+                    break;
+                }
+                Err(_) => break,
             },
-            _ = heartbeat.tick() => { if !alive { break; } alive = false; Some(Message::Ping(Bytes::new())) },
+            _ = heartbeat.tick() => {
+                if !alive { break; } alive = false; Some((Message::Ping(Bytes::new()), 0))
+            },
             incoming = reader.next() => {
                 let Some(Ok(message)) = incoming else { break; };
+                // Include control frames in the rate bound; ping floods also cost work.
+                if window.elapsed() >= Duration::from_secs(1) { window = Instant::now(); count = 0; }
+                count += 1;
+                if count > 80 {
+                    state.metrics.record_rate_disconnect();
+                    let _ = send_bounded(&mut writer, Message::Close(Some(CloseFrame { code: 1008, reason: "Message rate exceeded.".into() })), &state).await;
+                    break;
+                }
                 match message {
-                    Message::Pong(_) => { alive = true; None }, Message::Ping(bytes) => Some(Message::Pong(bytes)), Message::Close(_) => break,
+                    Message::Pong(_) => { alive = true; None },
+                    Message::Ping(bytes) => Some((Message::Pong(bytes), 0)),
+                    Message::Close(_) => break,
                     Message::Text(_) | Message::Binary(_) => {
-                        if window.elapsed() >= Duration::from_secs(1) { window = Instant::now(); count = 0; } count += 1;
-                        if count > 80 { let _ = writer.send(Message::Close(Some(CloseFrame { code: 1008, reason: "Message rate exceeded.".into() }))).await; break; }
                         let mut response = None;
                         if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
                             let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
@@ -760,7 +940,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
                                         Ok(result)=>result,
                                         Err(error)=>{eprintln!("Could not save care: {error}");crate::care::failure(&game,&id,&value,"save-failed")}
                                     };
-                                    response=Some(Message::Text(result.to_string().into()));
+                                    response=Some((Message::Text(result.to_string().into()), 0));
                                 }
                                 Some("action") if value["action"] == "save" => {
                                     let acknowledgement = if !game.request_save(&id) {
@@ -770,54 +950,51 @@ async fn handle_socket(socket: WebSocket, state: AppState, id: String) {
                                             Ok(()) => json!({"type":"event","kind":"saved","playerId":id,"serverTime":game.time}),
                                             Err(error) => {
                                                 eprintln!("Explicit save failed: {error}");
-                                                state.metrics.record_persist_failure();
                                                 json!({"type":"notice","kind":"error","text":"Could not save your progress. Stay in the garden and try again."})
                                             }
                                         }
                                     };
-                                    response = Some(Message::Text(acknowledgement.to_string().into()));
+                                    response = Some((Message::Text(acknowledgement.to_string().into()), 0));
                                 }
                                 Some("action") if value["action"].as_str().is_some_and(|action|action.starts_with("competition-")) => {
                                     let result = match state.competition_action(&mut game, &id, &value) {
                                         Ok(result) => result,
                                         Err(error) => {
                                             eprintln!("Could not save competition choice: {error}");
-                                            state.metrics.record_persist_failure();
                                             json!({"type":"notice","kind":"error","text":"Your competition choice could not save. Your previous choice was kept; please retry."})
                                         }
                                     };
-                                    response = Some(Message::Text(result.to_string().into()));
+                                    response = Some((Message::Text(result.to_string().into()), 0));
                                 }
-                                Some("action") if value["action"].as_str().is_some_and(|action|action.starts_with("watch-")) => {
-                                    let result=match state.watch_action(&mut game,&id,&value) {
-                                        Ok(result)=>result,
-                                        Err(error)=>{eprintln!("Could not save resident choice: {error}");json!({"type":"notice","kind":"error","text":"Your resident choice could not save. Your previous mode was kept; please retry."})}
+                                Some("action") if value["action"].as_str().is_some_and(|action| action.starts_with("watch-")) => {
+                                    let result = match state.watch_action(&mut game, &id, &value) {
+                                        Ok(result) => result,
+                                        Err(error) => {
+                                            eprintln!("Could not save resident choice: {error}");
+                                            json!({"type":"notice","kind":"error","text":"Your resident choice could not save. Your previous mode was kept; please retry."})
+                                        }
                                     };
-                                    response=Some(Message::Text(result.to_string().into()));
+                                    response = Some((Message::Text(result.to_string().into()), 0));
                                 }
                                 Some("action") => game.action(&id, &value), _ => {}
                             }
+                            // Do not accumulate a second unbounded application event queue.
+                            publish_events(&state, &mut game);
                         }
                         response
                     }
                 }
             }
         };
-        if let Some(message) = outgoing
-            && !matches!(
-                tokio::time::timeout(Duration::from_secs(5), writer.send(message)).await,
-                Ok(Ok(()))
-            )
-        {
-            break;
+        if let Some((message, snapshot_bytes)) = outgoing {
+            if !send_bounded(&mut writer, message, &state).await {
+                break;
+            }
+            if snapshot_bytes > 0 {
+                state.metrics.record_snapshot_sent(snapshot_bytes);
+            }
         }
     }
-    state.metrics.ws_closed();
-    state
-        .game
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .disconnect(&id);
 }
 
 pub fn spawn_simulation(state: AppState) -> tokio::task::JoinHandle<()> {
@@ -831,17 +1008,23 @@ pub fn spawn_simulation(state: AppState) -> tokio::task::JoinHandle<()> {
             tokio::select! {
                 _ = shutdown.changed() => break,
                 _ = simulation.tick() => {
-                    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner()); game.tick(0.05);
+                    let waiting = Instant::now();
+                    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+                    state.metrics.tick_lock_wait.record(waiting.elapsed());
+                    let started = Instant::now();
+                    game.tick(0.05);
+                    state.metrics.resident_tick.record(game.last_resident_tick);
+                    state.metrics.set_residents(game.last_tick_residents);
                     if (crate::phone::has_pending(&game) || crate::competition::has_pending(&game))
                         && game.time >= game.tiny_save_retry_at
                         && let Err(value)=state.persist(&mut game) {
                         eprintln!("Could not save Tiny Garden result: {value}");
-                        state.metrics.record_persist_failure();
                         game.tiny_save_retry_at=game.time+1000.;
                         crate::phone::save_failed(&mut game);
                         crate::competition::save_failed(&mut game);
                     }
-                    for event in game.drain_events() { let _ = state.events.send(event); }
+                    publish_events(&state, &mut game);
+                    state.metrics.tick.record(started.elapsed());
                 }
                 _ = saving.tick() => {
                     let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
@@ -854,4 +1037,59 @@ pub fn spawn_simulation(state: AppState) -> tokio::task::JoinHandle<()> {
             eprintln!("Final save failed: {value}");
         }
     })
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    struct BlockedSink;
+    impl futures_util::Sink<Message> for BlockedSink {
+        type Error = ();
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), ()> {
+            Ok(())
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+            Poll::Pending
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn blocked_initial_control_and_snapshot_sends_have_a_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::local(dir.path().to_owned(), false);
+        config.send_timeout = Duration::from_millis(5);
+        let state = AppState::load(config).unwrap();
+        for message in [
+            Message::Text("initial snapshot".into()),
+            Message::Close(None),
+        ] {
+            assert!(!send_bounded(&mut BlockedSink, message, &state).await);
+        }
+        let rendered = state.metrics.render();
+        assert!(rendered.contains("chao_slow_clients_total 2\n"));
+        assert!(rendered.contains("chao_send_duration_seconds_count 2\n"));
+    }
+
+    #[test]
+    fn histogram_sum_and_cumulative_buckets_are_real_measurements() {
+        let metrics = Metrics::new();
+        metrics.tick.record(Duration::from_millis(2));
+        metrics.tick.record(Duration::from_millis(100));
+        let rendered = metrics.render();
+        assert!(rendered.contains("chao_tick_duration_seconds_bucket{le=\"0.0025\"} 1\n"));
+        assert!(rendered.contains("chao_tick_duration_seconds_bucket{le=\"0.1\"} 2\n"));
+        assert!(rendered.contains("chao_tick_duration_seconds_sum 0.102\n"));
+        assert!(rendered.contains("chao_tick_duration_seconds_count 2\n"));
+    }
 }

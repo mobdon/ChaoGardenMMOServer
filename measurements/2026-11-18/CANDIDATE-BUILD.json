@@ -1,0 +1,27 @@
+{
+  "measuredBase": "282f6abd1bdb75d0477622f8952667073dc2b751",
+  "runtime": "Rust single authority, existing JSON store",
+  "executableSha256": "b7ef28892a8809518c9b641aa2c8097d112f3488901af7408690031f6c1b1002",
+  "command": "cargo build --release --locked --offline --bin chao-game-server --example capacity_core",
+  "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "cargo": "cargo 1.100.0 (3acc79c0c 2026-11-05)",
+  "sourceByteSha256": {
+    "Cargo.toml": "aa2427d4d8a3a2df037cbdd8507537b8ae7e52d48bd43f88d4e60e4d2f119e79",
+    "Cargo.lock": "4af7b88f34fe0c2b134dbc71b12f10e4325a034fcb691872bb2077b12282bb67",
+    "src/activities.rs": "c183d2927f2bb87c8a816167a4e3c2b10c5f30e3fedb16733b7dcc1d3248d773",
+    "src/game.rs": "1498790af141f09f4fb6ca56370a9148e4c15514c2228b1ac985d161dd8e2239",
+    "src/lib.rs": "102974c901ec4b88b870fddaf371b1165810e472a45b3677a4ac50502416eca7",
+    "src/main.rs": "84a5f27da0025f2fbf3a75a4d3c5a6283132187cd8386b2e32a6c2551b70ae1c",
+    "src/metrics.rs": "d680884b9201f9db7ab5e39a1a94af7d0a098f066d6908a4bc64636b4ff650db",
+    "src/phone.rs": "365fa236a2ba477fdcaba2933e2400d971a7d157d1320bde5c7b77ae18d45d72",
+    "src/service.rs": "2e197e1af83b7bf3edb0a758648a0513de75d961a9164fea2d8745938cb8156a",
+    "src/watch.rs": "8c4e03a96bca8caabec7388525cba0140deef9525609e3a4b9f6e39bb3b56c0f",
+    "crates/tiny-garden-games/src/ball.rs": "ce9645f9cfecd07e96f27e258c01acda37e4a94222b351a1f58bec1658e9daad",
+    "crates/tiny-garden-games/src/bounce.rs": "5e7eaf6218c2ef5053d8919f5fafd42e9c43fb59053db4033211d2adac6b9d6c",
+    "crates/tiny-garden-games/src/lib.rs": "b38ca92f02196b34660ecd3f6a853fd34e8bea822c05322994f04dd0cafa4a6c",
+    "crates/tiny-garden-games/src/memory.rs": "a7e846a3f7b74d38e71b084d1e63beb60a6e5ea194b65df129266350f995d6bc",
+    "crates/tiny-garden-games/src/rps.rs": "83e794c35155adb779db2f2ad724cf31f646dd6d0b4d3510ed58cae55c6e2cea",
+    "crates/tiny-garden-games/src/search.rs": "3e4c9bd48ae789383bf4e4997792c75a5767bdfe421ba3a04c357aec368e3f36"
+  },
+  "note": "Candidate differs from matrix build only by coherent Histogram record/render synchronization and its concurrent regression. The small 12-client/12-resident gated smoke uses this binary. Larger load matrix was not rerun; no sustained capacity claim."
+}

@@ -1,0 +1,36 @@
+[Unit]
+Description=Chao Garden single Rust authority (private review)
+After=network.target
+# Explicit opt-in prevents a copied draft from serving accidentally.
+ConditionPathExists=/etc/chao/enable-private-playtest
+
+[Service]
+Type=simple
+User=chao
+Group=chao
+StateDirectory=chao
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/chao
+EnvironmentFile=/etc/chao/chao.env
+ExecStartPre=/usr/bin/python3 /opt/chao/deploy/preflight.py
+ExecStart=/opt/chao/chao-game-server
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=60
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

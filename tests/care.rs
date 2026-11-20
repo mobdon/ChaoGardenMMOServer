@@ -66,6 +66,7 @@ fn inventory_needs_effects_and_committed_retries_survive_reload() {
     let eat = consume(1);
     let (buy_result, eat_result, expected_stats, expected_care) = {
         let mut game = state.game.lock().unwrap();
+        game.time = 1_795_081_428_238.190_7;
         let player = game.players.get_mut(&id).unwrap();
         player.energy = 55.;
         player.hunger = 45.;
