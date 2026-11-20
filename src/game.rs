@@ -333,6 +333,10 @@ pub struct Game {
     pub life_policy: crate::life::Policy,
     /// Local native Chao data (never committed); empty unless installed.
     pub native_chao: crate::behaviour::NativeData,
+    /// Local native Chao Karate data; karate is unavailable without it.
+    pub karate: Option<std::sync::Arc<crate::karate::Data>>,
+    /// The game's MSL `rand` stream (main 0x8010DC88) for karate.
+    pub karate_rng: crate::competition_native::MslRand,
     pub time: f64,
     pub allow_owner_bootstrap: bool,
     pub terrains: BTreeMap<String, Terrain>,
@@ -394,6 +398,8 @@ impl Game {
             care_catalog: crate::care_catalog::CareCatalog::default(),
             life_policy: crate::life::Policy::default(),
             native_chao: crate::behaviour::NativeData::default(),
+            karate: None,
+            karate_rng: crate::competition_native::MslRand::default(),
             time: now,
             allow_owner_bootstrap,
             terrains,
@@ -662,6 +668,63 @@ impl Game {
         }
         self.players.insert(id.to_owned(), player);
     }
+    /// Native Chao Karate: one class, five rounds; the class emblem on a clean sweep.
+    fn chao_karate(&mut self, p: &mut Player, message: &Value) {
+        let id = p.id.clone();
+        let (Some(data), Some(motion)) = (self.karate.clone(), self.native_chao.motion.clone())
+        else {
+            self.notice(
+                &id,
+                "Chao Karate needs the native karate data, which is not installed.",
+                "error",
+            );
+            return;
+        };
+        let Some(class) = message["class"]
+            .as_u64()
+            .filter(|c| *c < u64::from(crate::competition_native::karate::CLASSES))
+        else {
+            self.notice(&id, "Unknown karate class.", "error");
+            return;
+        };
+        let child = match p.life.stage {
+            crate::life::Stage::Child => true,
+            crate::life::Stage::Adult => false,
+            _ => {
+                self.notice(&id, "Your Chao cannot enter karate right now.", "error");
+                return;
+            }
+        };
+        let skills = ALL_STATS.map(|s| p.stats[s].points.min(u32::from(u16::MAX)) as u16);
+        let result = crate::karate::tournament(
+            &data,
+            &motion,
+            &mut self.karate_rng,
+            skills,
+            child,
+            class as u8,
+        );
+        if result.won {
+            crate::emblems::award(
+                &mut p.care.emblems,
+                crate::emblems::Emblem::ChaoKarate(class as usize),
+            );
+        }
+        self.dirty = true;
+        let text = if result.won {
+            "Your Chao won every karate round!".to_string()
+        } else {
+            format!(
+                "Your Chao won {} karate round(s).",
+                result.rounds.iter().filter(|r| r.winner == 0).count()
+            )
+        };
+        self.events.push(Event {
+            target: Some(id.clone()),
+            message: json!({"type": "chao-karate", "result": result}),
+        });
+        self.notice(&id, text, if result.won { "success" } else { "info" });
+    }
     pub fn notice(&mut self, id: &str, text: impl Into<String>, kind: &str) {
         self.events.push(Event {
             target: Some(id.into()),
@@ -890,6 +953,10 @@ impl Game {
                 }
                 self.dirty = true;
                 self.notice(&id, "Your gear has been updated.", "success");
+                return;
+            }
+            "chao-karate" => {
+                self.chao_karate(p, message);
                 return;
             }
             "rename" => {

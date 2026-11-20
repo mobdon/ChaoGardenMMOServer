@@ -174,6 +174,9 @@ impl AppState {
                     .map_err(|e| io::Error::other(format!("chao-motion-table.json: {e}")))?,
             ));
         }
+        game.karate = crate::karate::Data::load(&imports)
+            .map_err(io::Error::other)?
+            .map(std::sync::Arc::new);
         let aim = imports.join("chao-garden-aim.json");
         if aim.is_file() {
             game.native_chao.aim = Some(std::sync::Arc::new(

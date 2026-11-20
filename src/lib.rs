@@ -9,6 +9,7 @@ pub mod emblems;
 pub mod evolution;
 pub mod game;
 pub mod garden;
+pub mod karate;
 pub mod life;
 pub mod metrics;
 pub mod phone;

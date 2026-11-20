@@ -260,6 +260,35 @@ impl Motion {
             self_loop: false,
         });
     }
+    /// Public driver for other native callers (karate): `MotionControl` state
+    /// starting on clip `num`.
+    pub fn start(table: &MotionTable, num: u16) -> Self {
+        Self::init(table, num)
+    }
+    /// `AL_SetMotionLinkStep`: blend into `num` over `frames`.
+    pub fn link_step(&mut self, num: u16, frames: u16) {
+        self.link(num, f32::from(frames));
+    }
+    /// `SetMotionSkip`: switch to `num` at once.
+    pub fn skip(&mut self, table: &MotionTable, num: u16) {
+        self.link = None;
+        self.switch(table, num);
+    }
+    /// One frame of `MotionControl`.
+    pub fn step(&mut self, table: &MotionTable) {
+        self.control(table);
+    }
+    /// Motion-control flag 2: a link is still blending.
+    pub fn linking(&self) -> bool {
+        self.link.is_some()
+    }
+    /// `IsMotionEnd` / `IsMotionStop`.
+    pub fn ended(&self) -> bool {
+        self.end_flag
+    }
+    pub fn stopped(&self) -> bool {
+        self.stop_flag || self.held()
+    }
     /// `AL_GetMotionPosture`: the current clip's posture (old clip during a link).
     pub fn posture(&self, table: &MotionTable) -> u8 {
         table.row(self.num).posture
