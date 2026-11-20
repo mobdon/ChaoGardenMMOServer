@@ -400,11 +400,27 @@ pub fn public(game: &Game, id: &str) -> Value {
         "animalParts":{"rules":PART_RULES,"categories":PART_CATEGORIES,"shown":p.care.animal_parts,
             "flagD3":p.care.flag_d3,"flagD6":p.care.flag_d6},
         "garden":p.garden.public(),
-        "shop":shop(game),"market":p.care.market.public(),"emblems":p.care.emblems.public(),"hat":p.care.hat,
+        "shop":shop(game),"market":market_view(p),"emblems":p.care.emblems.public(),"hat":p.care.hat,
         "eligibility":{"canCare":!conflict(p,false),"canPickup":!conflict(p,true),"activityLock":p.care.activity_lock,
             "effectReadyAt":p.care.last_effect_at.map(|at|at+EFFECT_COOLDOWN_MS),"receiptCapacityRemaining":MAX_RECEIPTS.saturating_sub(p.care.receipts.len())}})
 }
 
+/// The Black Market view plus native sell prices for what this profile carries.
+fn market_view(p: &Player) -> Value {
+    let mut view = p.care.market.public();
+    let sell: BTreeMap<&String, u32> = p
+        .care
+        .inventory
+        .keys()
+        .filter_map(|id| {
+            crate::black_market::prices(id)
+                .filter(|(_, s)| *s > 0)
+                .map(|(_, s)| (id, s))
+        })
+        .collect();
+    view["sellPrices"] = json!(sell);
+    view
+}
 fn shop(game: &Game) -> Value {
     let native = game.care_catalog.enabled();
     let offers = vec![

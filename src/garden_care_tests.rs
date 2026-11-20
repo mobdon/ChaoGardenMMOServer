@@ -473,6 +473,10 @@ fn black_market_eggs_hats_and_themes_follow_the_native_rules() {
         (p.x, p.z) = (-4., 8.);
     }
     assert_eq!(send(&mut game, &id, 9, buy("hat:3"))["accepted"], true);
+    assert_eq!(
+        care::public(&game, &id)["market"]["sellPrices"]["hat:3"],
+        500
+    );
     let give = json!({"kind":"give-hat","itemId":"hat:3"});
     game.time += 1500.;
     assert_eq!(
