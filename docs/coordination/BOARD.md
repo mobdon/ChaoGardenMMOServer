@@ -58,6 +58,20 @@ failure. Sustained 100–500-player capacity remains unverified.
 
 The live preview and canonical save were outside this integration.
 
+## Chao behaviour (November 20)
+
+Branch `claude/project-thread-b0gujd`. `src/behaviour.rs` ports the garden Chao
+behaviour from GameCube SA2B `ChaoMain.rel` (AL_BehaviorControl, the Yawn,
+Groggy, Sleep and Rest intentions with the Move fallback, sleep, sitting,
+petting and walking) and main.dol `MotionControl`. No tuned values: everything
+follows the traced code, and parts that are not ported are left out and listed
+in the module header. The motion table and aim lists load from local imports
+and are never committed; without them the pre-existing resident routine runs
+and `watch.behaviour` is null. Needs and mood go only through the life module
+(`life::needs_view`, `adjust_need`, `adjust_mood`, `pet`, need cadence). Faces
+go through the appearance thread's client `setChaoFace`. Fruit seeking waits
+for a traced native eat behaviour. No deployment or live-save change.
+
 ## Incoming Vibe source — review blocked
 
 **UNACCEPTED — Rust requirement reaffirmed by the user.** Game systems, shared
@@ -129,6 +143,16 @@ review and real snapshot-driven proof before merge.
 | 13 | Original chat — integration and release QA / both repositories | ACTIVE — verified | Owns cross-repository contracts, canonical owner/save protection, playable preview, merge order, release evidence and this coordination layer. Source publication is verified; later changes need their own audited release. | Reviews every shared-file/protocol change, resolves conflicts and performs coordinated client/server rollout. |
 
 ## Current implementation evidence
+
+Chao life (RPG-04, LIFE-01, LIFE-02), branch `claude/project-thread-3i7u22`
+from base `40a0ada`: `src/life.rs`, `LIFE.md`, `tests/life_protocol.rs`, plus
+small hooks in `src/game.rs` (profile key `life`, tick, snapshot) and
+`src/service.rs` (`life` envelope, two-profile rollback, `CHAO_LIFE_DEATH`).
+Rules are ported from GSNE8P `ChaoMain.rel` (SHA-1 e7e24b8b…dc8d, read-only
+trace of mob's disc); only listed MMO policies are non-native. Death is off
+unless `CHAO_LIFE_DEATH=enabled`. Parallel body, animals and AI threads agreed the
+module split recorded in `LIFE.md`; their hook wiring follows whichever merges
+second. No live save migration or preview restart.
 
 The separate Rust Accounts/pairing chat reports v2 source in its isolated
 `codex/accounts-pairing-ownership` worktree, with pairing/revocation/leases and

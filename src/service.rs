@@ -162,6 +162,25 @@ impl AppState {
             * 1000.;
         let mut game =
             Game::new(profiles, terrains, config.owner_bootstrap, now).map_err(io::Error::other)?;
+        game.life_policy = crate::life::Policy::from_env().map_err(io::Error::other)?;
+        // Native Chao behaviour data is extracted locally from the owner's disc
+        // and never committed. Missing files leave the resident on its
+        // pre-existing routine; malformed files stop the server.
+        let imports = config.data_dir.join("imports");
+        let motion = imports.join("chao-motion-table.json");
+        if motion.is_file() {
+            game.native_chao.motion = Some(std::sync::Arc::new(
+                crate::behaviour::MotionTable::load(&motion)
+                    .map_err(|e| io::Error::other(format!("chao-motion-table.json: {e}")))?,
+            ));
+        }
+        let aim = imports.join("chao-garden-aim.json");
+        if aim.is_file() {
+            game.native_chao.aim = Some(std::sync::Arc::new(
+                crate::behaviour::AimLists::load(&aim)
+                    .map_err(|e| io::Error::other(format!("chao-garden-aim.json: {e}")))?,
+            ));
+        }
         match (
             env::var_os("CHAO_CARE_AUDIT_DIR"),
             env::var_os("CHAO_CARE_EXECUTABLE"),
@@ -318,6 +337,36 @@ impl AppState {
         Ok(
             json!({"type":"event","kind":"watch-saved","accepted":accepted,"watch":watch,"serverTime":game.time}),
         )
+    }
+    /// Life intents may also change the named partner, so both profiles roll back together.
+    pub fn life_action(&self, game: &mut Game, id: &str, message: &Value) -> io::Result<Value> {
+        let mut before = vec![(
+            id.to_owned(),
+            game.players
+                .get(id)
+                .cloned()
+                .ok_or_else(|| io::Error::other("Missing profile"))?,
+        )];
+        if let Some(partner) = crate::life::partner_of(message).filter(|p| p != id)
+            && let Some(player) = game.players.get(&partner)
+        {
+            before.push((partner, player.clone()));
+        }
+        let was_dirty = game.dirty;
+        let event_count = game.events.len();
+        let response = crate::life::action(game, id, message);
+        if response["accepted"] == true
+            && response["replayed"] == false
+            && let Err(error) = self.persist(game)
+        {
+            for (key, player) in before {
+                game.players.insert(key, player);
+            }
+            game.dirty = was_dirty;
+            game.events.truncate(event_count);
+            return Err(error);
+        }
+        Ok(response)
     }
     /// The WebSocket mutex serializes devices; success is visible only after durable commit.
     pub fn care_action(&self, game: &mut Game, id: &str, message: &Value) -> io::Result<Value> {
@@ -590,6 +639,8 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "shadow-air-shoes-right",
         "knuckles-hammer-gloves-left",
         "knuckles-hammer-gloves-right",
+        // Native Chao behaviour clips selected locally by the client tooling.
+        "chao-behaviour",
     ];
     let colors = ["red", "purple", "cyan", "green", "blue", "yellow", "white"];
     let pngs = [
@@ -998,6 +1049,13 @@ async fn handle_socket(
                             match value["type"].as_str() {
                                 Some("input") => game.set_input(&id, &value),
                                 Some("tiny-input") => game.tiny_input(&id, &value),
+                                Some("life") => {
+                                    let result=match state.life_action(&mut game,&id,&value) {
+                                        Ok(result)=>result,
+                                        Err(error)=>{eprintln!("Could not save life: {error}");crate::life::failure(&game,&id,&value,"save-failed")}
+                                    };
+                                    response=Some((Message::Text(result.to_string().into()), 0));
+                                }
                                 Some("care") => {
                                     let result=match state.care_action(&mut game,&id,&value) {
                                         Ok(result)=>result,
