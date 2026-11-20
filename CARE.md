@@ -81,6 +81,13 @@ are:
 | --- | --- | --- |
 | `consume` | `itemId` string | Consume one already owned item and apply its server effect. |
 | `purchase` | `itemId` string | Buy one server-catalog item at the authoritative price. |
+| `tiny_purchase` | `itemId` string | Buy one Tiny shop fruit in an eligible safe garden without the desktop shop/grove proximity requirement. |
+| `tiny_enter` | none | Durably opt into automatic Tiny residency; existing resident Watch may convert without a Take control step. |
+| `training_start` | `stat`, `durationMs` | Start one explicitly adapted server-timed Tiny AFK job. See TRAINING.md. |
+| `training_cancel` | `jobId` | Close an unfinished AFK job with zero gains. |
+| `training_settle` | `jobId` | Settle a ready job using trusted time and actual bounded points. |
+| `tiny_egg_purchase` | `eggId`, `stockEpoch` | Buy the server's current native egg offer into the owner's single held slot. See TINY_EGGS.md. |
+| `tiny_egg_hatch` | `ownedEggId` | Explicitly hatch the owned egg into an additional inactive owned Chao, preserving the active canonical Chao. |
 | `pet` | none | Request a bounded server-validated pet interaction. |
 | `pickup` | `pickupId` string | Claim one available server-created nearby pickup. |
 
@@ -89,7 +96,7 @@ price, stat values, needs, timestamp or quantity. Use item IDs from the server
 catalog; native species numeric IDs are evidence identifiers, not client
 authority to create inventory.
 
-Canonical inventory item IDs are `garden-fruit` and `sa2:N`, where `N` is a
+Canonical inventory item IDs are `garden-fruit`, `tiny-fruit:N` (0–6), and `sa2:N`, where `N` is a
 decimal native ID 0–24 without a leading zero. Native catalog row `id` maps
 to that `sa2:N` inventory ID. Animal IDs 0–20 and drive IDs 21–24 retain their
 native identity; `sa2:25` and noncanonical aliases are unavailable.
@@ -106,6 +113,12 @@ The owner-only top-level `snapshot.care` contains:
 | `pickups` | Select only server-advertised pickup IDs; the server rechecks proximity and availability. |
 | `catalog` | Render enabled item identities, effect/version labels and availability. |
 | `shop` | Render server prices and the explicit per-item `enabled` state. |
+| `tinyShop` | Render the actual Tiny catalog, source availability, prices and `eligibility.canPurchase`. See TINY_SHOP.md. |
+| `tinyResident` | Render the durable automatic-resident choice and current server activity mode. |
+| `training` | Render the frozen policy, server-timed job, actual closing result and per-action eligibility. See TRAINING.md. |
+| `history` | Render at most 64 actual durable care transactions, including buy/feed and AFK results, with trusted Unix timestamps. Legacy history starts empty. |
+| `tinyEggShop` | Render source-backed hourly egg stock, prices, server epoch and purchase eligibility. See TINY_EGGS.md. |
+| `tinyCollection` | Render the original active Chao, real additional owned hatchlings and the one persistent held egg. Active selection remains disabled. |
 | `eligibility` | Enable only server-permitted care actions and display the conflict reason. |
 
 Do not read inventory or request receipts from the public `players` list.
@@ -135,8 +148,10 @@ effects; raw evidence and item consumption are still recorded. The returned
 actual `effects.points` values reflect this exception. Item use never grants
 that privilege to another profile.
 
-`garden-fruit` is the adapted food item. A purchase costs three rings and
-requires the server-approved hub shop or garden grove interaction. Purchasing
+`garden-fruit` is the adapted food item. A `purchase` costs three rings and
+requires the server-approved hub shop or garden grove interaction. The explicit
+`tiny_purchase` buys the same inventory item for three rings in a safe garden
+without that proximity check; ordinary `purchase` behavior is unchanged. Purchasing
 adds inventory; consuming it separately applies up to +35 energy, +30 satiety,
 +8 happiness and +25 Stamina points, bounded by the corresponding caps. It
 does not automatically grant a Stamina level. The UI must show these as
@@ -354,11 +369,14 @@ Care revisions scope the care transaction. They do not by themselves implement
 the separate account/device lease contract. Until that integration is present,
 multiple connections with one bearer credential share one canonical profile.
 
-New care requests are exclusive with Watch, active or saving Tiny minigames,
+New care requests are exclusive with manual Watch, active or saving Tiny minigames,
 missions, races, Karate and mounted vehicles. The pickup intent alone may
 operate during its eligible mission; it still validates canonical world,
 position and once-only ownership. A new consume/purchase/pet request cannot
-bypass the activity conflict. Returning the durable result of an old request
+bypass the activity conflict. Automatic Tiny residents may purchase, feed and
+receive care while their routine is active. `tiny_enter` may convert an existing
+manual Watch into that persisted mode, but cannot bypass a game, reward, mech,
+race, Karate or training conflict. Returning the durable result of an old request
 does not mutate the current activity.
 
 AFK training and exclusive device leases are separate workstreams. Their
@@ -423,3 +441,14 @@ This worktree starts at the verified Rust base
 unrelated build blockers. The evidence above applies to this isolated care
 branch; upstream merge/rebase and the accounts/lease adapter remain integration
 gates. No competing TypeScript authority is adopted.
+
+## Tiny shop and automatic residency follow-up
+
+The isolated `codex/tiny-chao-shop` slice builds on care commit
+`02a2572950a65229579817b4e334e8a635bc4c16`; fetched care publication
+`22add7030e2e8003a6ac05c202aff58864c9fcbf` has the identical Git tree. The same
+care transaction now handles Tiny purchases, native-fruit consumption and the
+durable `tiny_enter` preference. Exact protocol, verified source requirements,
+native/application distinctions and the new acceptance record are in
+[TINY_SHOP.md](TINY_SHOP.md). This is isolated tested source, not a runtime rollout
+or a completed native Tiny Garden engine.

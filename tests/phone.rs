@@ -33,7 +33,14 @@ fn input(g: &mut Game, id: &str, intent: Value) {
     g.tiny_input(id,&json!({"sessionId":run_id(g,id),"input":intent,"score":999999,"rings":999999,"elapsedMs":999999}));
 }
 fn memory_view(g: &Game, id: &str) -> MemoryView {
-    match g.players[id].tiny_game.as_ref().unwrap().core.view() {
+    match g.players[id]
+        .tiny_game
+        .as_ref()
+        .unwrap()
+        .adapted()
+        .unwrap()
+        .view()
+    {
         TinyView::Memory(view) => view,
         _ => panic!("expected Memory"),
     }

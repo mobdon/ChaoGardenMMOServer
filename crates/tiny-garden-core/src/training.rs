@@ -8,6 +8,20 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const MAX_DURATION_MS: u64 = 8 * 60 * 60 * 1000;
+/// MMO fee, not a cartridge price: a flat rate per minute for each skill band.
+pub fn ring_rate(skill_level: u16) -> u32 {
+    1 + u32::from(skill_level.min(99) / 25)
+}
+
+pub fn ring_quote(duration_ms: u64, rate: u32) -> Option<u32> {
+    if !(60_000..=MAX_DURATION_MS).contains(&duration_ms)
+        || !duration_ms.is_multiple_of(60_000)
+        || !(1..=4).contains(&rate)
+    {
+        return None;
+    }
+    Some((duration_ms / 60_000) as u32 * rate)
+}
 pub const MAX_AWARD_POINTS: u32 = 10_000;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
