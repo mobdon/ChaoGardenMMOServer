@@ -144,6 +144,16 @@ review and real snapshot-driven proof before merge.
 
 ## Current implementation evidence
 
+Chao life (RPG-04, LIFE-01, LIFE-02), branch `claude/project-thread-3i7u22`
+from base `40a0ada`: `src/life.rs`, `LIFE.md`, `tests/life_protocol.rs`, plus
+small hooks in `src/game.rs` (profile key `life`, tick, snapshot) and
+`src/service.rs` (`life` envelope, two-profile rollback, `CHAO_LIFE_DEATH`).
+Rules are ported from GSNE8P `ChaoMain.rel` (SHA-1 e7e24b8b…dc8d, read-only
+trace of mob's disc); only listed MMO policies are non-native. Death is off
+unless `CHAO_LIFE_DEATH=enabled`. Parallel body, animals and AI threads agreed the
+module split recorded in `LIFE.md`; their hook wiring follows whichever merges
+second. No live save migration or preview restart.
+
 The separate Rust Accounts/pairing chat reports v2 source in its isolated
 `codex/accounts-pairing-ownership` worktree, with pairing/revocation/leases and
 account/identity/migration tests. That is reported work awaiting integration
