@@ -649,8 +649,12 @@ fn apply(
                     .as_ref()
                     .ok_or("native-data-unavailable")?
                     .fruits[id];
-                if p.care.inventory.get(item_id).copied().unwrap_or(0)>0 &&
-                   !tiny_garden_core::native_needs::accepts_fruit((p.hunger*2.).round().clamp(0.,200.) as u8, fruit.raw[1]) {
+                if p.care.inventory.get(item_id).copied().unwrap_or(0) > 0
+                    && !tiny_garden_core::native_needs::accepts_fruit(
+                        (p.hunger * 2.).round().clamp(0., 200.) as u8,
+                        fruit.raw[1],
+                    )
+                {
                     return Err("chao-too-full");
                 }
                 take_quantity(p, item_id)?;

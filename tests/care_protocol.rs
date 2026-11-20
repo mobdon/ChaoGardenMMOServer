@@ -950,53 +950,97 @@ async fn native_needs_resume_mid_countdown_and_feed_refusal_keeps_bag() {
     let id = owner["player"]["id"].as_str().unwrap();
     let mut socket = server.socket(&owner).await;
     let item = {
-        let mut g=server.state.game.lock().unwrap();
-        let idx=g.tiny_shop_catalog.as_ref().unwrap().fruits.iter().position(|f|f.raw[1]>0).unwrap();
-        let item=format!("tiny-fruit:{idx}");
-        let p=g.players.get_mut(id).unwrap();p.hunger=100.;p.care.inventory.insert(item.clone(),1);item
+        let mut g = server.state.game.lock().unwrap();
+        let idx = g
+            .tiny_shop_catalog
+            .as_ref()
+            .unwrap()
+            .fruits
+            .iter()
+            .position(|f| f.raw[1] > 0)
+            .unwrap();
+        let item = format!("tiny-fruit:{idx}");
+        let p = g.players.get_mut(id).unwrap();
+        p.hunger = 100.;
+        p.care.inventory.insert(item.clone(), 1);
+        item
     };
-    let enter=request(0,json!({"kind":"tiny_enter"}));
-    send(&mut socket,&enter).await; assert_eq!(care_result(&mut socket,&enter).await["accepted"],true);
-    let feed=request(1,json!({"kind":"consume","itemId":item}));
-    send(&mut socket,&feed).await;assert_eq!(care_result(&mut socket,&feed).await["code"],"chao-too-full");
+    let enter = request(0, json!({"kind":"tiny_enter"}));
+    send(&mut socket, &enter).await;
+    assert_eq!(care_result(&mut socket, &enter).await["accepted"], true);
+    let feed = request(1, json!({"kind":"consume","itemId":item}));
+    send(&mut socket, &feed).await;
+    assert_eq!(
+        care_result(&mut socket, &feed).await["code"],
+        "chao-too-full"
+    );
     {
-        let mut g=server.state.game.lock().unwrap();
-        for _ in 0..20 {g.tick(0.1);}
-        assert_eq!(g.players[id].hunger,100.);
+        let mut g = server.state.game.lock().unwrap();
+        for _ in 0..20 {
+            g.tick(0.1);
+        }
+        assert_eq!(g.players[id].hunger, 100.);
         server.state.persist(&mut g).unwrap();
     }
-    let mut cfg=Config::local(server.directory.path().to_owned(),false);cfg.tiny_garden_payload=Some(path);
-    let loaded=AppState::load(cfg).unwrap();let mut g=loaded.game.lock().unwrap();
-    for _ in 0..13 {g.tick(0.1);}
-    assert_eq!(g.players[id].hunger,99.5);
-    assert_eq!(g.players[id].care.inventory[&item],1);
+    let mut cfg = Config::local(server.directory.path().to_owned(), false);
+    cfg.tiny_garden_payload = Some(path);
+    let loaded = AppState::load(cfg).unwrap();
+    let mut g = loaded.game.lock().unwrap();
+    for _ in 0..13 {
+        g.tick(0.1);
+    }
+    assert_eq!(g.players[id].hunger, 99.5);
+    assert_eq!(g.players[id].care.inventory[&item], 1);
 }
 #[tokio::test]
 #[ignore = "requires private A2NE payload"]
 async fn four_native_weeds_lower_mood_until_owner_pulls_one() {
-    let path=std::path::PathBuf::from(std::env::var_os("CHAO_TINY_GARDEN_PAYLOAD").unwrap());
-    let (server,owner,_)=TestServer::start_with_native(Some(path)).await;
-    let id=owner["player"]["id"].as_str().unwrap();
-    let mut socket=server.socket(&owner).await;
-    let enter=request(0,json!({"kind":"tiny_enter"}));send(&mut socket,&enter).await;
-    assert_eq!(care_result(&mut socket,&enter).await["accepted"],true);
-    let (weed,initial)={
-        let mut g=server.state.game.lock().unwrap();
+    let path = std::path::PathBuf::from(std::env::var_os("CHAO_TINY_GARDEN_PAYLOAD").unwrap());
+    let (server, owner, _) = TestServer::start_with_native(Some(path)).await;
+    let id = owner["player"]["id"].as_str().unwrap();
+    let mut socket = server.socket(&owner).await;
+    let enter = request(0, json!({"kind":"tiny_enter"}));
+    send(&mut socket, &enter).await;
+    assert_eq!(care_result(&mut socket, &enter).await["accepted"], true);
+    let (weed, initial) = {
+        let mut g = server.state.game.lock().unwrap();
         for _ in 0..12000 {
-            g.players.get_mut(id).unwrap().hunger=80.; // isolate weeds from hunger/fullness
+            g.players.get_mut(id).unwrap().hunger = 80.; // isolate weeds from hunger/fullness
             g.tick(0.1);
-            if chao_game_server::care::public(&g,id)["tinyWeeds"]["items"].as_array().unwrap().len()==4 {break;}
+            if chao_game_server::care::public(&g, id)["tinyWeeds"]["items"]
+                .as_array()
+                .unwrap()
+                .len()
+                == 4
+            {
+                break;
+            }
         }
-        let v=chao_game_server::care::public(&g,id);
-        assert_eq!(v["tinyWeeds"]["items"].as_array().unwrap().len(),4);
-        let initial=g.players[id].happiness;
-        for _ in 0..125 {g.tick(0.1);}
-        assert_eq!(g.players[id].happiness,initial-0.5);
-        (v["tinyWeeds"]["items"][0].clone(),initial)
+        let v = chao_game_server::care::public(&g, id);
+        assert_eq!(v["tinyWeeds"]["items"].as_array().unwrap().len(), 4);
+        let initial = g.players[id].happiness;
+        for _ in 0..125 {
+            g.tick(0.1);
+        }
+        assert_eq!(g.players[id].happiness, initial - 0.5);
+        (v["tinyWeeds"]["items"][0].clone(), initial)
     };
-    let pull=request(1,json!({"kind":"tiny_weed_pull","slot":weed["slot"],"generation":weed["generation"]}));
-    send(&mut socket,&pull).await;assert_eq!(care_result(&mut socket,&pull).await["accepted"],true);
-    let mut g=server.state.game.lock().unwrap();for _ in 0..140{g.tick(0.1);}
-    assert_eq!(chao_game_server::care::public(&g,id)["tinyWeeds"]["items"].as_array().unwrap().len(),3);
-    assert_eq!(g.players[id].happiness,initial-0.5);
+    let pull = request(
+        1,
+        json!({"kind":"tiny_weed_pull","slot":weed["slot"],"generation":weed["generation"]}),
+    );
+    send(&mut socket, &pull).await;
+    assert_eq!(care_result(&mut socket, &pull).await["accepted"], true);
+    let mut g = server.state.game.lock().unwrap();
+    for _ in 0..140 {
+        g.tick(0.1);
+    }
+    assert_eq!(
+        chao_game_server::care::public(&g, id)["tinyWeeds"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(g.players[id].happiness, initial - 0.5);
 }
