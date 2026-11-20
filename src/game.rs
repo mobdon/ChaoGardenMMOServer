@@ -174,6 +174,7 @@ impl Player {
             "energy": self.energy.round(), "hunger": self.hunger.round(),
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed,
             "bestRaceMs": self.best_race_ms, "evolution": self.evolution(),
+            "animalParts": self.care.animal_parts,
         })
     }
     pub fn profile(&self) -> Value {

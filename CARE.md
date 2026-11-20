@@ -205,7 +205,7 @@ category for which that species' child and adult lists both resolve every
 socket to a verified native model. Runtime-only lists (Half Fish, Skeleton Dog,
 Bat) and partial categories (the Rabbit right ear) grant nothing until the
 audit resolves them. Drives never grant parts. The native selection/removal
-probability is unknown. Life-cycle reincarnation calls
+probability is unknown. Each public player record carries `animalParts` so every viewer renders the same parts. Life-cycle reincarnation calls
 `care::reset_animal_parts` and `care::reset_species_history`.
 
 **Body-axis pull** (`adapted-row-difference-per-400-v1`). Each animal or drive
