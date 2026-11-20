@@ -128,7 +128,7 @@ impl Default for Policy {
         Self {
             death: false,
             resident_needs: false,
-            native_bugs: true,
+            native_bugs: false,
             garden_limit: true,
         }
     }

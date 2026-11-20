@@ -38,7 +38,16 @@ or left out.
 | New eggs | Grades from one of three schemes (shuffle of 0..4; all 1..3; 14 random increments), LifeTime 0..9, personality alleles 0..4, taste/TV/music 0..5. | `AL_GeneCreate` 0x1218C |
 | Happiness and knowledge | `like` −100..100. Petting, holding, a fruit handed over and an animal each give +1. A positive gain lowers fear by `f(10,+Aggr) + f(10,+Calm)` and counts a meeting (`distance = distance/3 × 2`). Distance +16 per knowledge tick, max 50000. | `AL_ParameterAddUserLike` 0x20D7C, `AL_KW_*` |
 
-### Native bugs (copied, per the policy switch)
+### Native bugs (fixed, mob's decision of November 20, 2026)
+
+These are fixed by default (`nativeBugs` off); the native behaviour is kept
+behind the policy flag and covered by a test. With the fix, hatch and rebirth
+use the intended `AL_EmotionStateInit` values (sleepy `rand×5000`, hunger
+`3000+rand×6000`, breed `rand×999.9`, tedious `rand×5000`, tire `rand×8000`,
+nourishment and condition 10000, the rest 0), rebirth resets moods, and taste,
+TV and music are re-derived from the genes. The 8-Chao garden limit is native
+and stays on.
+
 
 - `AL_EmotionStateInit` writes the wrong State slots, so after hatch or rebirth
   only nourishment (`rand × 5000`), condition (0) and thirsty
@@ -46,7 +55,8 @@ or left out.
 - Rebirth keeps moods, because the reset loop writes past `Mood[7]` into the
   high byte of sleepy. It also sets taste to 16 and TV and music to 0.
 - The shuffle scheme of `AL_GeneCreate` reads past its 5-entry array for the
-  last skills; those grades are undefined natively and stay 0 here.
+  last skills; those grades are undefined natively and stay 0 here (no native
+  value exists to copy).
 
 ## MMO policies
 

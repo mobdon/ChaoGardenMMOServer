@@ -250,16 +250,11 @@ fn pink_cocoon_reincarnates_with_native_carry_over() {
     assert_eq!(p.stats["swim"].points, 234);
     assert!(p.stats.values().all(|s| s.level == 1));
     assert_eq!(p.life.life_max, 3700, "old LifeMax 0 adds nothing");
-    assert_eq!(
-        (p.life.emotion.taste, p.life.emotion.tv),
-        (16, 0),
-        "native bug"
-    );
-    assert_eq!(p.life.emotion.mood[0], 50, "native bug keeps moods");
-    assert_eq!(
-        p.life.emotion.state[9], 0,
-        "condition starts at 0 (native bug)"
-    );
+    // mob's choice: the native init/rebirth bugs are fixed.
+    assert!(p.life.gene.taste.contains(&p.life.emotion.taste));
+    assert_eq!(p.life.emotion.mood, [0; 8]);
+    assert_eq!(p.life.emotion.state[8..10], [10000, 10000]);
+    assert!((p.hunger - (100. - f64::from(p.life.emotion.state[2]) / 100.)).abs() < 1e-9);
     assert_eq!(p.life.like, 60, "like is kept");
     assert!(p.life.events.contains(&LifeEvent::Reincarnated));
 }
@@ -512,4 +507,28 @@ fn snapshots_split_private_detail_from_public_summary() {
     let public = &snapshot["players"][0]["life"];
     assert_eq!(public["stage"], "child");
     assert!(public.get("nest").is_none() && public.get("owner").is_none());
+}
+
+#[test]
+fn native_bug_switch_reproduces_the_original_init() {
+    let (mut game, ids) = game_with(&["Buggy"], false);
+    let p = game.players.get_mut(&ids[0]).unwrap();
+    let buggy = Policy {
+        native_bugs: true,
+        ..Policy::default()
+    };
+    p.life.emotion.mood = [50; 8];
+    p.life.emotion.state[0] = 0x1234;
+    reincarnate(p, buggy);
+    assert_eq!(
+        (
+            p.life.emotion.taste,
+            p.life.emotion.tv,
+            p.life.emotion.music
+        ),
+        (16, 0, 0)
+    );
+    assert_eq!(p.life.emotion.mood[0], 50);
+    assert_eq!(p.life.emotion.state[0], 0x34);
+    assert_eq!(p.life.emotion.state[9], 0);
 }
