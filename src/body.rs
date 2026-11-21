@@ -44,10 +44,10 @@ pub const FRUIT_GROWTH_ADULT: f32 = 0.001_25;
 pub const FRUIT_ALIGNMENT: f32 = 0.15;
 /// AL_Deform: a zero |HPos| or |VPos| is replaced by this before the blend.
 pub const DEFORM_EPSILON: f32 = 1e-6;
-/// Native SA2BColour runs 0..=13; SA2BTexture 0..=16; SA2BEggColour 0..=0x36.
+/// Native SA2BColour runs 0..=13; SA2BTexture 0..=16; EggColor 0..=0x44 (the egg colour table at sonic2app 0x0129844C has 69 modes).
 pub const MAX_COLOR: u8 = 13;
 pub const MAX_JEWEL: u8 = 16;
-pub const MAX_EGG_COLOR: u8 = 0x36;
+pub const MAX_EGG_COLOR: u8 = 0x44;
 
 /// Expressed appearance alleles (genes live in life.rs). ColorNum follows the
 /// SA2BColour order: fn_60_52480 draws gxColorTable[ColorNum-1] (data 0x38E7D0).

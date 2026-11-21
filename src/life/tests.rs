@@ -286,6 +286,7 @@ fn grey_cocoon_waits_without_death_and_dies_behind_the_switch() {
         gene: egg_gene,
         expressed: expressed.clone(),
         laid_at: 1.,
+        egg_color: None,
     });
     let response = action(
         &mut game,
@@ -597,4 +598,21 @@ fn life_events_drive_the_body() {
     assert!(body.is_child());
     assert_eq!(body.look.color, 4);
     assert!(body.look.shiny);
+}
+
+#[test]
+fn tiny_garden_egg_is_al_gene_create_gba_egg_and_hatches_in_its_colour() {
+    let (mut game, ids) = game_with(&["Tiny"], false);
+    let p = game.players.get_mut(&ids[0]).unwrap();
+    assert_eq!(lay_gba_egg(p, 12, 0.), Err("invalid-request"));
+    lay_gba_egg(p, 0, 0.).unwrap();
+    lay_gba_egg(p, 11, 0.).unwrap();
+    assert_eq!(p.life.nest[0].egg_color, Some(0), "0 is a normal egg");
+    let topaz = p.life.nest[1].clone();
+    assert_eq!((topaz.gene.jewel, topaz.egg_color), ([11; 2], Some(0x40)));
+    lay_gba_egg(p, 1, 0.).unwrap();
+    assert_eq!(lay_gba_egg(p, 1, 0.), Err("nest-full"));
+    let topaz = p.life.nest.remove(1);
+    hatch(p, topaz, Policy::default());
+    assert_eq!(p.body.look.egg_color, 0x40);
 }
