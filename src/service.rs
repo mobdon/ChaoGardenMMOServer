@@ -515,6 +515,7 @@ pub fn router(state: AppState) -> Router {
             "/api/game-save/lease",
             post(game_save_renew).delete(game_save_release),
         )
+        .route("/api/game-save/status", get(game_save_status))
         // Deployment probes and metrics: unauthenticated, cheap, excluded from
         // the request metrics themselves.
         .route("/livez", get(livez))
@@ -789,6 +790,31 @@ async fn game_save_put(State(state): State<AppState>, headers: HeaderMap, body: 
             "Your save changed elsewhere. Load it again.",
         ),
         Err(io_error) => save_failed("write", io_error),
+    }
+}
+/// The title screen's look at the card: never checks the save out.
+async fn game_save_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let (id, in_game) = {
+        let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+        let Some((id, _)) = save_caller(&game, &headers) else {
+            return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+        };
+        let in_game = crate::game_save::leased(&game, &id, std::time::Instant::now());
+        (id, in_game)
+    };
+    match crate::game_save::status(&state.config.data_dir, &id) {
+        Ok(saved) => {
+            let saved_at = saved.and_then(|(_, at)| {
+                Some(at.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64)
+            });
+            Json(json!({
+                "revision": saved.map_or(0, |(revision, _)| revision),
+                "savedAt": saved_at,
+                "inGame": in_game,
+            }))
+            .into_response()
+        }
+        Err(io_error) => save_failed("status", io_error),
     }
 }
 /// The game is still running with the card in: keep the lease without moving the save.
