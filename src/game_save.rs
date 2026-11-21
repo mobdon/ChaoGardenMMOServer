@@ -77,6 +77,22 @@ pub fn read(dir: &Path, player: &str) -> io::Result<(u64, Vec<u8>)> {
     }
 }
 
+/// The card label without the bytes: (revision, when it was written), or None before the first save.
+pub fn status(dir: &Path, player: &str) -> io::Result<Option<(u64, std::time::SystemTime)>> {
+    use std::io::Read;
+    let mut file = match fs::File::open(path(dir, player)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut revision = [0; 8];
+    file.read_exact(&mut revision)?;
+    Ok(Some((
+        u64::from_le_bytes(revision),
+        file.metadata()?.modified()?,
+    )))
+}
+
 /// Store `bytes` as `revision` atomically; the previous save stays as `.prev`.
 pub fn write(dir: &Path, player: &str, revision: u64, bytes: &[u8]) -> io::Result<()> {
     let target = path(dir, player);

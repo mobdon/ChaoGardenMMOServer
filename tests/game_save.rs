@@ -229,3 +229,64 @@ async fn care_on_the_socket_is_refused_while_the_game_holds_the_chao() {
     assert_eq!(refused["code"], "in-game");
     serving.abort();
 }
+
+#[tokio::test]
+async fn status_shows_the_card_without_taking_the_chao() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+    let app = || router(state.clone());
+    let token = token(&state).await;
+    let auth = format!("Bearer {token}");
+    let status = || async {
+        let response = call(
+            app(),
+            "GET",
+            "/api/game-save/status",
+            &[("authorization", &auth)],
+            vec![],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice::<Value>(&bytes(response).await).unwrap()
+    };
+    assert_eq!(
+        call(app(), "GET", "/api/game-save/status", &[], vec![])
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        status().await,
+        json!({"revision":0,"savedAt":null,"inGame":false})
+    );
+
+    // Looking never checks the save out: the game can still take it.
+    let checkout = call(
+        app(),
+        "GET",
+        "/api/game-save",
+        &[("authorization", &auth)],
+        vec![],
+    )
+    .await;
+    assert_eq!(checkout.status(), StatusCode::OK);
+    let lease = header(&checkout, "x-save-lease");
+    assert_eq!(status().await["inGame"], true);
+
+    let put = call(
+        app(),
+        "PUT",
+        "/api/game-save",
+        &[
+            ("authorization", &auth),
+            ("x-save-lease", &lease),
+            ("x-save-revision", "0"),
+        ],
+        vec![7; 100],
+    )
+    .await;
+    assert_eq!(put.status(), StatusCode::OK);
+    let saved = status().await;
+    assert_eq!(saved["revision"], 1);
+    assert!(saved["savedAt"].as_u64().unwrap() > 0);
+}
