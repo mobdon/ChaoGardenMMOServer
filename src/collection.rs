@@ -20,7 +20,7 @@ use uuid::Uuid;
 pub const RULES: &str = "adapted-tiny-owned-eggs-v1";
 pub const ROTATION_MS: u64 = 3_600_000;
 pub const MAX_CHAO: usize = 8;
-/// MMO rule (mob 2026-11-21): a Tiny Garden egg can't hatch there; it hatches in the hub.
+/// MMO rule: a Tiny Garden egg can't hatch there; it hatches in the hub.
 pub const HATCH_IN_HUB: bool = true;
 
 #[derive(Clone, Debug)]
@@ -401,7 +401,7 @@ pub fn apply(
             state.last_server_ms = now;
             Ok(effects)
         }
-        // MMO rule (mob): eggs never hatch in Tiny Garden; they hatch in the hub.
+        // MMO rule: eggs never hatch in Tiny Garden; they hatch in the hub.
         Intent::TinyEggHatch { .. } if HATCH_IN_HUB => Err("hatch-in-hub"),
         Intent::TinyEggHatch { owned_egg_id } => {
             let state = player.tiny_collection.as_mut().ok_or("egg-unavailable")?;

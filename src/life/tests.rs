@@ -250,7 +250,7 @@ fn pink_cocoon_reincarnates_with_native_carry_over() {
     assert_eq!(p.stats["swim"].points, 234);
     assert!(p.stats.values().all(|s| s.level == 1));
     assert_eq!(p.life.life_max, 3700, "old LifeMax 0 adds nothing");
-    // mob's choice: the native init/rebirth bugs are fixed.
+    // Decision: the native init/rebirth bugs are fixed.
     assert!(p.life.gene.taste.contains(&p.life.emotion.taste));
     assert_eq!(p.life.emotion.mood, [0; 8]);
     assert_eq!(p.life.emotion.state[8..10], [10000, 10000]);
