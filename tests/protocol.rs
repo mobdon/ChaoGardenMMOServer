@@ -259,6 +259,7 @@ async fn assets_serve_exact_allowlisted_bytes_mime_head_and_reject_traversal() {
         ("discord-icon.png", "discord-icon.png", "image/png"),
         ("login-chao.png", "login-chao.png", "image/png"),
         ("item-panel-24.png", "item-panel-24.png", "image/png"),
+        ("chao-select-window.png", "chao-select-window.png", "image/png"),
         (
             "shadow-skate-motion.json",
             "shadow-skate-motion.json",

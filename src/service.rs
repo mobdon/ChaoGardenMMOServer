@@ -908,6 +908,7 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "chao-stat-panel.png",
         "chao-stat-font.png",
         "chao-race-parameter.png",
+        "chao-select-window.png",
         "discord-icon.png",
         "login-chao.png",
         "tiny-neutral-chaos.png",
