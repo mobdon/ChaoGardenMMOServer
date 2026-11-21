@@ -667,7 +667,8 @@ impl Game {
         if self.card_chao(&card).len() >= CARD_CHAO {
             return Err("This memory card already holds 8 Chao.".into());
         }
-        // An egg picked from a Chao's inventory hatches into the new slot (MMO glue).
+        // An egg picked from a Chao's inventory, or a bred egg from its nest, hatches into
+        // the new slot (MMO glue).
         let egg = match &input["egg"] {
             Value::Null => None,
             egg => {
@@ -676,12 +677,19 @@ impl Game {
                     .and_then(|token| self.player_for_token(token))
                     .filter(|p| p.card() == hash_token(&card))
                     .ok_or("That egg isn't on this memory card.")?;
-                let item = egg["itemId"].as_str().unwrap_or_default();
-                let egg_id = crate::black_market::egg_id(item).ok_or("That isn't an egg.")?;
-                if parent.care.inventory.get(item).copied().unwrap_or(0) == 0 {
-                    return Err("That egg isn't carried any more.".into());
+                if let Some(nest) = egg["eggId"].as_str() {
+                    if !parent.life.nest.iter().any(|e| e.id == nest) {
+                        return Err("That egg isn't in the nest any more.".into());
+                    }
+                    Some((parent.id.clone(), nest.to_owned(), None))
+                } else {
+                    let item = egg["itemId"].as_str().unwrap_or_default();
+                    let egg_id = crate::black_market::egg_id(item).ok_or("That isn't an egg.")?;
+                    if parent.care.inventory.get(item).copied().unwrap_or(0) == 0 {
+                        return Err("That egg isn't carried any more.".into());
+                    }
+                    Some((parent.id.clone(), item.to_owned(), Some(egg_id)))
                 }
-                Some((parent.id.clone(), item.to_owned(), egg_id))
             }
         };
         let id = Uuid::new_v4().to_string();
@@ -689,16 +697,31 @@ impl Game {
         let name: String = short_name(input["name"].as_str());
         let player = self.make_player(&json!({"id": id, "tokenHash": hash_token(&token), "cardHash": hash_token(&card), "name": name, "admin": self.allow_owner_bootstrap && self.players.is_empty()}))?;
         let mut player = player;
-        if let Some((parent, item, egg_id)) = egg {
-            crate::life::hatch_bought_egg(&mut player, egg_id, self.time, self.life_policy)?;
-            let parent = self.players.get_mut(&parent).expect("checked");
-            let left = parent.care.inventory.get(&item).copied().unwrap_or(0) - 1;
-            if left == 0 {
-                parent.care.inventory.remove(&item);
-            } else {
-                parent.care.inventory.insert(item, left);
+        match egg {
+            Some((parent, item, Some(egg_id))) => {
+                crate::life::hatch_bought_egg(&mut player, egg_id, self.time, self.life_policy)?;
+                let parent = self.players.get_mut(&parent).expect("checked");
+                let left = parent.care.inventory.get(&item).copied().unwrap_or(0) - 1;
+                if left == 0 {
+                    parent.care.inventory.remove(&item);
+                } else {
+                    parent.care.inventory.insert(item, left);
+                }
+                parent.care.revision += 1;
             }
-            parent.care.revision += 1;
+            Some((parent, nest, None)) => {
+                let parent = self.players.get_mut(&parent).expect("checked");
+                let index = parent
+                    .life
+                    .nest
+                    .iter()
+                    .position(|e| e.id == nest)
+                    .expect("checked");
+                let egg = parent.life.nest.remove(index);
+                parent.life.revision = parent.life.revision.saturating_add(1);
+                crate::life::hatch(&mut player, egg, self.life_policy);
+            }
+            None => {}
         }
         let response = json!({"token": token, "card": card, "player": player.public()});
         self.tokens

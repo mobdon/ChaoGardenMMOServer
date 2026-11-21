@@ -1310,7 +1310,7 @@ pub fn reincarnate(p: &mut Player, policy: Policy) {
 
 /// Hatch an egg into this profile as a new generation (MMO lineage policy). The native egg
 /// param starts all-zero; its genes were analysed when the egg was laid.
-fn hatch(p: &mut Player, egg: Egg, policy: Policy) {
+pub(crate) fn hatch(p: &mut Player, egg: Egg, policy: Policy) {
     let seed = hash_u64(&[b"egg", egg.id.as_bytes()]);
     let generation = p.life.generation.saturating_add(1);
     let nest = std::mem::take(&mut p.life.nest);
@@ -1476,8 +1476,9 @@ fn social_conflict(p: &Player) -> bool {
         || p.care.activity_lock.is_some()
         || !["garden", "hero", "dark"].contains(&p.zone.as_str())
 }
+/// MMO policy: partners are picked from the breeding menu, so any Chao in the same garden counts.
 fn in_range(a: &Player, b: &Player) -> bool {
-    a.zone == b.zone && ((a.x - b.x).powi(2) + (a.z - b.z).powi(2)).sqrt() <= SOCIAL_RANGE
+    a.zone == b.zone
 }
 fn can_breed(p: &Player) -> bool {
     p.life.stage == Stage::Adult && !chaos(p)

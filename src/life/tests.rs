@@ -437,10 +437,16 @@ fn breeding_rejects_children_far_partners_and_forged_fields() {
     for id in &ids {
         game.players.get_mut(id).unwrap().life.stage = Stage::Adult;
     }
+    // Any Chao in the same garden can be picked from the breeding menu; another garden can't.
+    let zone = std::mem::replace(
+        &mut game.players.get_mut(&ids[1]).unwrap().zone,
+        "hero".into(),
+    );
     assert_eq!(
         action(&mut game, &ids[0], &breed(1, &ids[1]))["code"],
         "out-of-range"
     );
+    game.players.get_mut(&ids[1]).unwrap().zone = zone;
     assert_eq!(
         action(&mut game, &ids[0], &breed(1, &ids[0]))["code"],
         "invalid-partner"
