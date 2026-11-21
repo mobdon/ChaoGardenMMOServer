@@ -1,6 +1,6 @@
 # Tool kit: how every thread uses it (Sonic MMO)
 
-The kit is installed in the cloud environment ("domains", via its Setup script) and on mob's PC (Claude Code
+The kit is installed in the cloud environment ("domains", via its Setup script) and on the owner's PC (Claude Code
 sessions in C:\Users\Admin\Documents\ChatGPT\mmo and its worktrees). Plugins and MCP servers load at session start.
 If a tool below is missing from your tool list, say so in your reply instead of working around it silently.
 
@@ -23,12 +23,12 @@ If a tool below is missing from your tool list, say so in your reply instead of 
 - **SkillsMP**: search for a skill when you hit a new kind of job (needs SKILLSMP_API_KEY).
 - **Syntax hook**: "syntax check failed" after an Edit/Write means fix it now.
 - rtk is cloud only (not on Windows): it condenses git status/log/ls; re-run as `rtk bypass <cmd>` if output looks cut.
-- On mob's PC, sessions opened before 2026-11-20 07:00 UTC must restart to load the kit.
+- On the owner's PC, sessions opened before 2026-11-20 07:00 UTC must restart to load the kit.
 
-## Game data (mob's standing rule)
+## Game data (standing rule)
 Native porting only. Every value, model, motion, effect, table and timing comes from the real game files at
 C:\Users\Admin\Desktop\sonic adventure 2 batt, with the source file and offset recorded. No guessed, tuned,
-placeholder or wiki values, and no non-native data or engines unless mob says so for that piece. If it isn't in the
+placeholder or wiki values, and no non-native data or engines unless the owner says so for that piece. If it isn't in the
 files, stop and report what is missing.
 
-Kit and rules: /mnt/project-files/toolkit/ (claude-toolkit/, PROJECT-RULES-draft.md).
+Kit and rules: /mnt/project-files/toolkit/ (claude-toolkit/).
