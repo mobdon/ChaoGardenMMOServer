@@ -1007,7 +1007,7 @@ mod appearance_asset_tests {
     #[test]
     fn metal_chao_assets_are_exact_names() {
         for ok in [
-            "metal-chao-quills.glb",
+            "metal-chao-head.glb",
             "metal-chao-shoe-left.glb",
             "metal-chao-skin.png",
         ] {
@@ -1018,8 +1018,8 @@ mod appearance_asset_tests {
         }
         for bad in [
             "metal-chao-x.glb",
-            "metal-chao-../quills.glb",
-            "metal-chao-quills.png",
+            "metal-chao-../head.glb",
+            "metal-chao-head.png",
             "metal-chao-skin.glb",
         ] {
             assert_eq!(asset_filename(&format!("/api/assets/{bad}")), None, "{bad}");
