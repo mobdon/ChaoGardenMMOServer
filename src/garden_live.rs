@@ -2,7 +2,7 @@
 //! The game's own ChaoMain runs the AI; this only reads its state at frame
 //! boundaries. Offsets are from the GSNE8P ChaoMain code (chaowk = task->twp at
 //! task+0x34; ALBHV behaviour block at chaowk+0x1B4) and were checked against
-//! a headless garden trace (2026-11-21).
+//! a headless garden run through the bridge (2026-11-21).
 use crate::recomp::Worker;
 use std::io;
 
@@ -13,6 +13,19 @@ const BHV_MODE: u32 = 0x2;
 const BHV_TIMER: u32 = 0xC;
 const BHV_INDEX: u32 = 0x284;
 const BHV_LIST: u32 = 0x288;
+/// Motion number, as read by GetMotionNum 0x8002CB90.
+const WK_MOTION: u32 = 0xB0;
+/// OSModuleInfo list head; entry id +0, next +4, section table +0x10.
+const MODULE_LIST: u32 = 0x8000_30C8;
+const CHAOMAIN: u32 = 0x3C;
+/// Task slot table: capacity r32(sec4+0x81E0+4c); slot sec6+0x44424+c*0x1200+i*0x48, task at +0x3C.
+const CAP_TABLE: u32 = 0x81E0;
+const SLOTS: u32 = 0x4_4424;
+const CATEGORY_STRIDE: u32 = 0x1200;
+const SLOT_SIZE: u32 = 0x48;
+const SLOT_TASK: u32 = 0x3C;
+/// Category 0 = Chao (eggs in category 1 move there on hatching).
+const CAT_CHAO: u32 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LiveChao {
@@ -22,6 +35,7 @@ pub struct LiveChao {
     pub behaviour: u32,
     pub mode: u16,
     pub timer: i32,
+    pub motion: u32,
 }
 
 fn be32(b: &[u8], at: u32) -> u32 {
@@ -39,6 +53,7 @@ fn decode(task: u32, wk: &[u8], behaviour: u32) -> LiveChao {
         behaviour,
         mode: u16::from_be_bytes([wk[(b + BHV_MODE) as usize], wk[(b + BHV_MODE + 1) as usize]]),
         timer: be32(wk, b + BHV_TIMER) as i32,
+        motion: be32(wk, WK_MOTION),
     }
 }
 
@@ -49,6 +64,34 @@ pub fn read_chao(w: &mut Worker, task: u32) -> io::Result<LiveChao> {
     let idx = be32(&wk, WK_BHV + BHV_INDEX);
     let behaviour = w.r32(wk_addr + WK_BHV + BHV_LIST + 4 * idx)?;
     Ok(decode(task, &wk, behaviour))
+}
+
+/// Run-time base of ChaoMain section `sec`, found through the game's module list.
+pub fn chaomain_section(w: &mut Worker, sec: u32) -> io::Result<u32> {
+    let mut m = w.r32(MODULE_LIST)?;
+    while m != 0 {
+        if w.r32(m)? == CHAOMAIN {
+            let table = w.r32(m + 0x10)?;
+            return Ok(w.r32(table + 8 * sec)? & !1);
+        }
+        m = w.r32(m + 4)?;
+    }
+    Err(io::Error::other("ChaoMain not linked"))
+}
+
+/// Task pointers of every live Chao (category 0 slots).
+pub fn chao_tasks(w: &mut Worker) -> io::Result<Vec<u32>> {
+    let (sec4, sec6) = (chaomain_section(w, 4)?, chaomain_section(w, 6)?);
+    let cap = w.r32(sec4 + CAP_TABLE + 4 * CAT_CHAO)?;
+    let base = sec6 + SLOTS + CAT_CHAO * CATEGORY_STRIDE;
+    let mut tasks = Vec::new();
+    for i in 0..cap {
+        let t = w.r32(base + i * SLOT_SIZE + SLOT_TASK)?;
+        if t != 0 {
+            tasks.push(t);
+        }
+    }
+    Ok(tasks)
 }
 
 #[cfg(test)]
@@ -64,8 +107,12 @@ mod tests {
         let b = WK_BHV as usize;
         wk[b + 2..b + 4].copy_from_slice(&3u16.to_be_bytes());
         wk[b + 0xC..b + 0x10].copy_from_slice(&85i32.to_be_bytes());
+        wk[0xB0..0xB4].copy_from_slice(&205u32.to_be_bytes());
         let c = decode(0x8100_0000, &wk, 0x8050_0000);
         assert_eq!(c.pos, [-58.0, 2.0, 5.0]);
-        assert_eq!((c.mode, c.timer, c.behaviour), (3, 85, 0x8050_0000));
+        assert_eq!(
+            (c.mode, c.timer, c.behaviour, c.motion),
+            (3, 85, 0x8050_0000, 205)
+        );
     }
 }
