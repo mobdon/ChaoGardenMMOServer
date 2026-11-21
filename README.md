@@ -85,7 +85,6 @@ hand; and no AI gateway or proxy is ever put in the API path (`ANTHROPIC_BASE_UR
   reads a worker's transcript and lists which tools it really called; `brief-common-template.md` is the worker brief
   to copy and fill in; `toolcheck-brief.md` is the brief `check-tools.sh --worker` uses.
 - `claude-mem-save.sh`: save claude-mem's store to `SHARED_DIR` at the end of a session (install restores it).
-- `RULES-TEMPLATE.md`: rules to paste into your project instructions or `CLAUDE.md`, then edit.
 
 ## Headless workers in short
 
