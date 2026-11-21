@@ -28,6 +28,10 @@ const MECH_FIRE_DAMAGE: f64 = 60.;
 const MECH_FIRE_COOLDOWN: f64 = 350.;
 const MECH_BOOST_HEIGHT: f64 = 3.;
 const MECH_BOOST_SPEED: f64 = 1.8;
+/// The Metal Sonic Chao's top speed: his physics row 12 SpeedMaxH (3.0 game units per frame, Steam
+/// PhysicsArray 0x17391E8) x 60 frames x one game unit in this world (0.3866 Chao-model units, from
+/// scripts/metal-chao/skin.py, x the client's 0.1 Chao visual scale).
+const METAL_CHAO_TOP_SPEED: f64 = 3.0 * 60. * 0.3866 * 0.1;
 const MECH_BOOST_DRAIN: f64 = 40.;
 const MECH_BOOST_RECOVERY: f64 = 25.;
 
@@ -1648,7 +1652,12 @@ impl Game {
                 self.last_tick_residents += 1;
             }
             let water = p.zone == "garden" && dist(p.x, p.z, -8., 0.) < 5.;
-            let mut speed = (1.4 + f64::from(p.stats["run"].level) * 0.006)
+            let land_speed = if p.gear.look.as_deref() == Some("metal-sonic-chao") {
+                METAL_CHAO_TOP_SPEED
+            } else {
+                1.4 + f64::from(p.stats["run"].level) * 0.006
+            };
+            let mut speed = land_speed
                 * if water {
                     0.65 + f64::from(p.stats["swim"].level) * 0.003
                 } else {
