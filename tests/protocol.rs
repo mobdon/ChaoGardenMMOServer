@@ -1149,6 +1149,10 @@ fn care_model_routes_are_exact_allowlisted_names() {
             "/api/assets/fruit-chao-garden.glb",
             "care/fruit-chao-garden.glb",
         ),
+        ("/api/assets/hat-3.glb", "care/hat-3.glb"),
+        ("/api/assets/hat-15.glb", "care/hat-15.glb"),
+        ("/api/assets/hat-9-eye.glb", "care/hat-9-eye.glb"),
+        ("/api/assets/hat-9-jaw.glb", "care/hat-9-jaw.glb"),
     ] {
         assert_eq!(asset_filename(path).as_deref(), Some(local), "{path}");
     }
@@ -1161,6 +1165,12 @@ fn care_model_routes_are_exact_allowlisted_names() {
         "/api/assets/fruit-../profiles.json",
         "/api/assets/fruit-chao-garden.png",
         "/api/assets/care/tree-hero-mature.glb",
+        "/api/assets/hat-1.glb",
+        "/api/assets/hat-2.glb",
+        "/api/assets/hat-16.glb",
+        "/api/assets/hat-03.glb",
+        "/api/assets/hat-3-eye.glb",
+        "/api/assets/hat-9.png",
     ] {
         assert!(asset_filename(path).is_none(), "{path}");
     }
