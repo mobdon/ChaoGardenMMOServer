@@ -680,6 +680,10 @@ impl Game {
                     .and_then(|token| self.player_for_token(token))
                     .filter(|p| p.card() == hash_token(&card))
                     .ok_or("That egg isn't on this memory card.")?;
+                // MMO rule (mob): eggs hatch in the hub.
+                if parent.zone != "hub" {
+                    return Err("Eggs hatch in the hub.".into());
+                }
                 if let Some(nest) = egg["eggId"].as_str() {
                     if !parent.life.nest.iter().any(|e| e.id == nest) {
                         return Err("That egg isn't in the nest any more.".into());
