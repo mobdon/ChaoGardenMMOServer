@@ -482,7 +482,7 @@ impl AppState {
         let ready: Vec<_> = game
             .players
             .iter()
-            .filter(|(id, _)| !crate::game_save::leased(game, id, std::time::Instant::now()))
+            .filter(|(_, p)| !crate::game_save::leased(game, p.card(), std::time::Instant::now()))
             .filter_map(|(id, p)| crate::training::ready_job(p, now).map(|job| (id.clone(), job)))
             .collect();
         let mut count = 0;
@@ -515,6 +515,8 @@ pub fn router(state: AppState) -> Router {
             "/api/game-save/lease",
             post(game_save_renew).delete(game_save_release),
         )
+        .route("/api/game-save/status", get(game_save_status))
+        .route("/api/card", get(card))
         // Deployment probes and metrics: unauthenticated, cheap, excluded from
         // the request metrics themselves.
         .route("/livez", get(livez))
@@ -681,6 +683,18 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
             "Profile capacity reached. Try again later.",
         );
     }
+    if !resumes_existing && let Some(card) = input["card"].as_str() {
+        let on_card = game.card_chao(card).len();
+        if on_card == 0 {
+            return error(StatusCode::NOT_FOUND, "Memory card was not found.");
+        }
+        if on_card >= crate::game::CARD_CHAO {
+            return error(
+                StatusCode::CONFLICT,
+                "This memory card already holds 8 Chao.",
+            );
+        }
+    }
     match game.create_session(&input) {
         Ok(response) => match state.persist(&mut game) {
             Ok(()) => Json(response).into_response(),
@@ -692,6 +706,8 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
                 )
             }
         },
+        // An egg that can't hatch says why; the egg stays carried.
+        Err(error_value) if !input["egg"].is_null() => error(StatusCode::BAD_REQUEST, &error_value),
         Err(error_value) => {
             eprintln!("Session creation failed: {error_value}");
             error(
@@ -702,14 +718,17 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     }
 }
 
-/// The signed-in player (`Authorization: Bearer <token>`) and the lease header.
-fn save_caller(game: &Game, headers: &HeaderMap) -> Option<(String, Option<String>)> {
-    let token = headers
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
         .get(header::AUTHORIZATION)?
         .to_str()
         .ok()?
-        .strip_prefix("Bearer ")?;
-    let id = game.player_for_token(token)?.id.clone();
+        .strip_prefix("Bearer ")
+}
+/// The memory card the caller opens (`Authorization: Bearer <Chao token or
+/// card code>`) and the lease header. Game saves and leases are per card.
+fn save_caller(game: &Game, headers: &HeaderMap) -> Option<(String, Option<String>)> {
+    let id = game.card_for(bearer(headers)?)?;
     let lease = headers
         .get("x-save-lease")
         .and_then(|v| v.to_str().ok())
@@ -791,6 +810,42 @@ async fn game_save_put(State(state): State<AppState>, headers: HeaderMap, body: 
         Err(io_error) => save_failed("write", io_error),
     }
 }
+/// Insert a memory card: every Chao on it, with the token that opens each.
+async fn card(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let chao = bearer(&headers)
+        .map(|code| game.card_sessions(code))
+        .unwrap_or_default();
+    if chao.is_empty() {
+        return error(StatusCode::NOT_FOUND, "Memory card was not found.");
+    }
+    Json(json!({"chao": chao})).into_response()
+}
+/// The title screen's look at the card: never checks the save out.
+async fn game_save_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let (id, in_game) = {
+        let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+        let Some((id, _)) = save_caller(&game, &headers) else {
+            return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+        };
+        let in_game = crate::game_save::leased(&game, &id, std::time::Instant::now());
+        (id, in_game)
+    };
+    match crate::game_save::status(&state.config.data_dir, &id) {
+        Ok(saved) => {
+            let saved_at = saved.and_then(|(_, at)| {
+                Some(at.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64)
+            });
+            Json(json!({
+                "revision": saved.map_or(0, |(revision, _)| revision),
+                "savedAt": saved_at,
+                "inGame": in_game,
+            }))
+            .into_response()
+        }
+        Err(io_error) => save_failed("status", io_error),
+    }
+}
 /// The game is still running with the card in: keep the lease without moving the save.
 async fn game_save_renew(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
@@ -823,6 +878,8 @@ pub fn asset_filename(path: &str) -> Option<String> {
     let filename = path.strip_prefix("/api/assets/")?;
     let glbs = [
         "chao",
+        "chao-egg",
+        "chao-egg-hatching",
         "hub",
         "garden",
         "hero-garden",
@@ -855,6 +912,10 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "chao-stat-panel.png",
         "chao-stat-font.png",
         "chao-race-parameter.png",
+        "chao-select-window.png",
+        "item-panel-fruit.png",
+        "item-panel-egg.png",
+        "chao-icon-heart.png",
         "discord-icon.png",
         "login-chao.png",
         "tiny-neutral-chaos.png",
@@ -869,6 +930,7 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "voice-knuckles",
         "voice-tails",
         "voice-amy",
+        "jingle-chao-g-dance",
     ];
     if filename == "hub-grass.png" {
         return Some("nativehubgrass.png".into());
@@ -901,6 +963,8 @@ pub fn asset_filename(path: &str) -> Option<String> {
         })
         || filename == "emerald-sky.png"
         || pngs.contains(&filename)
+        // The game's own inventory panels for native items 0-24 (al_panel).
+        || (0..25).any(|id| filename == format!("item-panel-{id}.png"))
         || audio.iter().any(|name| filename == format!("{name}.mp3"))
     {
         Some(filename.into())
@@ -1320,7 +1384,13 @@ async fn handle_socket(
     loop {
         let outgoing: Option<(Message, usize)> = tokio::select! {
             _ = shutdown.changed() => break,
-            _ = snapshots.tick() => match snapshot_message(&state, &id, observer) { Some(frame) => Some(frame), None => break },
+            _ = snapshots.tick() => {
+                if !observer && state.game.lock().unwrap_or_else(|p| p.into_inner()).benched.contains(&id) {
+                    let _ = send_bounded(&mut writer, Message::Close(Some(CloseFrame { code: 4001, reason: "Another Chao from this memory card is out now.".into() })), &state).await;
+                    break;
+                }
+                match snapshot_message(&state, &id, observer) { Some(frame) => Some(frame), None => break }
+            },
             event = events.recv() => match event {
                 Ok(event) => {
                     state.metrics.set_queue_depth(state.events.len());
@@ -1359,7 +1429,7 @@ async fn handle_socket(
                         } else if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
                             let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
                             let moving = value["type"] == "input" || (value["type"] == "action" && value["action"] == "save");
-                            if !moving && crate::game_save::leased(&game, &id, std::time::Instant::now()) {
+                            if !moving && game.players.get(&id).is_some_and(|p| crate::game_save::leased(&game, p.card(), std::time::Instant::now())) {
                                 response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"in-game","text":"Your Chao is in the big garden right now. Leave the game to care for it here."}).to_string().into()), 0));
                             } else {
                             match value["type"].as_str() {

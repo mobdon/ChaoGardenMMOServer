@@ -7,7 +7,7 @@ fn fixture(owner: bool) -> (Game, String, String) {
 }
 fn fixture_terrain(owner: bool, terrains: BTreeMap<String, Terrain>) -> (Game, String, String) {
     let mut game = Game::new(vec![], terrains, owner, 1000.).unwrap();
-    let session = game.create_session(&json!({"name": "Test Chao"})).unwrap();
+    let session = game.create_session(&json!({"name": "Tester"})).unwrap();
     let id = session["player"]["id"].as_str().unwrap().to_owned();
     let token = session["token"].as_str().unwrap().to_owned();
     game.connect(&id);
@@ -72,7 +72,7 @@ fn session_resumes_without_renaming_and_hashes_match_legacy_node_sha256() {
         .create_session(&json!({"token":token,"name":"Ignored"}))
         .unwrap();
     assert_eq!(resume["player"]["id"], id);
-    assert_eq!(resume["player"]["name"], "Test Chao");
+    assert_eq!(resume["player"]["name"], "Tester");
     assert!(
         !serde_json::to_string(&g.export_profiles())
             .unwrap()
@@ -705,5 +705,126 @@ fn body_reshapes_from_stats_and_survives_restore() {
             .unwrap()
             .len(),
         17
+    );
+}
+
+#[test]
+fn one_memory_card_holds_up_to_eight_chao() {
+    let (mut g, first_id, first_token) = fixture(false);
+    assert!(g.card_for(&first_token).is_some());
+    let made = g
+        .create_session(&json!({"name":"Pebble the long name"}))
+        .unwrap();
+    let card = made["card"].as_str().unwrap().to_owned();
+    assert_eq!(
+        made["player"]["name"], "Pebble",
+        "names fit the game's 7 bytes"
+    );
+    for i in 1..8 {
+        let more = g
+            .create_session(&json!({"name":format!("C{i}"),"card":card}))
+            .unwrap();
+        assert_eq!(more["card"], card);
+    }
+    assert!(
+        g.create_session(&json!({"name":"Nine","card":card}))
+            .is_err()
+    );
+    assert!(g.create_session(&json!({"card":"not-a-card"})).is_err());
+    let sessions = g.card_sessions(&card);
+    assert_eq!(sessions.len(), 8);
+    // Each token the card hands out opens its own Chao and leads back to the card.
+    for session in &sessions {
+        let token = session["token"].as_str().unwrap();
+        let p = g.player_for_token(token).unwrap();
+        assert_eq!(p.id, session["player"]["id"]);
+        assert_eq!(g.card_for(token), g.card_for(&card));
+    }
+    assert!(!sessions.iter().any(|s| s["player"]["id"] == first_id));
+    // The code never lands in the stored profiles.
+    assert!(
+        !serde_json::to_string(&g.export_profiles())
+            .unwrap()
+            .contains(&card)
+    );
+}
+
+#[test]
+fn a_carried_egg_hatches_into_a_new_slot_on_the_same_card() {
+    let mut g = Game::new(vec![], BTreeMap::new(), false, 1000.).unwrap();
+    let made = g.create_session(&json!({"name":"Mother"})).unwrap();
+    let (card, token) = (
+        made["card"].as_str().unwrap().to_owned(),
+        made["token"].as_str().unwrap().to_owned(),
+    );
+    let parent = made["player"]["id"].as_str().unwrap().to_owned();
+    g.players
+        .get_mut(&parent)
+        .unwrap()
+        .care
+        .inventory
+        .insert("egg:2".into(), 1);
+    let revision = g.players[&parent].care.revision;
+    let egg = |item: &str| json!({"name":"Pip","card":card,"egg":{"from":token,"itemId":item}});
+    assert!(
+        g.create_session(&egg("egg:3")).is_err(),
+        "only a carried egg"
+    );
+    let hatched = g.create_session(&egg("egg:2")).unwrap();
+    assert_eq!(hatched["card"], card.as_str());
+    assert_eq!(hatched["player"]["name"], "Pip");
+    let child = &g.players[hatched["player"]["id"].as_str().unwrap()];
+    assert_eq!(
+        child.life.gene.color,
+        [2, 2],
+        "a White egg hatches a white Chao"
+    );
+    assert!(
+        !g.players[&parent].care.inventory.contains_key("egg:2"),
+        "the egg is used up"
+    );
+    assert_eq!(g.players[&parent].care.revision, revision + 1);
+    assert!(
+        g.create_session(&egg("egg:2")).is_err(),
+        "and can't hatch twice"
+    );
+    let other = g.create_session(&json!({"name":"Else"})).unwrap();
+    let stranger = json!({"name":"Pip","card":other["card"],"egg":{"from":token,"itemId":"egg:2"}});
+    g.players
+        .get_mut(&parent)
+        .unwrap()
+        .care
+        .inventory
+        .insert("egg:2".into(), 1);
+    assert!(
+        g.create_session(&stranger).is_err(),
+        "an egg stays on its own card"
+    );
+}
+
+#[test]
+fn only_the_selected_chao_of_a_card_is_out() {
+    let mut g = Game::new(vec![], BTreeMap::new(), false, 1000.).unwrap();
+    let first = g.create_session(&json!({"name":"One"})).unwrap();
+    let card = first["card"].as_str().unwrap().to_owned();
+    let second = g
+        .create_session(&json!({"name":"Two","card":card}))
+        .unwrap();
+    let stranger = g.create_session(&json!({"name":"Else"})).unwrap();
+    let id = |v: &Value| v["player"]["id"].as_str().unwrap().to_owned();
+    let (one, two, other) = (id(&first), id(&second), id(&stranger));
+    g.connect(&one);
+    g.connect(&other);
+    assert!(g.benched.is_empty());
+    g.connect(&two);
+    assert!(
+        g.benched.contains(&one),
+        "selecting another Chao sends the first back to the card"
+    );
+    assert!(!g.benched.contains(&other), "other players' Chao stay");
+    g.connect(&one);
+    assert!(
+        g.benched.contains(&two) && !g.benched.contains(&one),
+        "and swapping back works"
     );
 }

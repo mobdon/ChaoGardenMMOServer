@@ -1310,7 +1310,7 @@ pub fn reincarnate(p: &mut Player, policy: Policy) {
 
 /// Hatch an egg into this profile as a new generation (MMO lineage policy). The native egg
 /// param starts all-zero; its genes were analysed when the egg was laid.
-fn hatch(p: &mut Player, egg: Egg, policy: Policy) {
+pub(crate) fn hatch(p: &mut Player, egg: Egg, policy: Policy) {
     let seed = hash_u64(&[b"egg", egg.id.as_bytes()]);
     let generation = p.life.generation.saturating_add(1);
     let nest = std::mem::take(&mut p.life.nest);
@@ -1336,6 +1336,20 @@ fn hatch(p: &mut Player, egg: Egg, policy: Policy) {
     }
     p.hunger = 100. - f64::from(life.emotion.state[2]) / 100.;
     p.life = life;
+}
+
+/// MMO policy: a carried Black Market egg picked from the inventory hatches straight into a
+/// new Chao on the owner's card. The egg is made exactly as [`lay_bought_egg`] makes it.
+pub fn hatch_bought_egg(
+    p: &mut Player,
+    egg_id: u8,
+    now: f64,
+    policy: Policy,
+) -> Result<(), &'static str> {
+    lay_bought_egg(p, egg_id, now)?;
+    let egg = p.life.nest.pop().expect("just laid");
+    hatch(p, egg, policy);
+    Ok(())
 }
 
 /// `AL_CreateChildGene` / `AL_BlendGene` 0x1086C: one random allele from each parent.
@@ -1462,17 +1476,19 @@ fn social_conflict(p: &Player) -> bool {
         || p.care.activity_lock.is_some()
         || !["garden", "hero", "dark"].contains(&p.zone.as_str())
 }
+/// MMO policy: partners are picked from the breeding menu, so any Chao in the same garden counts.
 fn in_range(a: &Player, b: &Player) -> bool {
-    a.zone == b.zone && ((a.x - b.x).powi(2) + (a.z - b.z).powi(2)).sqrt() <= SOCIAL_RANGE
+    a.zone == b.zone
 }
 fn can_breed(p: &Player) -> bool {
     p.life.stage == Stage::Adult && !chaos(p)
 }
-/// Chao present in a garden zone: connected players and residents.
-fn garden_population(game: &Game, zone: &str) -> usize {
+/// MMO policy: gardens are social spaces full of other players' Chao, so the native
+/// "garden under 8 Chao" check counts the inviter's own memory card (8 slots) instead.
+fn card_population(game: &Game, me: &Player) -> usize {
     game.players
         .values()
-        .filter(|p| p.zone == zone && (p.connections > 0 || p.watch.is_some()))
+        .filter(|p| p.card() == me.card())
         .count()
 }
 
@@ -1509,7 +1525,7 @@ fn apply(game: &mut Game, id: &str, request: &Request) -> Result<(String, Value)
                 if me.life.emotion.state[3] < BREED_INVITE {
                     return Err("not-ready");
                 }
-                if policy.garden_limit && garden_population(game, &me.zone) >= GARDEN_CHAO_LIMIT {
+                if policy.garden_limit && card_population(game, me) >= GARDEN_CHAO_LIMIT {
                     game.players
                         .get_mut(id)
                         .expect("checked")
@@ -1755,7 +1771,9 @@ fn named<T: Serialize + Copy>(names: &[&str], values: &[T]) -> Value {
 pub fn public_summary(p: &Player) -> Value {
     json!({"stage":p.life.stage,"cocoon":p.life.cocoon.map(|c|c.kind),"age":p.life.age,
         "reincarnations":p.life.reincarnations,"generation":p.life.generation,
-        "ill":is_ill(p)})
+        "ill":is_ill(p),
+        // The breeding menu's check: would this Chao answer a call (fn_60_150FC, breed > 5000)?
+        "inTheMood":p.life.emotion.state[3] > BREED_ANSWER,"busy":social_conflict(p)})
 }
 
 /// Owner-only `snapshot.life`.

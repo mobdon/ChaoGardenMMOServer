@@ -68,6 +68,9 @@ pub struct Player {
     pub(crate) profile_extra: Value,
     pub id: String,
     pub token_hash: String,
+    /// The memory card this Chao is on (hash of the card code). None: a Chao
+    /// from before cards, whose own token is its card code.
+    pub card_hash: Option<String>,
     pub name: String,
     pub admin: bool,
     pub stats: BTreeMap<String, Stat>,
@@ -119,6 +122,10 @@ pub struct Player {
 }
 
 impl Player {
+    /// The memory card this Chao is on: keys its game save and lease.
+    pub fn card(&self) -> &str {
+        self.card_hash.as_deref().unwrap_or(&self.token_hash)
+    }
     pub(crate) fn cooldown(&mut self, name: &str, now: f64, duration: f64) -> bool {
         if self.cooldowns.get(name).is_some_and(|until| *until > now) {
             return false;
@@ -192,7 +199,7 @@ impl Player {
         })
     }
     pub fn profile(&self) -> Value {
-        let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "name": self.name, "admin": self.admin,
+        let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "cardHash": self.card_hash, "name": self.name, "admin": self.admin,
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
             "energy":self.energy,"hunger":self.hunger,"care":self.care,"body":self.body,"life":self.life,"garden":self.garden,"tinyCollection":self.tiny_collection,
@@ -370,6 +377,8 @@ pub struct Game {
     pub allow_owner_bootstrap: bool,
     pub terrains: BTreeMap<String, Terrain>,
     pub players: BTreeMap<String, Player>,
+    /// Chao swapped back to their memory card while still connected; their sockets close.
+    pub benched: BTreeSet<String>,
     pub tokens: BTreeMap<String, String>,
     pub events: Vec<Event>,
     pub dirty: bool,
@@ -386,6 +395,14 @@ pub struct Game {
 pub fn hash_token(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }
+/// A memory card holds a garden's worth of Chao, as the game's own save does.
+pub const CARD_CHAO: usize = 8;
+/// The game's own save keeps 7 bytes of a Chao's name (Chao record +0x12).
+pub const NAME_MAX: usize = 7;
+/// A Chao's session token on a card, recomputable from the card code alone.
+fn chao_token(card: &str, id: &str) -> String {
+    hash_token(&format!("chao:{card}:{id}"))
+}
 fn clean_name(value: Option<&str>) -> String {
     let value: String = value
         .unwrap_or("Chao")
@@ -398,6 +415,11 @@ fn clean_name(value: Option<&str>) -> String {
     } else {
         value
     }
+}
+/// A new or changed name: what the game's own save can hold.
+fn short_name(value: Option<&str>) -> String {
+    let name: String = clean_name(value).chars().take(NAME_MAX).collect();
+    name.trim_end().to_owned()
 }
 fn number(value: &Value, default: f64, min: f64, max: f64) -> f64 {
     value
@@ -438,6 +460,7 @@ impl Game {
             allow_owner_bootstrap,
             terrains,
             players: BTreeMap::new(),
+            benched: BTreeSet::new(),
             tokens: BTreeMap::new(),
             events: vec![],
             dirty: false,
@@ -514,6 +537,7 @@ impl Game {
             profile_extra: data.clone(),
             id: data["id"].as_str().unwrap_or_default().into(),
             token_hash: data["tokenHash"].as_str().unwrap_or_default().into(),
+            card_hash: data["cardHash"].as_str().map(Into::into),
             name: clean_name(data["name"].as_str()),
             admin,
             stats,
@@ -642,14 +666,113 @@ impl Game {
         if input["resumeOnly"] == true {
             return Err("Saved Chao was not found.".into());
         }
-        let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-        let player = self.make_player(&json!({"id": Uuid::new_v4().to_string(), "tokenHash": hash_token(&token), "name": input["name"], "admin": self.allow_owner_bootstrap && self.players.is_empty()}))?;
-        let response = json!({"token": token, "player": player.public()});
+        // A new Chao joins the card it was made with, or starts a new card.
+        let card = match input["card"].as_str() {
+            Some(card) if !self.card_chao(card).is_empty() => card.to_owned(),
+            Some(_) => return Err("Memory card was not found.".into()),
+            None => format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
+        };
+        if self.card_chao(&card).len() >= CARD_CHAO {
+            return Err("This memory card already holds 8 Chao.".into());
+        }
+        // An egg picked from a Chao's inventory, or a bred egg from its nest, hatches into
+        // the new slot (MMO glue).
+        let egg = match &input["egg"] {
+            Value::Null => None,
+            egg => {
+                let parent = egg["from"]
+                    .as_str()
+                    .and_then(|token| self.player_for_token(token))
+                    .filter(|p| p.card() == hash_token(&card))
+                    .ok_or("That egg isn't on this memory card.")?;
+                // MMO rule (mob): eggs hatch in the hub.
+                if parent.zone != "hub" {
+                    return Err("Eggs hatch in the hub.".into());
+                }
+                if let Some(nest) = egg["eggId"].as_str() {
+                    if !parent.life.nest.iter().any(|e| e.id == nest) {
+                        return Err("That egg isn't in the nest any more.".into());
+                    }
+                    Some((parent.id.clone(), nest.to_owned(), None))
+                } else {
+                    let item = egg["itemId"].as_str().unwrap_or_default();
+                    let egg_id = crate::black_market::egg_id(item).ok_or("That isn't an egg.")?;
+                    if parent.care.inventory.get(item).copied().unwrap_or(0) == 0 {
+                        return Err("That egg isn't carried any more.".into());
+                    }
+                    Some((parent.id.clone(), item.to_owned(), Some(egg_id)))
+                }
+            }
+        };
+        let id = Uuid::new_v4().to_string();
+        let token = chao_token(&card, &id);
+        let name: String = short_name(input["name"].as_str());
+        let player = self.make_player(&json!({"id": id, "tokenHash": hash_token(&token), "cardHash": hash_token(&card), "name": name, "admin": self.allow_owner_bootstrap && self.players.is_empty()}))?;
+        let mut player = player;
+        match egg {
+            Some((parent, item, Some(egg_id))) => {
+                crate::life::hatch_bought_egg(&mut player, egg_id, self.time, self.life_policy)?;
+                let parent = self.players.get_mut(&parent).expect("checked");
+                let left = parent.care.inventory.get(&item).copied().unwrap_or(0) - 1;
+                if left == 0 {
+                    parent.care.inventory.remove(&item);
+                } else {
+                    parent.care.inventory.insert(item, left);
+                }
+                parent.care.revision += 1;
+            }
+            Some((parent, nest, None)) => {
+                let parent = self.players.get_mut(&parent).expect("checked");
+                let index = parent
+                    .life
+                    .nest
+                    .iter()
+                    .position(|e| e.id == nest)
+                    .expect("checked");
+                let egg = parent.life.nest.remove(index);
+                parent.life.revision = parent.life.revision.saturating_add(1);
+                crate::life::hatch(&mut player, egg, self.life_policy);
+            }
+            None => {}
+        }
+        let response = json!({"token": token, "card": card, "player": player.public()});
         self.tokens
             .insert(player.token_hash.clone(), player.id.clone());
         self.players.insert(player.id.clone(), player);
         self.dirty = true;
         Ok(response)
+    }
+    /// The Chao on the card whose code is `card`.
+    pub fn card_chao(&self, card: &str) -> Vec<&Player> {
+        if card.len() > 256 {
+            return Vec::new();
+        }
+        let card_hash = hash_token(card);
+        self.players
+            .values()
+            .filter(|p| p.card() == card_hash)
+            .collect()
+    }
+    /// Each Chao on the card with the token that opens it.
+    pub fn card_sessions(&self, card: &str) -> Vec<Value> {
+        self.card_chao(card)
+            .into_iter()
+            .map(|p| {
+                let token = if p.card_hash.is_none() {
+                    card.to_owned()
+                } else {
+                    chao_token(card, &p.id)
+                };
+                json!({"token": token, "player": p.public()})
+            })
+            .collect()
+    }
+    /// The card a bearer credential (a Chao's token or a card code) opens.
+    pub fn card_for(&self, credential: &str) -> Option<String> {
+        if let Some(p) = self.player_for_token(credential) {
+            return Some(p.card().to_owned());
+        }
+        (!self.card_chao(credential).is_empty()).then(|| hash_token(credential))
     }
     pub fn player_for_token(&self, token: &str) -> Option<&Player> {
         if token.len() > 256 {
@@ -660,6 +783,23 @@ impl Game {
             .and_then(|id| self.players.get(id))
     }
     pub fn connect(&mut self, id: &str) -> bool {
+        // MMO rule (mob): only the selected Chao of a memory card is out, in the garden,
+        // the hub or Tiny Garden. Selecting another swaps it in; the rest go back to the card.
+        if let Some(card) = self.players.get(id).map(|p| p.card().to_owned()) {
+            self.benched.remove(id);
+            for other in self
+                .players
+                .values_mut()
+                .filter(|p| p.id != id && p.card() == card)
+            {
+                if other.watch.take().is_some() {
+                    self.dirty = true;
+                }
+                if other.connections > 0 {
+                    self.benched.insert(other.id.clone());
+                }
+            }
+        }
         if let Some(player) = self.players.get_mut(id) {
             player.connections += 1;
             player.input = Input::default();
@@ -1035,7 +1175,7 @@ impl Game {
                 return;
             }
             "rename" => {
-                p.name = clean_name(message["name"].as_str());
+                p.name = short_name(message["name"].as_str());
                 self.dirty = true;
                 self.notice(&id, format!("Your name is now {}.", p.name), "info");
                 return;

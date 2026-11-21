@@ -67,7 +67,7 @@ async fn profile_cap_keeps_resume_and_durable_ownership_available() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(resumed, original);
+    assert_eq!(resumed["player"], original["player"]);
     let saved: Value =
         serde_json::from_slice(&fs::read(dir.path().join("profiles.json")).unwrap()).unwrap();
     assert_eq!(saved.as_array().unwrap().len(), 1);

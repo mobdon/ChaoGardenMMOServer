@@ -80,7 +80,10 @@ async fn sessions_persist_hashes_resume_legacy_shape_and_ignore_privilege_fields
         json!({"token":owner["token"], "name":"Ignored"}),
     )
     .await;
-    assert_eq!(resumed, owner);
+    // Resuming opens the Chao; only making it hands out its memory card code.
+    assert_eq!(resumed["token"], owner["token"]);
+    assert_eq!(resumed["player"], owner["player"]);
+    assert!(owner["card"].is_string() && resumed.get("card").is_none());
 }
 
 #[tokio::test]
@@ -139,10 +142,8 @@ async fn resume_only_returns_404_without_mutating_save_slots() {
         );
         assert_eq!(state.game.lock().unwrap().players.len(), 1);
     }
-    assert_eq!(
-        session(&state, json!({"token":owner["token"],"resumeOnly":true})).await,
-        owner
-    );
+    let resumed = session(&state, json!({"token":owner["token"],"resumeOnly":true})).await;
+    assert_eq!(resumed["player"], owner["player"]);
 }
 
 #[tokio::test]
@@ -257,6 +258,20 @@ async fn assets_serve_exact_allowlisted_bytes_mime_head_and_reject_traversal() {
         ("voice-amy.mp3", "voice-amy.mp3", "audio/mpeg"),
         ("discord-icon.png", "discord-icon.png", "image/png"),
         ("login-chao.png", "login-chao.png", "image/png"),
+        ("item-panel-24.png", "item-panel-24.png", "image/png"),
+        (
+            "chao-select-window.png",
+            "chao-select-window.png",
+            "image/png",
+        ),
+        ("item-panel-egg.png", "item-panel-egg.png", "image/png"),
+        ("chao-icon-heart.png", "chao-icon-heart.png", "image/png"),
+        ("chao-egg.glb", "chao-egg.glb", "model/gltf-binary"),
+        (
+            "jingle-chao-g-dance.mp3",
+            "jingle-chao-g-dance.mp3",
+            "audio/mpeg",
+        ),
         (
             "shadow-skate-motion.json",
             "shadow-skate-motion.json",
@@ -414,6 +429,8 @@ async fn native_chao_shadow_png_is_exact_missing_safe_and_head_compatible() {
         "/api/assets/imports/chao-shadow.png",
         "/api/assets/chao-shadow.png/../profiles.json",
         "/api/assets/%2e%2e/imports/chao-shadow.png",
+        "/api/assets/item-panel-25.png",
+        "/api/assets/item-panel-01.png",
     ] {
         assert!(asset_filename(path).is_none(), "{path}");
         assert_eq!(
