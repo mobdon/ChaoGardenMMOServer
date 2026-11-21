@@ -98,13 +98,18 @@ if [ -n "$serena_proj" ] && [ -d "$serena_proj/.git" ]; then
   grep -qx '.serena/' "$serena_proj/.git/info/exclude" || echo '.serena/' >> "$serena_proj/.git/info/exclude"   # never committed
   # graphify code graph: kept in $SHARED_DIR/graphify/<repo> (never in git, the commit guard refuses graphify-out/).
   # Restore it, let `graphify update .` re-extract only changed files from its cache, then save it back.
-  grep -qx 'graphify-out/' "$serena_proj/.git/info/exclude" || echo 'graphify-out/' >> "$serena_proj/.git/info/exclude"
-  g_saved="$SHARED_DIR/graphify/$(basename "$serena_proj")"
-  [ -d "$serena_proj/graphify-out" ] || [ ! -d "$g_saved" ] || cp -r "$g_saved" "$serena_proj/graphify-out"
-  (cd "$serena_proj" && timeout 900 graphify update . >/dev/null 2>&1) \
-    && ! cmp -s "$serena_proj/graphify-out/graph.json" "$g_saved/graph.json" \
-    && mkdir -p "$SHARED_DIR/graphify" && rm -rf "$g_saved.tmp" && cp -r "$serena_proj/graphify-out" "$g_saved.tmp" \
-    && rm -rf "$g_saved" && mv "$g_saved.tmp" "$g_saved" || true
+  # Every clone beside the pinned one gets a map (server + client). Timed 2026-11-21: restore+update ~2-3 s per repo;
+  # from scratch server 4 s, client 33 s (that only happens after an account swap, then the cache is saved again).
+  for g_repo in "$(dirname "$serena_proj")"/*/; do
+    g_repo=${g_repo%/}; [ -d "$g_repo/.git" ] || continue
+    grep -qx 'graphify-out/' "$g_repo/.git/info/exclude" || echo 'graphify-out/' >> "$g_repo/.git/info/exclude"
+    g_saved="$SHARED_DIR/graphify/$(basename "$g_repo")"
+    [ -d "$g_repo/graphify-out" ] || [ ! -d "$g_saved" ] || cp -r "$g_saved" "$g_repo/graphify-out"
+    (cd "$g_repo" && timeout 900 graphify update . >/dev/null 2>&1) \
+      && ! cmp -s "$g_repo/graphify-out/graph.json" "$g_saved/graph.json" \
+      && mkdir -p "$SHARED_DIR/graphify" && rm -rf "$g_saved.tmp" && cp -r "$g_repo/graphify-out" "$g_saved.tmp" \
+      && rm -rf "$g_saved" && mv "$g_saved.tmp" "$g_saved" || true
+  done
   serena_where="--project $serena_proj"
 else
   serena_where="--project-from-cwd"
