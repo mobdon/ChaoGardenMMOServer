@@ -10,9 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// A whole Memory Card 59 (59 blocks of 8 KB, as `sa2-boot/src/card.rs`
-/// models it): no card file the game writes can be larger.
-pub const MAX_BYTES: usize = 59 * 8192;
+/// The whole memory card the game sends (`SA2CARD1` pack, see
+/// `sa2-boot/src/mmo.rs`): 59 blocks of 8 KB plus room for names and status.
+pub const MAX_BYTES: usize = 65 * 8192;
 /// A game that stops renewing (crash, lost network) frees the Chao after this.
 pub const LEASE: Duration = Duration::from_secs(600);
 
@@ -21,7 +21,7 @@ pub struct Lease {
     pub until: Instant,
 }
 
-/// True while a game holds this player's save.
+/// True while a game holds this memory card's save (keyed by card hash).
 pub fn leased(game: &Game, player: &str, now: Instant) -> bool {
     game.game_save_leases
         .get(player)
@@ -75,6 +75,22 @@ pub fn read(dir: &Path, player: &str) -> io::Result<(u64, Vec<u8>)> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((0, Vec::new())),
         Err(error) => Err(error),
     }
+}
+
+/// The card label without the bytes: (revision, when it was written), or None before the first save.
+pub fn status(dir: &Path, player: &str) -> io::Result<Option<(u64, std::time::SystemTime)>> {
+    use std::io::Read;
+    let mut file = match fs::File::open(path(dir, player)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut revision = [0; 8];
+    file.read_exact(&mut revision)?;
+    Ok(Some((
+        u64::from_le_bytes(revision),
+        file.metadata()?.modified()?,
+    )))
 }
 
 /// Store `bytes` as `revision` atomically; the previous save stays as `.prev`.
