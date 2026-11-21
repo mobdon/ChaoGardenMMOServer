@@ -49,6 +49,7 @@ s={"serena":{"command":"serena","args":["start-mcp-server","--context=claude-cod
    "skillsmp":{"type":"http","url":"https://skillsmp.com/mcp"}}
 import os
 if os.environ.get("CONTEXT7_API_KEY"): s["context7"]["headers"]={"CONTEXT7_API_KEY":"${CONTEXT7_API_KEY}"}  # expanded by claude at connect time; the key is never written
+if os.environ.get("SKILLSMP_API_KEY"): s["skillsmp"]["headers"]={"Authorization":"Bearer ${SKILLSMP_API_KEY}"}  # skillsmp.com/mcp refuses keyless calls (asks for OAuth)
 if mem: s["claude-mem"]={"command":"node","args":[mem.rstrip('/')+"/scripts/mcp-server.cjs"],"env":{"CLAUDE_PLUGIN_ROOT":mem.rstrip('/')}}
 json.dump({"mcpServers":s},open(cfg,"w"),indent=1)
 PY

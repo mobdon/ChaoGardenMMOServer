@@ -166,6 +166,8 @@ cp "$KIT_DIR/hooks/syntax-check.py" ~/.claude/hooks/syntax-check.py
 # rtk guard: runs rtk's rewrite, then keeps NAME=... assignments
 # and excluded commands inside ( ) exact, and restores graphify-out/ before git pull/rebase/merge.
 cp "$KIT_DIR/hooks/rtk-guard.py" ~/.claude/hooks/rtk-guard.py
+# Headroom proxy keeper: SessionStart restarts the proxy when a long-lived container lost it.
+cp "$KIT_DIR/hooks/headroom-up.sh" ~/.claude/hooks/headroom-up.sh
 python3 - <<'EOF'   # register the caveman sub-agent hook and the syntax hook, and put the rtk guard in rtk's place (idempotent)
 import json, os
 p = os.path.expanduser('~/.claude/settings.json')
@@ -186,7 +188,8 @@ pre[:] = [e for e in pre if e.get('hooks')]
 if not seen:
     pre.append({'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': guard}]})
 for ev, cmd, matcher in (('SubagentStart', 'python3 ~/.claude/hooks/caveman-subagent.py', None),
-                         ('PostToolUse', 'python3 ~/.claude/hooks/syntax-check.py', 'Edit|Write|MultiEdit')):
+                         ('PostToolUse', 'python3 ~/.claude/hooks/syntax-check.py', 'Edit|Write|MultiEdit'),
+                         ('SessionStart', 'bash ~/.claude/hooks/headroom-up.sh', None)):
     hooks = s.setdefault('hooks', {}).setdefault(ev, [])
     if not any(h.get('command') == cmd for e in hooks for h in e.get('hooks', [])):
         e = {'hooks': [{'type': 'command', 'command': cmd, 'timeout': 60 if matcher else 10}]}
@@ -209,6 +212,9 @@ EOF
 # task-observer (rebelytics, pinned 56e8907): logs task friction and tool clashes to
 # $SHARED_DIR/task-observer for review. Workers get TASK_OBSERVER_ROLE=worker from run-worker.sh.
 bash "$KIT_DIR/task-observer/install.sh"
+# unlazy (Leonxlnx/unlazy, vendored at 1667149 in $KIT_DIR/unlazy): completion-gate skill (GATES.md acceptance checks). Skill only:
+# its optional Stop hook (scripts/install-hooks.mjs) is NOT installed, so no extra hook. No network, no deps.
+mkdir -p ~/.claude/skills/unlazy && cp -r "$KIT_DIR/unlazy/." ~/.claude/skills/unlazy/   # vendored copy, no network
 # MarkItDown: turn uploaded PDF/Word/Excel/PowerPoint files into Markdown: `markitdown file.xlsx > file.md`
 pip install --break-system-packages -q "markitdown[pdf,docx,xlsx,pptx]"
 # Context7 (Upstash): current docs for libraries/tools (Playwright, npm packages). Needs mcp.context7.com allowed in the

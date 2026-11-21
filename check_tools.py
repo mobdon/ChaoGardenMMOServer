@@ -426,6 +426,23 @@ def _():
     out('PASS', 'context7', ('key from the environment (literal header)' if h else 'anonymous tier (no CONTEXT7_API_KEY)') + '; resolve-library-id answered')
 
 
+@check('headroom keeper')
+def _():
+    st = json.load(open(HOME + '/.claude/settings.json')).get('hooks', {}).get('SessionStart', [])
+    ok = os.path.exists(HOME + '/.claude/hooks/headroom-up.sh') and any('headroom-up.sh' in h.get('command', '') for e in st for h in e.get('hooks', []))
+    out('PASS' if ok else 'FAIL', 'headroom keeper', 'SessionStart hook restarts the proxy' if ok else 'SessionStart headroom-up.sh hook missing (re-run install-all.sh)')
+
+
+@check('unlazy')
+def _():
+    d = HOME + '/.claude/skills/unlazy'
+    ok = os.path.exists(d + '/SKILL.md') and os.path.exists(d + '/scripts/gate-check.mjs')
+    hooked = 'install-hooks' in open(HOME + '/.claude/settings.json').read() or 'stop-hook.mjs' in open(HOME + '/.claude/settings.json').read()
+    if not ok:
+        return out('FAIL', 'unlazy', 'skill missing (re-run install-all.sh; it copies $KIT_DIR/unlazy)')
+    out('WARN' if hooked else 'PASS', 'unlazy', 'skill present' + ('; its Stop hook is registered (kit installs skill only)' if hooked else ', no hook'))
+
+
 @check('task-observer')
 def _():
     sk = HOME + '/.claude/skills/task-observer'
@@ -466,7 +483,7 @@ def _():
         return out('FAIL', 'pre-commit guard', f'{hk} not installed (install-all.sh copies tools/git-hooks/pre-commit)')
     tmp = tempfile.mkdtemp()
     try:
-        sh('git init -q . && git config user.email t@t && git config user.name t', cwd=tmp)
+        sh('git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false', cwd=tmp)
         shutil.copy(hk, tmp + '/.git/hooks/pre-commit')
         os.chmod(tmp + '/.git/hooks/pre-commit', 0o755)
         open(tmp + '/ok.py', 'w').write('x = 1\n')

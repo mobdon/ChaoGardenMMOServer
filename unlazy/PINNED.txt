@@ -1,0 +1,2 @@
+Leonxlnx/unlazy @ 16671491f6679ad9378f52604d3bc2415b4120c7 (source reviewed 2026-11-21)
+Hook-free: scripts/stop-hook.mjs and scripts/install-hooks.mjs removed; SKILL.md hook section replaced.
