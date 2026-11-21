@@ -10,9 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// A whole Memory Card 59 (59 blocks of 8 KB, as `sa2-boot/src/card.rs`
-/// models it): no card file the game writes can be larger.
-pub const MAX_BYTES: usize = 59 * 8192;
+/// The whole memory card the game sends (`SA2CARD1` pack, see
+/// `sa2-boot/src/mmo.rs`): 59 blocks of 8 KB plus room for names and status.
+pub const MAX_BYTES: usize = 65 * 8192;
 /// A game that stops renewing (crash, lost network) frees the Chao after this.
 pub const LEASE: Duration = Duration::from_secs(600);
 
