@@ -782,6 +782,17 @@ impl Game {
         }
         (!self.card_chao(credential).is_empty()).then(|| hash_token(credential))
     }
+    /// Local owner login (loopback + CHAO_OWNER_BOOTSTRAP only): a fresh token for the admin Chao.
+    pub fn owner_token(&mut self) -> Option<String> {
+        let id = self.players.values().find(|p| p.admin)?.id.clone();
+        let token = hash_token(&Uuid::new_v4().to_string());
+        let player = self.players.get_mut(&id)?;
+        self.tokens.remove(&player.token_hash);
+        player.token_hash = hash_token(&token);
+        self.tokens.insert(player.token_hash.clone(), id);
+        self.dirty = true;
+        Some(token)
+    }
     pub fn player_for_token(&self, token: &str) -> Option<&Player> {
         if token.len() > 256 {
             return None;
