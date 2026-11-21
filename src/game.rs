@@ -693,7 +693,7 @@ impl Game {
                     .and_then(|token| self.player_for_token(token))
                     .filter(|p| p.card() == hash_token(&card))
                     .ok_or("That egg isn't on this memory card.")?;
-                // MMO rule (mob): eggs hatch in the hub.
+                // MMO rule: eggs hatch in the hub.
                 if parent.zone != "hub" {
                     return Err("Eggs hatch in the hub.".into());
                 }
@@ -802,7 +802,7 @@ impl Game {
             .and_then(|id| self.players.get(id))
     }
     pub fn connect(&mut self, id: &str) -> bool {
-        // MMO rule (mob): only the selected Chao of a memory card is out, in the garden,
+        // MMO rule: only the selected Chao of a memory card is out, in the garden,
         // the hub or Tiny Garden. Selecting another swaps it in; the rest go back to the card.
         if let Some(card) = self.players.get(id).map(|p| p.card().to_owned()) {
             self.benched.remove(id);
@@ -831,7 +831,7 @@ impl Game {
             false
         }
     }
-    /// MMO rule (mob): a Chao back online from Tiny Chao Garden brings its egg along; it goes
+    /// MMO rule: a Chao back online from Tiny Chao Garden brings its egg along; it goes
     /// into the inventory (the nest) as the GameCube makes it, `AL_GeneCreateGBAEgg`. A full
     /// nest leaves it in Tiny Garden until there's room.
     pub fn bring_tiny_egg(&mut self, id: &str) -> Option<String> {

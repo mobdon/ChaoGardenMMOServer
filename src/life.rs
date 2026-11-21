@@ -109,7 +109,7 @@ pub mod native {
 }
 use native::*;
 
-/// MMO policy switches. The defaults match mob's November 20, 2026 decisions.
+/// MMO policy switches. The defaults match the November 20, 2026 decisions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Policy {
     /// `CHAO_LIFE_DEATH=enabled`: a failed end-of-life check ends the Chao (native `KillChao`).
