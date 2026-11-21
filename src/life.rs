@@ -329,6 +329,9 @@ pub struct Egg {
     pub gene: Gene,
     pub expressed: Expressed,
     pub laid_at: f64,
+    /// EggColor fixed at creation (a Tiny Chao Garden egg); otherwise the body keeps its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egg_color: Option<u8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -990,6 +993,32 @@ pub fn lay_bought_egg(p: &mut Player, egg_id: u8, now: f64) -> Result<String, &'
         gene,
         expressed,
         laid_at: now,
+        egg_color: None,
+    });
+    p.life.revision = p.life.revision.saturating_add(1);
+    Ok(id)
+}
+
+/// `AL_GeneCreateGBAEgg` (ChaoMain GSNE8P 0x11808): the egg a Chao brings back from Tiny
+/// Chao Garden. `v` is the Tiny egg id, sent unchanged as GBAEgg (BREEDING.md 6b).
+/// Random genes, Jewel gene = v, EggColor = v + 0x35 (0 = a normal egg).
+pub fn lay_gba_egg(p: &mut Player, v: u8, now: f64) -> Result<String, &'static str> {
+    if v >= 12 {
+        return Err("invalid-request");
+    }
+    if p.life.nest.len() >= NEST_CAPACITY {
+        return Err("nest-full");
+    }
+    let mut gene = p.life.create_gene();
+    gene.jewel = [v; 2];
+    let expressed = p.life.analyze(&gene);
+    let id = Uuid::new_v4().hyphenated().to_string();
+    p.life.nest.push(Egg {
+        id: id.clone(),
+        gene,
+        expressed,
+        laid_at: now,
+        egg_color: Some(if v == 0 { 0 } else { v + 0x35 }),
     });
     p.life.revision = p.life.revision.saturating_add(1);
     Ok(id)
@@ -1311,6 +1340,9 @@ pub fn reincarnate(p: &mut Player, policy: Policy) {
 /// Hatch an egg into this profile as a new generation (MMO lineage policy). The native egg
 /// param starts all-zero; its genes were analysed when the egg was laid.
 pub(crate) fn hatch(p: &mut Player, egg: Egg, policy: Policy) {
+    if let Some(color) = egg.egg_color {
+        p.body.look.egg_color = color;
+    }
     let seed = hash_u64(&[b"egg", egg.id.as_bytes()]);
     let generation = p.life.generation.saturating_add(1);
     let nest = std::mem::take(&mut p.life.nest);
@@ -1572,6 +1604,7 @@ fn apply(game: &mut Game, id: &str, request: &Request) -> Result<(String, Value)
                 gene,
                 expressed,
                 laid_at: now,
+                egg_color: None,
             });
             mother.life.breed_offer = None;
             mother.life.emotion.state[3] = 0;

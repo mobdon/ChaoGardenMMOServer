@@ -807,6 +807,23 @@ impl Game {
             false
         }
     }
+    /// MMO rule (mob): a Chao back online from Tiny Chao Garden brings its egg along; it goes
+    /// into the inventory (the nest) as the GameCube makes it, `AL_GeneCreateGBAEgg`. A full
+    /// nest leaves it in Tiny Garden until there's room.
+    pub fn bring_tiny_egg(&mut self, id: &str) -> Option<String> {
+        let now = self.time;
+        let p = self.players.get_mut(id)?;
+        let v = p
+            .tiny_collection
+            .as_ref()?
+            .pending_egg
+            .as_ref()?
+            .native_egg_id;
+        let egg = crate::life::lay_gba_egg(p, v, now).ok()?;
+        p.tiny_collection.as_mut()?.pending_egg = None;
+        self.dirty = true;
+        Some(egg)
+    }
     pub fn disconnect(&mut self, id: &str) {
         if let Some(mut player) = self.players.remove(id) {
             player.connections = player.connections.saturating_sub(1);

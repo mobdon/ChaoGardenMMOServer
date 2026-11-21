@@ -850,3 +850,30 @@ fn purchase_and_later_training_keep_the_hatch_revision_reserved() {
             .is_none()
     );
 }
+
+#[test]
+#[ignore = "Requires explicitly configured owned CHAO_TINY_GARDEN_PAYLOAD"]
+fn back_online_from_tiny_garden_the_held_egg_moves_into_the_nest_as_a_gba_egg() {
+    let (_dir, _config, state, id) = fixture(true, false);
+    let mut game = state.game.lock().unwrap();
+    let buy = buy_request(&game, &id, NOW);
+    assert_eq!(
+        state.care_action_at(&mut game, &id, &buy, NOW).unwrap()["accepted"],
+        true
+    );
+    let v = game.players[&id]
+        .tiny_collection
+        .as_ref()
+        .unwrap()
+        .pending_egg
+        .as_ref()
+        .unwrap()
+        .native_egg_id;
+    assert!(game.bring_tiny_egg(&id).is_some());
+    let p = &game.players[&id];
+    assert!(p.tiny_collection.as_ref().unwrap().pending_egg.is_none());
+    let egg = p.life.nest.last().unwrap();
+    assert_eq!(egg.gene.jewel, [v; 2]);
+    assert_eq!(egg.egg_color, Some(if v == 0 { 0 } else { v + 0x35 }));
+    assert!(game.bring_tiny_egg(&id).is_none(), "only once");
+}

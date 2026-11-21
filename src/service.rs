@@ -1188,6 +1188,8 @@ async fn asset_or_missing(
 struct TokenQuery {
     token: Option<String>,
     observe: Option<u8>,
+    /// 1 when Tiny Chao Garden connects; any other control connection is the main game.
+    tiny: Option<u8>,
 }
 fn connection_snapshot(game: &Game, id: &str, observer: bool) -> Value {
     let mut snapshot = game.snapshot(id);
@@ -1215,6 +1217,10 @@ async fn upgrade(
     let Some(id) = id else {
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
+    if !observer && query.tiny != Some(1) {
+        let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+        game.bring_tiny_egg(&id);
+    }
     let Ok(permit) = state.connections.clone().try_acquire_owned() else {
         state.metrics.record_admission_rejected();
         return error(
