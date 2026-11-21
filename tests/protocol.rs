@@ -265,6 +265,8 @@ async fn assets_serve_exact_allowlisted_bytes_mime_head_and_reject_traversal() {
             "image/png",
         ),
         ("item-panel-egg.png", "item-panel-egg.png", "image/png"),
+        ("chao-icon-heart.png", "chao-icon-heart.png", "image/png"),
+        ("jingle-chao-g-dance.mp3", "jingle-chao-g-dance.mp3", "audio/mpeg"),
         (
             "shadow-skate-motion.json",
             "shadow-skate-motion.json",

@@ -913,6 +913,7 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "chao-select-window.png",
         "item-panel-fruit.png",
         "item-panel-egg.png",
+        "chao-icon-heart.png",
         "discord-icon.png",
         "login-chao.png",
         "tiny-neutral-chaos.png",
@@ -927,6 +928,7 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "voice-knuckles",
         "voice-tails",
         "voice-amy",
+        "jingle-chao-g-dance",
     ];
     if filename == "hub-grass.png" {
         return Some("nativehubgrass.png".into());
