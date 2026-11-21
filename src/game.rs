@@ -50,6 +50,9 @@ pub struct Input {
 pub struct Gear {
     pub footwear: Option<String>,
     pub hands: Option<String>,
+    /// Owner-only whole look: "metal-sonic-chao" (Metal Sonic's own parts on the Chao).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -566,6 +569,8 @@ impl Game {
                 } else {
                     None
                 },
+                look: (admin && data["gear"]["look"] == "metal-sonic-chao")
+                    .then(|| "metal-sonic-chao".into()),
             },
             race_records: activities::restore_records(&data["raceRecords"]),
             karate_records: activities::restore_records(&data["karateRecords"]),
@@ -1148,6 +1153,7 @@ impl Game {
                         Some("knuckles-hammer-gloves") => {
                             p.gear.hands = Some("knuckles-hammer-gloves".into())
                         }
+                        Some("metal-sonic-chao") => p.gear.look = Some("metal-sonic-chao".into()),
                         _ => {
                             self.notice(&id, "Unknown gear item.", "error");
                             return;
@@ -1157,6 +1163,7 @@ impl Game {
                     match message["slot"].as_str() {
                         Some("footwear") => p.gear.footwear = None,
                         Some("hands") => p.gear.hands = None,
+                        Some("look") => p.gear.look = None,
                         _ => {
                             self.notice(&id, "Unknown gear slot.", "error");
                             return;

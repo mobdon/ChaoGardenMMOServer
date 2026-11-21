@@ -954,6 +954,9 @@ pub fn asset_filename(path: &str) -> Option<String> {
     if let Some(local) = care_asset(filename) {
         return Some(local);
     }
+    if let Some(local) = metal_chao_asset(filename) {
+        return Some(local);
+    }
     if glbs.iter().any(|name| filename == format!("{name}.glb"))
         || colors.iter().any(|color| {
             filename == format!("emerald-{color}.glb") || filename == format!("emerald-{color}.png")
@@ -969,6 +972,18 @@ pub fn asset_filename(path: &str) -> Option<String> {
         None
     }
 }
+/// The owner's Metal Sonic Chao parts, converted locally by the client's
+/// `scripts/metal-chao/convert.py` into ignored `imports/metal-chao/`.
+fn metal_chao_asset(filename: &str) -> Option<String> {
+    const PARTS: [&str; 1] = ["rigged"];
+    let ok = filename == "metal-chao-skin.png"
+        || filename
+            .strip_prefix("metal-chao-")
+            .and_then(|rest| rest.strip_suffix(".glb"))
+            .is_some_and(|part| PARTS.contains(&part));
+    ok.then(|| format!("metal-chao/{filename}"))
+}
+
 /// Locally converted native care models (ignored `imports/care/`), by exact name:
 /// `animal-part-<species>-<child|adult>-<socket>.glb`, `tree-<family>-<stage>.glb`,
 /// `fruit-<fruit>.glb` and `hat-<id>.glb` (plus `hat-9-eye`/`hat-9-jaw`).
@@ -1052,6 +1067,25 @@ fn chao_appearance_asset(filename: &str) -> bool {
 #[cfg(test)]
 mod appearance_asset_tests {
     use super::asset_filename;
+
+    #[test]
+    fn metal_chao_assets_are_exact_names() {
+        for ok in ["metal-chao-rigged.glb", "metal-chao-skin.png"] {
+            assert_eq!(
+                asset_filename(&format!("/api/assets/{ok}")),
+                Some(format!("metal-chao/{ok}"))
+            );
+        }
+        for bad in [
+            "metal-chao-x.glb",
+            "metal-chao-head.glb",
+            "metal-chao-../head.glb",
+            "metal-chao-head.png",
+            "metal-chao-skin.glb",
+        ] {
+            assert_eq!(asset_filename(&format!("/api/assets/{bad}")), None, "{bad}");
+        }
+    }
 
     #[test]
     fn appearance_assets_are_bounded() {
