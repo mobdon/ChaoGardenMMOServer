@@ -1770,7 +1770,9 @@ fn named<T: Serialize + Copy>(names: &[&str], values: &[T]) -> Value {
 pub fn public_summary(p: &Player) -> Value {
     json!({"stage":p.life.stage,"cocoon":p.life.cocoon.map(|c|c.kind),"age":p.life.age,
         "reincarnations":p.life.reincarnations,"generation":p.life.generation,
-        "ill":is_ill(p)})
+        "ill":is_ill(p),
+        // The breeding menu's check: would this Chao answer a call (fn_60_150FC, breed > 5000)?
+        "inTheMood":p.life.emotion.state[3] > BREED_ANSWER,"busy":social_conflict(p)})
 }
 
 /// Owner-only `snapshot.life`.
