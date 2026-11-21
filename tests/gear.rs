@@ -184,3 +184,50 @@ fn metal_sonic_chao_look_is_owner_only_and_persists() {
         json!({"footwear":null,"hands":null})
     );
 }
+
+#[test]
+fn metal_sonic_chao_look_runs_at_his_own_top_speed() {
+    let travel = |metal: bool| {
+        let (mut game, id, _) = fixture(true);
+        if metal {
+            action(
+                &mut game,
+                &id,
+                "equip-owner-gear",
+                json!({"item":"metal-sonic-chao"}),
+            );
+        }
+        let start = game.players[&id].x;
+        for _ in 0..20 {
+            game.set_input(&id, &json!({"dx":1,"dz":0}));
+            game.tick(0.05);
+        }
+        game.players[&id].x - start
+    };
+    let (chao, metal) = (travel(false), travel(true));
+    assert!(chao > 0.1 && metal > chao * 3., "chao {chao} metal {metal}");
+}
+
+#[test]
+fn metal_sonic_chao_look_jumps_like_metal_sonic() {
+    let peak = |metal: bool| {
+        let (mut game, id, _) = fixture(true);
+        if metal {
+            action(
+                &mut game,
+                &id,
+                "equip-owner-gear",
+                json!({"item":"metal-sonic-chao"}),
+            );
+        }
+        game.set_input(&id, &json!({"dx":0,"dz":0,"jump":true}));
+        let mut top: f64 = 0.;
+        for _ in 0..40 {
+            game.tick(0.02);
+            top = top.max(game.players[&id].jump_offset);
+        }
+        top
+    };
+    let (chao, metal) = (peak(false), peak(true));
+    assert!(chao > 0. && metal > chao * 3., "chao {chao} metal {metal}");
+}
