@@ -778,8 +778,9 @@ pub fn asset_filename(path: &str) -> Option<String> {
     }
 }
 /// Locally converted native care models (ignored `imports/care/`), by exact name:
-/// `animal-part-<species>-<child|adult>-<socket>.glb`, `tree-<family>-<stage>.glb`
-/// and `fruit-<fruit>.glb`. Names are allowlisted; nothing else is reachable.
+/// `animal-part-<species>-<child|adult>-<socket>.glb`, `tree-<family>-<stage>.glb`,
+/// `fruit-<fruit>.glb` and `hat-<id>.glb` (plus `hat-9-eye`/`hat-9-jaw`).
+/// Names are allowlisted; nothing else is reachable.
 fn care_asset(filename: &str) -> Option<String> {
     let stem = filename.strip_suffix(".glb")?;
     const SOCKETS: [&str; 13] = [
@@ -813,6 +814,14 @@ fn care_asset(filename: &str) -> Option<String> {
         })
     } else if let Some(rest) = stem.strip_prefix("fruit-") {
         crate::care_catalog::FRUIT_KEYS.contains(&rest)
+    } else if let Some(rest) = stem.strip_prefix("hat-") {
+        // Worn Black Market hats 3-15 (GC al_draw_B); the Pan also draws
+        // its eye and jaw pieces.
+        crate::black_market::HATS
+            .iter()
+            .any(|hat| rest == hat.0.to_string())
+            || rest == "9-eye"
+            || rest == "9-jaw"
     } else {
         false
     };
