@@ -13,6 +13,7 @@ pub mod evolution;
 pub mod game;
 pub mod game_save;
 pub mod garden;
+pub mod garden_live;
 pub mod life;
 pub mod metrics;
 pub mod native_tiny;
