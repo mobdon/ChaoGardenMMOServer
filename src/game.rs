@@ -20,6 +20,20 @@ pub const ALL_STATS: [&str; 7] = [
     "luck",
     "intelligence",
 ];
+/// Rooms for the game's own Chao World areas (ChaoMain area numbers 0 lobby,
+/// 1 Neutral, 2 Hero, 3 Dark, 4 race, 5 race entrance, 6 Kindergarten,
+/// 9 Stadium, 10 Karate). The lobby is the MMO hub.
+pub const CHAO_WORLD_ZONES: [&str; 9] = [
+    "hub",
+    "garden",
+    "hero",
+    "dark",
+    "chao-race",
+    "race-entrance",
+    "kindergarten",
+    "stadium",
+    "chao-karate",
+];
 pub const TERRAIN_ZONES: [&str; 4] = ["hub", "garden", "hero", "dark"];
 pub const RACE_CHECKPOINTS: [(f64, f64); 5] =
     [(0., 12.), (-12., 0.), (0., -12.), (12., 0.), (0., 12.)];
@@ -1080,6 +1094,23 @@ impl Game {
                 "Stop your Tiny Garden game before returning to other activities.",
                 "error",
             );
+            return;
+        }
+        if action == "chao-world" {
+            // The game's own Chao World area the player's game is in (client
+            // sa2_boot::start_stage): one shared room per area. The game owns
+            // position and gating, so this only moves the player's room.
+            let Some(zone) = message["area"]
+                .as_str()
+                .filter(|a| CHAO_WORLD_ZONES.contains(a))
+            else {
+                self.notice(&id, "Unknown Chao World area.", "error");
+                return;
+            };
+            p.zone = zone.into();
+            p.input = Input::default();
+            p.race = None;
+            p.karate = None;
             return;
         }
         if action.starts_with("karate-") {
