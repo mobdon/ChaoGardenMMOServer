@@ -706,6 +706,8 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
                 )
             }
         },
+        // An egg that can't hatch says why; the egg stays carried.
+        Err(error_value) if !input["egg"].is_null() => error(StatusCode::BAD_REQUEST, &error_value),
         Err(error_value) => {
             eprintln!("Session creation failed: {error_value}");
             error(

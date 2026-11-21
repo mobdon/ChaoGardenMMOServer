@@ -748,3 +748,56 @@ fn one_memory_card_holds_up_to_eight_chao() {
             .contains(&card)
     );
 }
+
+#[test]
+fn a_carried_egg_hatches_into_a_new_slot_on_the_same_card() {
+    let mut g = Game::new(vec![], BTreeMap::new(), false, 1000.).unwrap();
+    let made = g.create_session(&json!({"name":"Mother"})).unwrap();
+    let (card, token) = (
+        made["card"].as_str().unwrap().to_owned(),
+        made["token"].as_str().unwrap().to_owned(),
+    );
+    let parent = made["player"]["id"].as_str().unwrap().to_owned();
+    g.players
+        .get_mut(&parent)
+        .unwrap()
+        .care
+        .inventory
+        .insert("egg:2".into(), 1);
+    let revision = g.players[&parent].care.revision;
+    let egg = |item: &str| json!({"name":"Pip","card":card,"egg":{"from":token,"itemId":item}});
+    assert!(
+        g.create_session(&egg("egg:3")).is_err(),
+        "only a carried egg"
+    );
+    let hatched = g.create_session(&egg("egg:2")).unwrap();
+    assert_eq!(hatched["card"], card.as_str());
+    assert_eq!(hatched["player"]["name"], "Pip");
+    let child = &g.players[hatched["player"]["id"].as_str().unwrap()];
+    assert_eq!(
+        child.life.gene.color,
+        [2, 2],
+        "a White egg hatches a white Chao"
+    );
+    assert!(
+        !g.players[&parent].care.inventory.contains_key("egg:2"),
+        "the egg is used up"
+    );
+    assert_eq!(g.players[&parent].care.revision, revision + 1);
+    assert!(
+        g.create_session(&egg("egg:2")).is_err(),
+        "and can't hatch twice"
+    );
+    let other = g.create_session(&json!({"name":"Else"})).unwrap();
+    let stranger = json!({"name":"Pip","card":other["card"],"egg":{"from":token,"itemId":"egg:2"}});
+    g.players
+        .get_mut(&parent)
+        .unwrap()
+        .care
+        .inventory
+        .insert("egg:2".into(), 1);
+    assert!(
+        g.create_session(&stranger).is_err(),
+        "an egg stays on its own card"
+    );
+}

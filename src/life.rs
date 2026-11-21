@@ -1338,6 +1338,20 @@ fn hatch(p: &mut Player, egg: Egg, policy: Policy) {
     p.life = life;
 }
 
+/// MMO policy: a carried Black Market egg picked from the inventory hatches straight into a
+/// new Chao on the owner's card. The egg is made exactly as [`lay_bought_egg`] makes it.
+pub fn hatch_bought_egg(
+    p: &mut Player,
+    egg_id: u8,
+    now: f64,
+    policy: Policy,
+) -> Result<(), &'static str> {
+    lay_bought_egg(p, egg_id, now)?;
+    let egg = p.life.nest.pop().expect("just laid");
+    hatch(p, egg, policy);
+    Ok(())
+}
+
 /// `AL_CreateChildGene` / `AL_BlendGene` 0x1086C: one random allele from each parent.
 pub fn blend(mother: &mut LifeState, father: &Gene, names: [&str; 2], ids: [&str; 2]) -> Gene {
     let m = mother.gene.clone();
