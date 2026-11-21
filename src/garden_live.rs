@@ -15,6 +15,9 @@ const BHV_INDEX: u32 = 0x284;
 const BHV_LIST: u32 = 0x288;
 /// Motion number, as read by GetMotionNum 0x8002CB90.
 const WK_MOTION: u32 = 0xB0;
+/// chaowk->pParamGC; its +0xD5 headgear byte is what al_draw_B (ChaoMain 0x8990) draws.
+const WK_PARAM: u32 = 0x5C;
+const PARAM_HAT: u32 = 0xD5;
 /// OSModuleInfo list head; entry id +0, next +4, section table +0x10.
 const MODULE_LIST: u32 = 0x8000_30C8;
 const CHAOMAIN: u32 = 0x3C;
@@ -36,6 +39,8 @@ pub struct LiveChao {
     pub mode: u16,
     pub timer: i32,
     pub motion: u32,
+    /// Headgear id (0 = none).
+    pub hat: u8,
 }
 
 fn be32(b: &[u8], at: u32) -> u32 {
@@ -44,7 +49,7 @@ fn be32(b: &[u8], at: u32) -> u32 {
 }
 
 /// Decode a Chao from its chaowk bytes (at least `WK_BHV + BHV_LIST + 4 * 16`).
-fn decode(task: u32, wk: &[u8], behaviour: u32) -> LiveChao {
+fn decode(task: u32, wk: &[u8], behaviour: u32, hat: u8) -> LiveChao {
     let f = |at| f32::from_bits(be32(wk, at));
     let b = WK_BHV;
     LiveChao {
@@ -54,6 +59,7 @@ fn decode(task: u32, wk: &[u8], behaviour: u32) -> LiveChao {
         mode: u16::from_be_bytes([wk[(b + BHV_MODE) as usize], wk[(b + BHV_MODE + 1) as usize]]),
         timer: be32(wk, b + BHV_TIMER) as i32,
         motion: be32(wk, WK_MOTION),
+        hat,
     }
 }
 
@@ -63,7 +69,8 @@ pub fn read_chao(w: &mut Worker, task: u32) -> io::Result<LiveChao> {
     let wk = w.read(wk_addr, WK_BHV + BHV_LIST)?;
     let idx = be32(&wk, WK_BHV + BHV_INDEX);
     let behaviour = w.r32(wk_addr + WK_BHV + BHV_LIST + 4 * idx)?;
-    Ok(decode(task, &wk, behaviour))
+    let hat = w.read(be32(&wk, WK_PARAM) + PARAM_HAT, 1)?[0];
+    Ok(decode(task, &wk, behaviour, hat))
 }
 
 /// Run-time base of ChaoMain section `sec`, found through the game's module list.
@@ -108,8 +115,9 @@ mod tests {
         wk[b + 2..b + 4].copy_from_slice(&3u16.to_be_bytes());
         wk[b + 0xC..b + 0x10].copy_from_slice(&85i32.to_be_bytes());
         wk[0xB0..0xB4].copy_from_slice(&205u32.to_be_bytes());
-        let c = decode(0x8100_0000, &wk, 0x8050_0000);
+        let c = decode(0x8100_0000, &wk, 0x8050_0000, 9);
         assert_eq!(c.pos, [-58.0, 2.0, 5.0]);
+        assert_eq!(c.hat, 9);
         assert_eq!(
             (c.mode, c.timer, c.behaviour, c.motion),
             (3, 85, 0x8050_0000, 205)
