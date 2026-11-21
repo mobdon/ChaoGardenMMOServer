@@ -911,14 +911,7 @@ pub fn asset_filename(path: &str) -> Option<String> {
 /// The owner's Metal Sonic Chao parts, converted locally by the client's
 /// `scripts/metal-chao/convert.py` into ignored `imports/metal-chao/`.
 fn metal_chao_asset(filename: &str) -> Option<String> {
-    const PARTS: [&str; 6] = [
-        "torso",
-        "head",
-        "arm-left",
-        "arm-right",
-        "leg-left",
-        "leg-right",
-    ];
+    const PARTS: [&str; 1] = ["rigged"];
     let ok = filename == "metal-chao-skin.png"
         || filename
             .strip_prefix("metal-chao-")
