@@ -31,7 +31,11 @@ const MECH_BOOST_SPEED: f64 = 1.8;
 /// The Metal Sonic Chao's top speed: his physics row 12 SpeedMaxH (3.0 game units per frame, Steam
 /// PhysicsArray 0x17391E8) x 60 frames x one game unit in this world (0.3866 Chao-model units, from
 /// scripts/metal-chao/skin.py, x the client's 0.1 Chao visual scale).
-const METAL_CHAO_TOP_SPEED: f64 = 3.0 * 60. * 0.3866 * 0.1;
+const METAL_GAME_UNIT: f64 = 0.3866 * 0.1;
+const METAL_CHAO_TOP_SPEED: f64 = 3.0 * 60. * METAL_GAME_UNIT;
+/// His row 12 jmp_y_spd (2.52 units/frame) and weight, the per-frame gravity (0.08), in world units.
+const METAL_CHAO_JUMP_SPEED: f64 = 2.52 * 60. * METAL_GAME_UNIT;
+const METAL_CHAO_GRAVITY: f64 = 0.08 * 3600. * METAL_GAME_UNIT;
 const MECH_BOOST_DRAIN: f64 = 40.;
 const MECH_BOOST_RECOVERY: f64 = 25.;
 
@@ -1652,7 +1656,9 @@ impl Game {
                 self.last_tick_residents += 1;
             }
             let water = p.zone == "garden" && dist(p.x, p.z, -8., 0.) < 5.;
-            let land_speed = if p.gear.look.as_deref() == Some("metal-sonic-chao") {
+            let metal = p.gear.look.as_deref() == Some("metal-sonic-chao");
+            let gravity = if metal { METAL_CHAO_GRAVITY } else { 12. };
+            let land_speed = if metal {
                 METAL_CHAO_TOP_SPEED
             } else {
                 1.4 + f64::from(p.stats["run"].level) * 0.006
@@ -1697,7 +1703,13 @@ impl Game {
             };
             let mounted = p.admin && p.vehicle.as_deref() == Some("dark-chao-walker");
             if p.input.jump && p.jump_offset <= 0. && p.vy <= 0. {
-                p.vy = if mounted { 3.2 } else { 2.4 };
+                p.vy = if mounted {
+                    3.2
+                } else if metal {
+                    METAL_CHAO_JUMP_SPEED
+                } else {
+                    2.4
+                };
             }
             p.input.jump = false;
             p.boosting = mounted && p.input.boost && p.boost_energy > 0.;
@@ -1710,8 +1722,8 @@ impl Game {
                 }
                 height
             } else {
-                let height = ground + p.jump_offset + p.vy * dt - 0.5 * 12. * dt * dt;
-                p.vy -= 12. * dt;
+                let height = ground + p.jump_offset + p.vy * dt - 0.5 * gravity * dt * dt;
+                p.vy -= gravity * dt;
                 height
             };
             let bounds = activities::native_course(self, &p)
