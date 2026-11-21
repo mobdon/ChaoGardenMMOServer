@@ -664,7 +664,7 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         );
     }
     let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-    if input["owner"] == true {
+    if input["ownerLogin"] == true {
         // Owner bootstrap only runs on loopback (checked at startup).
         let Some(token) = state.config.owner_bootstrap.then(|| game.owner_token()).flatten() else {
             return error(StatusCode::FORBIDDEN, "Owner login is off.");
