@@ -80,7 +80,10 @@ async fn sessions_persist_hashes_resume_legacy_shape_and_ignore_privilege_fields
         json!({"token":owner["token"], "name":"Ignored"}),
     )
     .await;
-    assert_eq!(resumed, owner);
+    // Resuming opens the Chao; only making it hands out its memory card code.
+    assert_eq!(resumed["token"], owner["token"]);
+    assert_eq!(resumed["player"], owner["player"]);
+    assert!(owner["card"].is_string() && resumed.get("card").is_none());
 }
 
 #[tokio::test]
@@ -139,10 +142,8 @@ async fn resume_only_returns_404_without_mutating_save_slots() {
         );
         assert_eq!(state.game.lock().unwrap().players.len(), 1);
     }
-    assert_eq!(
-        session(&state, json!({"token":owner["token"],"resumeOnly":true})).await,
-        owner
-    );
+    let resumed = session(&state, json!({"token":owner["token"],"resumeOnly":true})).await;
+    assert_eq!(resumed["player"], owner["player"]);
 }
 
 #[tokio::test]

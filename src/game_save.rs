@@ -21,7 +21,7 @@ pub struct Lease {
     pub until: Instant,
 }
 
-/// True while a game holds this player's save.
+/// True while a game holds this memory card's save (keyed by card hash).
 pub fn leased(game: &Game, player: &str, now: Instant) -> bool {
     game.game_save_leases
         .get(player)

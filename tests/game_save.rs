@@ -290,3 +290,81 @@ async fn status_shows_the_card_without_taking_the_chao() {
     assert_eq!(saved["revision"], 1);
     assert!(saved["savedAt"].as_u64().unwrap() > 0);
 }
+
+#[tokio::test]
+async fn every_chao_on_a_card_shares_its_game_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+    let session = |body: Value| {
+        let app = router(state.clone());
+        async move {
+            let response = call(
+                app,
+                "POST",
+                "/api/session",
+                &[("content-type", "application/json")],
+                body.to_string().into_bytes(),
+            )
+            .await;
+            serde_json::from_slice::<Value>(&bytes(response).await).unwrap()
+        }
+    };
+    let first = session(json!({"name":"One"})).await;
+    let card = first["card"].as_str().unwrap().to_owned();
+    let second = session(json!({"name":"Two","card":card})).await;
+    let by = |credential: &str| format!("Bearer {credential}");
+
+    // The game signs in with the card code; the Chao's own tokens see the same card.
+    let checkout = call(
+        router(state.clone()),
+        "GET",
+        "/api/game-save",
+        &[("authorization", &by(&card))],
+        vec![],
+    )
+    .await;
+    assert_eq!(checkout.status(), StatusCode::OK);
+    for chao in [&first, &second] {
+        let status = call(
+            router(state.clone()),
+            "GET",
+            "/api/game-save/status",
+            &[("authorization", &by(chao["token"].as_str().unwrap()))],
+            vec![],
+        )
+        .await;
+        assert_eq!(json_of(status).await["inGame"], true);
+    }
+    // Inserting the card lists both Chao with the tokens that open them.
+    let listed = call(
+        router(state.clone()),
+        "GET",
+        "/api/card",
+        &[("authorization", &by(&card))],
+        vec![],
+    )
+    .await;
+    let listed = json_of(listed).await;
+    let tokens: Vec<_> = listed["chao"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["token"].clone())
+        .collect();
+    assert!(tokens.contains(&first["token"]) && tokens.contains(&second["token"]));
+    assert_eq!(
+        call(
+            router(state.clone()),
+            "GET",
+            "/api/card",
+            &[("authorization", "Bearer nope")],
+            vec![]
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+async fn json_of(response: Response<Body>) -> Value {
+    serde_json::from_slice(&bytes(response).await).unwrap()
+}

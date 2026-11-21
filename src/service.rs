@@ -482,7 +482,7 @@ impl AppState {
         let ready: Vec<_> = game
             .players
             .iter()
-            .filter(|(id, _)| !crate::game_save::leased(game, id, std::time::Instant::now()))
+            .filter(|(_, p)| !crate::game_save::leased(game, p.card(), std::time::Instant::now()))
             .filter_map(|(id, p)| crate::training::ready_job(p, now).map(|job| (id.clone(), job)))
             .collect();
         let mut count = 0;
@@ -516,6 +516,7 @@ pub fn router(state: AppState) -> Router {
             post(game_save_renew).delete(game_save_release),
         )
         .route("/api/game-save/status", get(game_save_status))
+        .route("/api/card", get(card))
         // Deployment probes and metrics: unauthenticated, cheap, excluded from
         // the request metrics themselves.
         .route("/livez", get(livez))
@@ -682,6 +683,18 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
             "Profile capacity reached. Try again later.",
         );
     }
+    if !resumes_existing && let Some(card) = input["card"].as_str() {
+        let on_card = game.card_chao(card).len();
+        if on_card == 0 {
+            return error(StatusCode::NOT_FOUND, "Memory card was not found.");
+        }
+        if on_card >= crate::game::CARD_CHAO {
+            return error(
+                StatusCode::CONFLICT,
+                "This memory card already holds 8 Chao.",
+            );
+        }
+    }
     match game.create_session(&input) {
         Ok(response) => match state.persist(&mut game) {
             Ok(()) => Json(response).into_response(),
@@ -703,14 +716,17 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     }
 }
 
-/// The signed-in player (`Authorization: Bearer <token>`) and the lease header.
-fn save_caller(game: &Game, headers: &HeaderMap) -> Option<(String, Option<String>)> {
-    let token = headers
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
         .get(header::AUTHORIZATION)?
         .to_str()
         .ok()?
-        .strip_prefix("Bearer ")?;
-    let id = game.player_for_token(token)?.id.clone();
+        .strip_prefix("Bearer ")
+}
+/// The memory card the caller opens (`Authorization: Bearer <Chao token or
+/// card code>`) and the lease header. Game saves and leases are per card.
+fn save_caller(game: &Game, headers: &HeaderMap) -> Option<(String, Option<String>)> {
+    let id = game.card_for(bearer(headers)?)?;
     let lease = headers
         .get("x-save-lease")
         .and_then(|v| v.to_str().ok())
@@ -791,6 +807,17 @@ async fn game_save_put(State(state): State<AppState>, headers: HeaderMap, body: 
         ),
         Err(io_error) => save_failed("write", io_error),
     }
+}
+/// Insert a memory card: every Chao on it, with the token that opens each.
+async fn card(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let chao = bearer(&headers)
+        .map(|code| game.card_sessions(code))
+        .unwrap_or_default();
+    if chao.is_empty() {
+        return error(StatusCode::NOT_FOUND, "Memory card was not found.");
+    }
+    Json(json!({"chao": chao})).into_response()
 }
 /// The title screen's look at the card: never checks the save out.
 async fn game_save_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1351,7 +1378,7 @@ async fn handle_socket(
                         } else if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
                             let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
                             let moving = value["type"] == "input" || (value["type"] == "action" && value["action"] == "save");
-                            if !moving && crate::game_save::leased(&game, &id, std::time::Instant::now()) {
+                            if !moving && game.players.get(&id).is_some_and(|p| crate::game_save::leased(&game, p.card(), std::time::Instant::now())) {
                                 response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"in-game","text":"Your Chao is in the big garden right now. Leave the game to care for it here."}).to_string().into()), 0));
                             } else {
                             match value["type"].as_str() {

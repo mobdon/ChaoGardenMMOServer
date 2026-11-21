@@ -7,7 +7,7 @@ fn fixture(owner: bool) -> (Game, String, String) {
 }
 fn fixture_terrain(owner: bool, terrains: BTreeMap<String, Terrain>) -> (Game, String, String) {
     let mut game = Game::new(vec![], terrains, owner, 1000.).unwrap();
-    let session = game.create_session(&json!({"name": "Test Chao"})).unwrap();
+    let session = game.create_session(&json!({"name": "Tester"})).unwrap();
     let id = session["player"]["id"].as_str().unwrap().to_owned();
     let token = session["token"].as_str().unwrap().to_owned();
     game.connect(&id);
@@ -72,7 +72,7 @@ fn session_resumes_without_renaming_and_hashes_match_legacy_node_sha256() {
         .create_session(&json!({"token":token,"name":"Ignored"}))
         .unwrap();
     assert_eq!(resume["player"]["id"], id);
-    assert_eq!(resume["player"]["name"], "Test Chao");
+    assert_eq!(resume["player"]["name"], "Tester");
     assert!(
         !serde_json::to_string(&g.export_profiles())
             .unwrap()
@@ -705,5 +705,46 @@ fn body_reshapes_from_stats_and_survives_restore() {
             .unwrap()
             .len(),
         17
+    );
+}
+
+#[test]
+fn one_memory_card_holds_up_to_eight_chao() {
+    let (mut g, first_id, first_token) = fixture(false);
+    assert!(g.card_for(&first_token).is_some());
+    let made = g
+        .create_session(&json!({"name":"Pebble the long name"}))
+        .unwrap();
+    let card = made["card"].as_str().unwrap().to_owned();
+    assert_eq!(
+        made["player"]["name"], "Pebble",
+        "names fit the game's 7 bytes"
+    );
+    for i in 1..8 {
+        let more = g
+            .create_session(&json!({"name":format!("C{i}"),"card":card}))
+            .unwrap();
+        assert_eq!(more["card"], card);
+    }
+    assert!(
+        g.create_session(&json!({"name":"Nine","card":card}))
+            .is_err()
+    );
+    assert!(g.create_session(&json!({"card":"not-a-card"})).is_err());
+    let sessions = g.card_sessions(&card);
+    assert_eq!(sessions.len(), 8);
+    // Each token the card hands out opens its own Chao and leads back to the card.
+    for session in &sessions {
+        let token = session["token"].as_str().unwrap();
+        let p = g.player_for_token(token).unwrap();
+        assert_eq!(p.id, session["player"]["id"]);
+        assert_eq!(g.card_for(token), g.card_for(&card));
+    }
+    assert!(!sessions.iter().any(|s| s["player"]["id"] == first_id));
+    // The code never lands in the stored profiles.
+    assert!(
+        !serde_json::to_string(&g.export_profiles())
+            .unwrap()
+            .contains(&card)
     );
 }
