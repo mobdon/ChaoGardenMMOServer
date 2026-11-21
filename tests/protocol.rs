@@ -258,6 +258,7 @@ async fn assets_serve_exact_allowlisted_bytes_mime_head_and_reject_traversal() {
         ("voice-amy.mp3", "voice-amy.mp3", "audio/mpeg"),
         ("discord-icon.png", "discord-icon.png", "image/png"),
         ("login-chao.png", "login-chao.png", "image/png"),
+        ("item-panel-24.png", "item-panel-24.png", "image/png"),
         (
             "shadow-skate-motion.json",
             "shadow-skate-motion.json",
@@ -415,6 +416,8 @@ async fn native_chao_shadow_png_is_exact_missing_safe_and_head_compatible() {
         "/api/assets/imports/chao-shadow.png",
         "/api/assets/chao-shadow.png/../profiles.json",
         "/api/assets/%2e%2e/imports/chao-shadow.png",
+        "/api/assets/item-panel-25.png",
+        "/api/assets/item-panel-01.png",
     ] {
         assert!(asset_filename(path).is_none(), "{path}");
         assert_eq!(

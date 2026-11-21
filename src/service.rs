@@ -951,6 +951,8 @@ pub fn asset_filename(path: &str) -> Option<String> {
         })
         || filename == "emerald-sky.png"
         || pngs.contains(&filename)
+        // The game's own inventory panels for native items 0-24 (al_panel).
+        || (0..25).any(|id| filename == format!("item-panel-{id}.png"))
         || audio.iter().any(|name| filename == format!("{name}.mp3"))
     {
         Some(filename.into())
