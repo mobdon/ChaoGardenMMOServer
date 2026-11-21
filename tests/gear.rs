@@ -130,3 +130,57 @@ fn gear_rejects_forged_owner_unknown_items_slots_and_corrupt_persisted_choices()
         json!({"footwear":null,"hands":null})
     );
 }
+
+#[test]
+fn metal_sonic_chao_look_is_owner_only_and_persists() {
+    let (mut owner, id, token) = fixture(true);
+    action(
+        &mut owner,
+        &id,
+        "equip-owner-gear",
+        json!({"item":"metal-sonic-chao"}),
+    );
+    assert_eq!(
+        owner.players[&id].public()["gear"]["look"],
+        "metal-sonic-chao"
+    );
+    let restored = Game::new(owner.export_profiles(), BTreeMap::new(), false, 1000.).unwrap();
+    assert_eq!(
+        restored
+            .player_for_token(&token)
+            .unwrap()
+            .gear
+            .look
+            .as_deref(),
+        Some("metal-sonic-chao")
+    );
+    action(
+        &mut owner,
+        &id,
+        "unequip-owner-gear",
+        json!({"slot":"look"}),
+    );
+    assert_eq!(
+        owner.players[&id].public()["gear"],
+        json!({"footwear":null,"hands":null})
+    );
+
+    let (mut regular, id, _) = fixture(false);
+    action(
+        &mut regular,
+        &id,
+        "equip-owner-gear",
+        json!({"item":"metal-sonic-chao","admin":true}),
+    );
+    assert_eq!(
+        regular.players[&id].public()["gear"],
+        json!({"footwear":null,"hands":null})
+    );
+    let mut profiles = regular.export_profiles();
+    profiles[0]["gear"] = json!({"look":"metal-sonic-chao"});
+    let restored = Game::new(profiles, BTreeMap::new(), false, 1000.).unwrap();
+    assert_eq!(
+        restored.players[&id].public()["gear"],
+        json!({"footwear":null,"hands":null})
+    );
+}
