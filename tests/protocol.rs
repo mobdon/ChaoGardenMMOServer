@@ -1612,6 +1612,9 @@ async fn chao_world_areas_are_shared_rooms() {
     .await;
     // Unknown areas are refused and leave the room unchanged.
     two.send(go("nowhere")).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    // A Neutral Chao (alignment 0) is kept out of the Hero Garden room.
+    two.send(go("hero")).await.unwrap();
     // Actions are rate limited to one per 80 ms.
     tokio::time::sleep(std::time::Duration::from_millis(120)).await;
     two.send(go("hub")).await.unwrap();

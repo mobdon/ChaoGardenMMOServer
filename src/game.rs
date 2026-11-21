@@ -1107,6 +1107,14 @@ impl Game {
                 self.notice(&id, "Unknown Chao World area.", "error");
                 return;
             };
+            // Hero/Dark rooms only for a Chao aligned to them (mob 2026-11-21), the
+            // same line as the hub's Hero/Dark portals. Admins go anywhere.
+            if !p.admin
+                && ((zone == "hero" && p.alignment < 60.) || (zone == "dark" && p.alignment > -60.))
+            {
+                self.notice(&id, "Your Chao isn't aligned to that garden.", "error");
+                return;
+            }
             p.zone = zone.into();
             p.input = Input::default();
             p.race = None;
