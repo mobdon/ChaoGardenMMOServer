@@ -653,7 +653,8 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     {
         return error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Use application/json.");
     }
-    let mut input: Value = match serde_json::from_slice(if body.is_empty() { b"{}" } else { &body }) {
+    let mut input: Value = match serde_json::from_slice(if body.is_empty() { b"{}" } else { &body })
+    {
         Ok(value) => value,
         Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid JSON."),
     };
@@ -666,7 +667,12 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
     if input["ownerLogin"] == true {
         // Owner bootstrap only runs on loopback (checked at startup).
-        let Some(token) = state.config.owner_bootstrap.then(|| game.owner_token()).flatten() else {
+        let Some(token) = state
+            .config
+            .owner_bootstrap
+            .then(|| game.owner_token())
+            .flatten()
+        else {
             return error(StatusCode::FORBIDDEN, "Owner login is off.");
         };
         input["token"] = json!(token);
