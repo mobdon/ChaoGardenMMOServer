@@ -911,7 +911,14 @@ pub fn asset_filename(path: &str) -> Option<String> {
 /// The owner's Metal Sonic Chao parts, converted locally by the client's
 /// `scripts/metal-chao/convert.py` into ignored `imports/metal-chao/`.
 fn metal_chao_asset(filename: &str) -> Option<String> {
-    const PARTS: [&str; 4] = ["head", "shoe-left", "shoe-right", "core"];
+    const PARTS: [&str; 6] = [
+        "torso",
+        "head",
+        "arm-left",
+        "arm-right",
+        "leg-left",
+        "leg-right",
+    ];
     let ok = filename == "metal-chao-skin.png"
         || filename
             .strip_prefix("metal-chao-")
@@ -1008,7 +1015,7 @@ mod appearance_asset_tests {
     fn metal_chao_assets_are_exact_names() {
         for ok in [
             "metal-chao-head.glb",
-            "metal-chao-shoe-left.glb",
+            "metal-chao-arm-left.glb",
             "metal-chao-skin.png",
         ] {
             assert_eq!(
