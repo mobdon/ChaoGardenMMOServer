@@ -266,6 +266,7 @@ async fn assets_serve_exact_allowlisted_bytes_mime_head_and_reject_traversal() {
         ),
         ("item-panel-egg.png", "item-panel-egg.png", "image/png"),
         ("chao-icon-heart.png", "chao-icon-heart.png", "image/png"),
+        ("chao-egg.glb", "chao-egg.glb", "model/gltf-binary"),
         (
             "jingle-chao-g-dance.mp3",
             "jingle-chao-g-dance.mp3",
