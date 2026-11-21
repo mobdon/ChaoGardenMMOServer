@@ -482,6 +482,7 @@ impl AppState {
         let ready: Vec<_> = game
             .players
             .iter()
+            .filter(|(id, _)| !crate::game_save::leased(game, id, std::time::Instant::now()))
             .filter_map(|(id, p)| crate::training::ready_job(p, now).map(|job| (id.clone(), job)))
             .collect();
         let mut count = 0;
@@ -504,6 +505,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/activities", get(activities))
         .route("/api/session", post(session))
         .route("/ws", get(upgrade))
+        .route(
+            "/api/game-save",
+            get(game_save_get)
+                .put(game_save_put)
+                .layer(DefaultBodyLimit::max(crate::game_save::MAX_BYTES)),
+        )
+        .route(
+            "/api/game-save/lease",
+            post(game_save_renew).delete(game_save_release),
+        )
         // Deployment probes and metrics: unauthenticated, cheap, excluded from
         // the request metrics themselves.
         .route("/livez", get(livez))
@@ -689,6 +700,123 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
             )
         }
     }
+}
+
+/// The signed-in player (`Authorization: Bearer <token>`) and the lease header.
+fn save_caller(game: &Game, headers: &HeaderMap) -> Option<(String, Option<String>)> {
+    let token = headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")?;
+    let id = game.player_for_token(token)?.id.clone();
+    let lease = headers
+        .get("x-save-lease")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    Some((id, lease))
+}
+fn save_failed(what: &str, cause: io::Error) -> Response {
+    eprintln!("Game save {what} failed: {cause}");
+    error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Could not reach your saved Chao.",
+    )
+}
+/// The memory card's read: checks the save out (or renews the caller's lease).
+async fn game_save_get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some((id, held)) = save_caller(&game, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    let Some(lease) =
+        crate::game_save::check_out(&mut game, &id, held.as_deref(), std::time::Instant::now())
+    else {
+        return error(
+            StatusCode::CONFLICT,
+            "Your Chao is already open in another game.",
+        );
+    };
+    match crate::game_save::read(&state.config.data_dir, &id) {
+        Ok((revision, bytes)) => (
+            [
+                (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+                (
+                    header::HeaderName::from_static("x-save-revision"),
+                    revision.to_string(),
+                ),
+                (header::HeaderName::from_static("x-save-lease"), lease),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(io_error) => save_failed("read", io_error),
+    }
+}
+/// The memory card's write: needs the caller's lease and the revision it read.
+async fn game_save_put(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some((id, held)) = save_caller(&game, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    if !crate::game_save::holds(&game, &id, held.as_deref(), std::time::Instant::now()) {
+        return error(
+            StatusCode::CONFLICT,
+            "This game no longer holds your Chao. Load it again.",
+        );
+    }
+    let Some(expected) = headers
+        .get("x-save-revision")
+        .and_then(|v| v.to_str().ok()?.parse::<u64>().ok())
+    else {
+        return error(StatusCode::BAD_REQUEST, "Missing save revision.");
+    };
+    if body.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "Empty save.");
+    }
+    // shortcut: no content check yet; check with the recompiled AL_Crc32 once the shared headless runtime exposes it.
+    let dir = &state.config.data_dir;
+    let result = crate::game_save::read(dir, &id).and_then(|(revision, _)| {
+        if revision != expected {
+            return Ok(None);
+        }
+        crate::game_save::write(dir, &id, revision + 1, &body).map(|()| Some(revision + 1))
+    });
+    match result {
+        Ok(Some(revision)) => Json(json!({"ok": true, "revision": revision})).into_response(),
+        Ok(None) => error(
+            StatusCode::CONFLICT,
+            "Your save changed elsewhere. Load it again.",
+        ),
+        Err(io_error) => save_failed("write", io_error),
+    }
+}
+/// The game is still running with the card in: keep the lease without moving the save.
+async fn game_save_renew(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some((id, held)) = save_caller(&game, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    let now = std::time::Instant::now();
+    if !crate::game_save::holds(&game, &id, held.as_deref(), now) {
+        return error(
+            StatusCode::CONFLICT,
+            "This game no longer holds your Chao. Load it again.",
+        );
+    }
+    crate::game_save::check_out(&mut game, &id, held.as_deref(), now);
+    Json(json!({"ok": true})).into_response()
+}
+/// The game ejected the card or closed: the Chao is free for other surfaces.
+async fn game_save_release(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some((id, held)) = save_caller(&game, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    if crate::game_save::holds(&game, &id, held.as_deref(), std::time::Instant::now()) {
+        game.game_save_leases.remove(&id);
+    }
+    Json(json!({"ok": true})).into_response()
 }
 
 pub fn asset_filename(path: &str) -> Option<String> {
@@ -1196,6 +1324,10 @@ async fn handle_socket(
                             response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"observer-read-only","text":"This connection only observes your Chao. Open Tiny Garden for activities."}).to_string().into()), 0));
                         } else if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
                             let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+                            let moving = value["type"] == "input" || (value["type"] == "action" && value["action"] == "save");
+                            if !moving && crate::game_save::leased(&game, &id, std::time::Instant::now()) {
+                                response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"in-game","text":"Your Chao is in the big garden right now. Leave the game to care for it here."}).to_string().into()), 0));
+                            } else {
                             match value["type"].as_str() {
                                 Some("input") => game.set_input(&id, &value),
                                 Some("tiny-input") => game.tiny_input(&id, &value),
@@ -1248,6 +1380,7 @@ async fn handle_socket(
                                     response = Some((Message::Text(result.to_string().into()), 0));
                                 }
                                 Some("action") => game.action(&id, &value), _ => {}
+                            }
                             }
                             // Do not accumulate a second unbounded application event queue.
                             publish_events(&state, &mut game);

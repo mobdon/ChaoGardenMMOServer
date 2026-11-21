@@ -7,6 +7,24 @@ before starting. The Vibe-generated release documents arrived in server commit
 `b525d8b` through PR #1; they are planning drafts, not implementation evidence.
 No Vibe website board or external chat has been updated by creating these files.
 
+## Native game save route (in progress)
+
+Branch `claude/project-thread-0d3fu6` from `4d31fbd`. The recompiled SA2 game's
+server memory card (signing in inserts the card) loads and saves the player's
+native Chao garden save, which mob chose on 2026-11-21 as the canonical Chao.
+`src/game_save.rs` + routes in `src/service.rs`: `GET /api/game-save` (check
+out under a 10-minute lease; bytes + `x-save-revision` + `x-save-lease`),
+`PUT /api/game-save` (lease + expected revision, up to one Memory Card 59 of
+bytes, atomic write, previous kept as `.prev`), `POST`/`DELETE
+/api/game-save/lease` (renew/release). Bearer token from `/api/session`. While
+leased, socket mutations other than movement and explicit save are refused
+(`code: in-game`) and ready training is not settled. Tests:
+`tests/game_save.rs` (synthetic bytes; the gate test fails with the gate
+off). Limits: no content check yet (waits for the recompiled `AL_Crc32` in the
+shared headless runtime); leases live in memory; JSON Chao fields are not yet
+derived from the save; no client card backend yet. Design:
+https://claude.ai/artifact/M6oeY1WbFEV4s9NEuB9Qi2
+
 ## Chao animals, fruit and trees (in progress)
 
 Branch `claude/project-thread-vp2v2k` from `40a0ada`. Native ports only (no
