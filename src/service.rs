@@ -883,6 +883,14 @@ async fn game_save_release(State(state): State<AppState>, headers: HeaderMap) ->
 }
 
 pub fn asset_filename(path: &str) -> Option<String> {
+    // Tiny Garden's own art routes (the client's phone preview names them this way).
+    match path {
+        "/__widget-art/tiny-garden-a2ne.png" => return Some("tiny-garden-a2ne.png".into()),
+        "/__widget-art/tiny-garden-a2ne-sidebar-1.png" => {
+            return Some("tiny-garden-sidebar-1-a2ne.png".into());
+        }
+        _ => {}
+    }
     let filename = path.strip_prefix("/api/assets/")?;
     let glbs = [
         "chao",
@@ -929,6 +937,10 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "tiny-neutral-chaos.png",
         "tiny-hero-chaos.png",
         "tiny-dark-chaos.png",
+        // Tiny Garden art the client's android/tools export makes from the player's A2NE ROM.
+        "tiny-garden-a2ne.png",
+        "tiny-garden-sidebar-0-a2ne.png",
+        "tiny-garden-sidebar-1-a2ne.png",
     ];
     let audio = [
         "music-hub",
