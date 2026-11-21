@@ -186,7 +186,7 @@ fn metal_sonic_chao_look_is_owner_only_and_persists() {
 }
 
 #[test]
-fn metal_sonic_chao_look_runs_at_his_own_top_speed() {
+fn every_chao_runs_at_metal_sonic_chao_top_speed() {
     let travel = |metal: bool| {
         let (mut game, id, _) = fixture(true);
         if metal {
@@ -205,7 +205,10 @@ fn metal_sonic_chao_look_runs_at_his_own_top_speed() {
         game.players[&id].x - start
     };
     let (chao, metal) = (travel(false), travel(true));
-    assert!(chao > 0.1 && metal > chao * 3., "chao {chao} metal {metal}");
+    assert!(
+        chao > 6.9 && (metal - chao).abs() < 1e-9,
+        "chao {chao} metal {metal}"
+    );
 }
 
 #[test]

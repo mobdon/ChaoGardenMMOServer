@@ -217,8 +217,7 @@ fn normalized_input_has_native_speed_and_stale_input_stops() {
         }
         let p = &g.players[&id];
         let traveled = p.x.hypot(p.z);
-        assert!(traveled > if owner { 1.98 } else { 1.39 });
-        assert!(traveled < if owner { 2.01 } else { 1.42 });
+        assert!(traveled > 6.9 && traveled < 7.0, "{traveled}");
         advance(&mut g, 1000);
         let stopped = g.players[&id].x;
         advance(&mut g, 1000);
