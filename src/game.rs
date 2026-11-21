@@ -376,6 +376,8 @@ pub struct Game {
     /// Decision-making time only; terrain/movement work remains in total tick time.
     pub last_resident_tick: Duration,
     pub last_tick_residents: usize,
+    /// Games holding a player's native save (in memory: a restart frees them).
+    pub game_save_leases: BTreeMap<String, crate::game_save::Lease>,
 }
 
 pub fn hash_token(token: &str) -> String {
@@ -441,6 +443,7 @@ impl Game {
             rings: vec![],
             last_resident_tick: Duration::ZERO,
             last_tick_residents: 0,
+            game_save_leases: BTreeMap::new(),
         };
         for (i, (x, z)) in [(-6., 6.), (6., 6.), (-6., -6.), (6., -6.), (0., -9.)]
             .into_iter()

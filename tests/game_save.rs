@@ -1,0 +1,231 @@
+//! The native game save route the recompiled game's server memory card uses.
+//! Save bytes here are synthetic test input, never game data.
+use axum::{
+    Router,
+    body::Body,
+    http::{Request, Response, StatusCode},
+};
+use chao_game_server::{
+    game_save::MAX_BYTES,
+    service::{AppState, Config, router},
+};
+use futures_util::{SinkExt, StreamExt};
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use std::time::Duration;
+use tokio::net::TcpListener;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tower::ServiceExt;
+
+async fn call(
+    app: Router,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+) -> Response<Body> {
+    let mut builder = Request::builder().method(method).uri(path);
+    for (key, value) in headers {
+        builder = builder.header(*key, *value);
+    }
+    app.oneshot(builder.body(Body::from(body)).unwrap())
+        .await
+        .unwrap()
+}
+async fn bytes(response: Response<Body>) -> Vec<u8> {
+    response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec()
+}
+fn header(response: &Response<Body>, name: &str) -> String {
+    response.headers()[name].to_str().unwrap().to_owned()
+}
+async fn token(state: &AppState) -> String {
+    let response = call(
+        router(state.clone()),
+        "POST",
+        "/api/session",
+        &[("content-type", "application/json")],
+        json!({"name":"Card"}).to_string().into_bytes(),
+    )
+    .await;
+    let session: Value = serde_json::from_slice(&bytes(response).await).unwrap();
+    session["token"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn checkout_write_conflicts_and_restart_keep_exact_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+    let app = || router(state.clone());
+    let token = token(&state).await;
+    let auth = format!("Bearer {token}");
+
+    assert_eq!(
+        call(app(), "GET", "/api/game-save", &[], vec![])
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(
+            app(),
+            "GET",
+            "/api/game-save",
+            &[("authorization", "Bearer wrong")],
+            vec![]
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // A new account has an empty card file at revision 0.
+    let first = call(
+        app(),
+        "GET",
+        "/api/game-save",
+        &[("authorization", &auth)],
+        vec![],
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(header(&first, "x-save-revision"), "0");
+    let lease = header(&first, "x-save-lease");
+    assert!(bytes(first).await.is_empty());
+
+    // A second game can't take it; the holder can renew.
+    let other = call(
+        app(),
+        "GET",
+        "/api/game-save",
+        &[("authorization", &auth)],
+        vec![],
+    )
+    .await;
+    assert_eq!(other.status(), StatusCode::CONFLICT);
+    let renew = call(
+        app(),
+        "POST",
+        "/api/game-save/lease",
+        &[("authorization", &auth), ("x-save-lease", &lease)],
+        vec![],
+    )
+    .await;
+    assert_eq!(renew.status(), StatusCode::OK);
+
+    let save: Vec<u8> = (0..70_000u32).map(|i| (i * 7 % 251) as u8).collect();
+    let put = |lease: &str, revision: &str, body: Vec<u8>| {
+        let headers = [
+            ("authorization", auth.as_str()),
+            ("x-save-lease", lease),
+            ("x-save-revision", revision),
+        ];
+        let headers: Vec<(String, String)> = headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let app = app();
+        async move {
+            let refs: Vec<(&str, &str)> = headers
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            call(app, "PUT", "/api/game-save", &refs, body)
+                .await
+                .status()
+        }
+    };
+    assert_eq!(
+        put("not-the-lease", "0", save.clone()).await,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(put(&lease, "5", save.clone()).await, StatusCode::CONFLICT);
+    assert_eq!(put(&lease, "0", vec![]).await, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        put(&lease, "0", vec![0; MAX_BYTES + 1]).await,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(put(&lease, "0", save.clone()).await, StatusCode::OK);
+    // A stale revision can't overwrite a newer save.
+    assert_eq!(put(&lease, "0", vec![1; 10]).await, StatusCode::CONFLICT);
+
+    // Released, then read back after a restart: same bytes, revision 1.
+    let release = call(
+        app(),
+        "DELETE",
+        "/api/game-save/lease",
+        &[("authorization", &auth), ("x-save-lease", &lease)],
+        vec![],
+    )
+    .await;
+    assert_eq!(release.status(), StatusCode::OK);
+    let restarted = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+    let back = call(
+        router(restarted),
+        "GET",
+        "/api/game-save",
+        &[("authorization", &auth)],
+        vec![],
+    )
+    .await;
+    assert_eq!(back.status(), StatusCode::OK);
+    assert_eq!(header(&back, "x-save-revision"), "1");
+    assert_eq!(bytes(back).await, save);
+    assert!(
+        !std::fs::read_dir(dir.path().join("game-saves"))
+            .unwrap()
+            .any(|e| { e.unwrap().path().extension().is_some_and(|x| x == "tmp") })
+    );
+}
+
+#[tokio::test]
+async fn care_on_the_socket_is_refused_while_the_game_holds_the_chao() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+    let token = token(&state).await;
+    let auth = format!("Bearer {token}");
+    let checkout = call(
+        router(state.clone()),
+        "GET",
+        "/api/game-save",
+        &[("authorization", &auth)],
+        vec![],
+    )
+    .await;
+    assert_eq!(checkout.status(), StatusCode::OK);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let serving = tokio::spawn(axum::serve(listener, router(state.clone())).into_future());
+    let (mut socket, _) = connect_async(format!("ws://{address}/ws?token={token}"))
+        .await
+        .unwrap();
+    socket
+        .send(Message::Text(
+            json!({"type":"care","requestId":"r1","expectedRevision":0,"intent":{"kind":"pet"}})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let refused = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = socket.next().await {
+                let value: Value = serde_json::from_str(&text).unwrap();
+                // The first reply to the care request: a refusal, or a care result if the gate failed.
+                if value["code"].is_string() || value["requestId"] == "r1" {
+                    return value;
+                }
+            }
+        }
+    })
+    .await
+    .expect("a notice before the timeout");
+    assert_eq!(refused["code"], "in-game");
+    serving.abort();
+}

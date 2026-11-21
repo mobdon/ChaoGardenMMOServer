@@ -11,6 +11,7 @@ pub mod competition_sim;
 pub mod emblems;
 pub mod evolution;
 pub mod game;
+pub mod game_save;
 pub mod garden;
 pub mod life;
 pub mod metrics;
