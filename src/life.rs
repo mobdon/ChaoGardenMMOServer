@@ -1483,11 +1483,12 @@ fn in_range(a: &Player, b: &Player) -> bool {
 fn can_breed(p: &Player) -> bool {
     p.life.stage == Stage::Adult && !chaos(p)
 }
-/// Chao present in a garden zone: connected players and residents.
-fn garden_population(game: &Game, zone: &str) -> usize {
+/// MMO policy: gardens are social spaces full of other players' Chao, so the native
+/// "garden under 8 Chao" check counts the inviter's own memory card (8 slots) instead.
+fn card_population(game: &Game, me: &Player) -> usize {
     game.players
         .values()
-        .filter(|p| p.zone == zone && (p.connections > 0 || p.watch.is_some()))
+        .filter(|p| p.card() == me.card())
         .count()
 }
 
@@ -1524,7 +1525,7 @@ fn apply(game: &mut Game, id: &str, request: &Request) -> Result<(String, Value)
                 if me.life.emotion.state[3] < BREED_INVITE {
                     return Err("not-ready");
                 }
-                if policy.garden_limit && garden_population(game, &me.zone) >= GARDEN_CHAO_LIMIT {
+                if policy.garden_limit && card_population(game, me) >= GARDEN_CHAO_LIMIT {
                     game.players
                         .get_mut(id)
                         .expect("checked")

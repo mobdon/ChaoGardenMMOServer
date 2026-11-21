@@ -1348,7 +1348,13 @@ async fn handle_socket(
     loop {
         let outgoing: Option<(Message, usize)> = tokio::select! {
             _ = shutdown.changed() => break,
-            _ = snapshots.tick() => match snapshot_message(&state, &id, observer) { Some(frame) => Some(frame), None => break },
+            _ = snapshots.tick() => {
+                if !observer && state.game.lock().unwrap_or_else(|p| p.into_inner()).benched.contains(&id) {
+                    let _ = send_bounded(&mut writer, Message::Close(Some(CloseFrame { code: 4001, reason: "Another Chao from this memory card is out now.".into() })), &state).await;
+                    break;
+                }
+                match snapshot_message(&state, &id, observer) { Some(frame) => Some(frame), None => break }
+            },
             event = events.recv() => match event {
                 Ok(event) => {
                     state.metrics.set_queue_depth(state.events.len());

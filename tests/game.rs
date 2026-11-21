@@ -801,3 +801,30 @@ fn a_carried_egg_hatches_into_a_new_slot_on_the_same_card() {
         "an egg stays on its own card"
     );
 }
+
+#[test]
+fn only_the_selected_chao_of_a_card_is_out() {
+    let mut g = Game::new(vec![], BTreeMap::new(), false, 1000.).unwrap();
+    let first = g.create_session(&json!({"name":"One"})).unwrap();
+    let card = first["card"].as_str().unwrap().to_owned();
+    let second = g
+        .create_session(&json!({"name":"Two","card":card}))
+        .unwrap();
+    let stranger = g.create_session(&json!({"name":"Else"})).unwrap();
+    let id = |v: &Value| v["player"]["id"].as_str().unwrap().to_owned();
+    let (one, two, other) = (id(&first), id(&second), id(&stranger));
+    g.connect(&one);
+    g.connect(&other);
+    assert!(g.benched.is_empty());
+    g.connect(&two);
+    assert!(
+        g.benched.contains(&one),
+        "selecting another Chao sends the first back to the card"
+    );
+    assert!(!g.benched.contains(&other), "other players' Chao stay");
+    g.connect(&one);
+    assert!(
+        g.benched.contains(&two) && !g.benched.contains(&one),
+        "and swapping back works"
+    );
+}

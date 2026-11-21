@@ -411,12 +411,25 @@ fn breeding_needs_native_desire_and_lays_one_egg_with_parent_alleles() {
 }
 
 #[test]
-fn a_full_garden_cancels_the_mate_call() {
+fn a_full_memory_card_cancels_the_mate_call() {
     let names = ["A", "B", "C", "D", "E", "F", "G", "H"];
     let (mut game, ids) = game_with(&names, false);
     for (i, id) in ids.iter().enumerate() {
         place(&mut game, id, -2. + i as f64 * 0.1, 2.);
         game.players.get_mut(id).unwrap().life.stage = Stage::Adult;
+    }
+    game.players.get_mut(&ids[0]).unwrap().life.emotion.state[3] = BREED_INVITE;
+    // Eight other players' Chao in the garden don't fill it: it's a social space.
+    let offer = request(1, 0, json!({"kind":"breed","partnerId":ids[1]}));
+    assert_eq!(action(&mut game, &ids[0], &offer)["code"], "offer-sent");
+    let mut game = game_with(&names, false).0;
+    let ids: Vec<String> = game.players.keys().cloned().collect();
+    let card = game.players[&ids[0]].card().to_owned();
+    for (i, id) in ids.iter().enumerate() {
+        let p = game.players.get_mut(id).unwrap();
+        p.card_hash = Some(card.clone());
+        p.life.stage = Stage::Adult;
+        place(&mut game, id, -2. + i as f64 * 0.1, 2.);
     }
     game.players.get_mut(&ids[0]).unwrap().life.emotion.state[3] = BREED_INVITE;
     let offer = request(1, 0, json!({"kind":"breed","partnerId":ids[1]}));

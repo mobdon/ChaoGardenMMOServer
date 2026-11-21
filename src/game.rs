@@ -374,6 +374,8 @@ pub struct Game {
     pub allow_owner_bootstrap: bool,
     pub terrains: BTreeMap<String, Terrain>,
     pub players: BTreeMap<String, Player>,
+    /// Chao swapped back to their memory card while still connected; their sockets close.
+    pub benched: BTreeSet<String>,
     pub tokens: BTreeMap<String, String>,
     pub events: Vec<Event>,
     pub dirty: bool,
@@ -455,6 +457,7 @@ impl Game {
             allow_owner_bootstrap,
             terrains,
             players: BTreeMap::new(),
+            benched: BTreeSet::new(),
             tokens: BTreeMap::new(),
             events: vec![],
             dirty: false,
@@ -771,6 +774,23 @@ impl Game {
             .and_then(|id| self.players.get(id))
     }
     pub fn connect(&mut self, id: &str) -> bool {
+        // MMO rule (mob): only the selected Chao of a memory card is out, in the garden,
+        // the hub or Tiny Garden. Selecting another swaps it in; the rest go back to the card.
+        if let Some(card) = self.players.get(id).map(|p| p.card().to_owned()) {
+            self.benched.remove(id);
+            for other in self
+                .players
+                .values_mut()
+                .filter(|p| p.id != id && p.card() == card)
+            {
+                if other.watch.take().is_some() {
+                    self.dirty = true;
+                }
+                if other.connections > 0 {
+                    self.benched.insert(other.id.clone());
+                }
+            }
+        }
         if let Some(player) = self.players.get_mut(id) {
             player.connections += 1;
             player.input = Input::default();
