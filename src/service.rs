@@ -4,13 +4,13 @@ use axum::{
     Json, Router,
     body::{Body, Bytes},
     extract::{
-        DefaultBodyLimit, OriginalUri, Query, Request, State, WebSocketUpgrade,
+        DefaultBodyLimit, OriginalUri, Path, Query, Request, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket},
     },
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -516,6 +516,8 @@ pub fn router(state: AppState) -> Router {
             post(game_save_renew).delete(game_save_release),
         )
         .route("/api/game-save/status", get(game_save_status))
+        .route("/api/chao-record", put(chao_record_put))
+        .route("/api/chao-record/{id}", get(chao_record_get))
         .route("/api/card", get(card))
         .route("/api/gear-pickup", post(gear_pickup))
         .route("/api/chao", delete(delete_chao))
@@ -842,6 +844,65 @@ async fn gear_pickup(
     match game.gear_pickup_for_token(token, body["item"].as_str().unwrap_or_default()) {
         Some(found) => Json(json!({ "foundGear": found })).into_response(),
         None => error(StatusCode::BAD_REQUEST, "Unknown gear item."),
+    }
+}
+/// Size of one native Chao save record.
+pub const CHAO_RECORD_BYTES: usize = 0x800;
+/// The caller's own Chao record, raw, from its game (client chao_player
+/// export_record). A changed record bumps the version others see in the
+/// snapshot as players[].chaoRecordVersion.
+async fn chao_record_put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if body.len() != CHAO_RECORD_BYTES {
+        return error(StatusCode::BAD_REQUEST, "A Chao record is 2048 bytes.");
+    }
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(id) = bearer(&headers)
+        .and_then(|t| game.player_for_token(t))
+        .map(|p| p.id.clone())
+    else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    let Some(p) = game.players.get_mut(&id) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    if p.chao_record != body {
+        p.chao_record = body.to_vec();
+        p.chao_record_version += 1;
+    }
+    Json(json!({"ok": true, "version": p.chao_record_version})).into_response()
+}
+/// Another connected player's Chao record in the caller's room (the same
+/// players its snapshot lists), for the caller's game to draw that Chao.
+async fn chao_record_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(viewer) = bearer(&headers).and_then(|t| game.player_for_token(t)) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match game
+        .players
+        .get(&id)
+        .filter(|p| p.connections > 0 && !p.chao_record.is_empty() && game.same_room(viewer, p))
+    {
+        Some(p) => (
+            [
+                (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+                (
+                    header::HeaderName::from_static("x-chao-record-version"),
+                    p.chao_record_version.to_string(),
+                ),
+            ],
+            p.chao_record.clone(),
+        )
+            .into_response(),
+        None => error(StatusCode::NOT_FOUND, "That Chao isn't here."),
     }
 }
 /// Insert a memory card: every Chao on it, with the token that opens each.
