@@ -248,189 +248,78 @@ async fn status_reports_cached_inventory_actual_imports_and_terrain_fallback() {
 }
 
 #[tokio::test]
-async fn assets_serve_exact_allowlisted_bytes_mime_head_and_reject_traversal() {
+async fn assets_serve_only_tiny_garden_pngs_with_head_and_reject_everything_else() {
     let (dir, state) = fixture(false);
     let imports = dir.path().join("imports");
     fs::create_dir_all(&imports).unwrap();
-    for (route, filename, mime) in [
-        ("chao.glb", "chao.glb", "model/gltf-binary"),
-        ("hub-grass.png", "nativehubgrass.png", "image/png"),
-        ("voice-amy.mp3", "voice-amy.mp3", "audio/mpeg"),
-        ("discord-icon.png", "discord-icon.png", "image/png"),
-        ("login-chao.png", "login-chao.png", "image/png"),
-        ("item-panel-24.png", "item-panel-24.png", "image/png"),
+    for (path, filename) in [
         (
-            "chao-select-window.png",
-            "chao-select-window.png",
-            "image/png",
-        ),
-        ("item-panel-egg.png", "item-panel-egg.png", "image/png"),
-        ("chao-icon-heart.png", "chao-icon-heart.png", "image/png"),
-        ("chao-egg.glb", "chao-egg.glb", "model/gltf-binary"),
-        (
-            "jingle-chao-g-dance.mp3",
-            "jingle-chao-g-dance.mp3",
-            "audio/mpeg",
-        ),
-        (
-            "shadow-skate-motion.json",
-            "shadow-skate-motion.json",
-            "application/json; charset=utf-8",
-        ),
-        (
+            "/api/assets/tiny-neutral-chaos.png",
             "tiny-neutral-chaos.png",
-            "tiny-neutral-chaos.png",
-            "image/png",
         ),
-        ("tiny-hero-chaos.png", "tiny-hero-chaos.png", "image/png"),
-        ("tiny-dark-chaos.png", "tiny-dark-chaos.png", "image/png"),
+        ("/api/assets/tiny-dark-chaos.png", "tiny-dark-chaos.png"),
+        ("/api/assets/tiny-garden-a2ne.png", "tiny-garden-a2ne.png"),
+        ("/api/assets/chao-stat-panel.png", "chao-stat-panel.png"),
+        ("/api/assets/emerald-white.png", "emerald-white.png"),
+        ("/api/assets/discord-icon.png", "discord-icon.png"),
         (
-            "race-normal.glb",
-            "activities/race-normal.glb",
-            "model/gltf-binary",
-        ),
-        (
-            "race-dark.glb",
-            "activities/race-dark.glb",
-            "model/gltf-binary",
-        ),
-        (
-            "race-hero.glb",
-            "activities/race-hero.glb",
-            "model/gltf-binary",
-        ),
-        (
-            "karate-arena.glb",
-            "activities/karate-arena.glb",
-            "model/gltf-binary",
+            "/__widget-art/tiny-garden-a2ne-sidebar-1.png",
+            "tiny-garden-sidebar-1-a2ne.png",
         ),
     ] {
+        let missing = request(router(state.clone()), "GET", path, Body::empty(), &[]).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND, "{path}");
         let bytes = format!("fixture:{filename}").into_bytes();
-        fs::create_dir_all(imports.join(filename).parent().unwrap()).unwrap();
         fs::write(imports.join(filename), &bytes).unwrap();
-        let path = format!("/api/assets/{route}");
-        let response = request(router(state.clone()), "GET", &path, Body::empty(), &[]).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers()[header::CONTENT_TYPE], mime);
-        assert_eq!(
-            response.headers()[header::CONTENT_LENGTH],
-            bytes.len().to_string()
-        );
+        let response = request(router(state.clone()), "GET", path, Body::empty(), &[]).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
         assert_eq!(
             &response.into_body().collect().await.unwrap().to_bytes()[..],
             &bytes
         );
-        let response = request(router(state.clone()), "HEAD", &path, Body::empty(), &[]).await;
+        let response = request(router(state.clone()), "HEAD", path, Body::empty(), &[]).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers()[header::CONTENT_LENGTH],
             bytes.len().to_string()
         );
-        assert!(
-            response
-                .into_body()
-                .collect()
-                .await
-                .unwrap()
-                .to_bytes()
-                .is_empty()
-        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(body.is_empty());
     }
-    for path in [
-        "/api/assets/unknown.glb",
-        "/api/assets/../../profiles.json",
-        "/api/assets/%2e%2e/%2e%2e/profiles.json",
-        "/api/assets/../assets/chao.glb",
-        "/api/assets/%2e%2e/assets/chao.glb",
-        "/api/assets/chao.glb/../../profiles.json",
-        "/api/assets/activities/race-normal.glb",
-        "/api/assets/activities/../chao.glb",
-        "/api/assets/unknown.json",
-        "/api/assets/shadow-skate-motion.json/../profiles.json",
+    // Game files that used to be served stay refused even when they sit in imports/.
+    for filename in [
+        "chao.glb",
+        "hub.glb",
+        "chao-shadow.png",
+        "chao-behaviour.glb",
+        "voice-amy.mp3",
+        "medchart-page-a.png",
+        "item-panel-24.png",
+        "login-chao.png",
+        "shadow-skate-motion.json",
+        "fruit-garden.glb",
+        "hat-1.glb",
+        "metal-chao-rigged.glb",
     ] {
-        assert!(asset_filename(path).is_none());
+        fs::write(imports.join(filename), b"present").unwrap();
+        let path = format!("/api/assets/{filename}");
+        assert!(asset_filename(&path).is_none(), "{path}");
         assert_eq!(
-            request(router(state.clone()), "GET", path, Body::empty(), &[])
+            request(router(state.clone()), "GET", &path, Body::empty(), &[])
                 .await
                 .status(),
             StatusCode::NOT_FOUND,
             "{path}"
         );
     }
-    assert_eq!(
-        request(
-            router(state.clone()),
-            "GET",
-            "/api/assets/dark-chaos.glb",
-            Body::empty(),
-            &[]
-        )
-        .await
-        .status(),
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        request(
-            router(state),
-            "POST",
-            "/api/assets/chao.glb",
-            Body::empty(),
-            &[]
-        )
-        .await
-        .status(),
-        StatusCode::METHOD_NOT_ALLOWED
-    );
-}
-
-#[tokio::test]
-async fn native_chao_shadow_png_is_exact_missing_safe_and_head_compatible() {
-    let (directory, state) = fixture(false);
-    let route = "/api/assets/chao-shadow.png";
-    assert_eq!(asset_filename(route).as_deref(), Some("chao-shadow.png"));
-    assert_eq!(
-        asset_filename("/api/assets/chao-behaviour.glb").as_deref(),
-        Some("chao-behaviour.glb")
-    );
-    for method in ["GET", "HEAD"] {
-        let response = request(router(state.clone()), method, route, Body::empty(), &[]).await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
-    }
-    let imports = directory.path().join("imports");
-    fs::create_dir_all(&imports).unwrap();
-    let bytes = b"\x89PNG\r\n\x1a\nprivate synthetic shadow alias fixture";
-    fs::write(imports.join("chao-shadow.png"), bytes).unwrap();
-    fs::write(
-        imports.join("chao-shadow-source.prs"),
-        b"private native source",
-    )
-    .unwrap();
-    for method in ["GET", "HEAD"] {
-        let response = request(router(state.clone()), method, route, Body::empty(), &[]).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
-        assert_eq!(
-            response.headers()[header::CONTENT_LENGTH],
-            bytes.len().to_string()
-        );
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        if method == "HEAD" {
-            assert!(body.is_empty());
-        } else {
-            assert_eq!(&body[..], bytes);
-        }
-    }
     for path in [
-        "/api/assets/chao-shadow-source.prs",
-        "/api/assets/chao-shadow.json",
-        "/api/assets/chao-shadow.png.json",
-        "/api/assets/CHAO-SHADOW.PNG",
-        "/api/assets/imports/chao-shadow.png",
-        "/api/assets/chao-shadow.png/../profiles.json",
-        "/api/assets/%2e%2e/imports/chao-shadow.png",
-        "/api/assets/item-panel-25.png",
-        "/api/assets/item-panel-01.png",
+        "/api/assets/../../profiles.json",
+        "/api/assets/%2e%2e/%2e%2e/profiles.json",
+        "/api/assets/tiny-dark-chaos.png/../../profiles.json",
+        "/api/assets/activities/race-normal.glb",
+        "/api/assets/TINY-DARK-CHAOS.png",
+        "/api/assets/tiny-dark-chaos.png.bak",
     ] {
         assert!(asset_filename(path).is_none(), "{path}");
         assert_eq!(
@@ -441,103 +330,18 @@ async fn native_chao_shadow_png_is_exact_missing_safe_and_head_compatible() {
             "{path}"
         );
     }
-}
-
-#[tokio::test]
-async fn audio_ranges_support_closed_open_suffix_and_unsatisfiable_requests() {
-    let (dir, state) = fixture(false);
-    fs::create_dir_all(dir.path().join("imports")).unwrap();
-    fs::write(dir.path().join("imports/music-hub.mp3"), b"0123456789").unwrap();
-    for (range, expected, content_range) in [
-        ("bytes=2-5", "2345", "bytes 2-5/10"),
-        ("bytes=7-", "789", "bytes 7-9/10"),
-        ("bytes=-3", "789", "bytes 7-9/10"),
-        ("bytes=8-99", "89", "bytes 8-9/10"),
-    ] {
-        let response = request(
-            router(state.clone()),
-            "GET",
-            "/api/assets/music-hub.mp3",
+    assert_eq!(
+        request(
+            router(state),
+            "POST",
+            "/api/assets/tiny-dark-chaos.png",
             Body::empty(),
-            &[("range", range)],
+            &[]
         )
-        .await;
-        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
-        assert_eq!(response.headers()[header::CONTENT_RANGE], content_range);
-        assert_eq!(response.headers()[header::ACCEPT_RANGES], "bytes");
-        assert_eq!(
-            &response.into_body().collect().await.unwrap().to_bytes()[..],
-            expected.as_bytes()
-        );
-    }
-    for range in [
-        "bytes=10-",
-        "bytes=-0",
-        "bytes=5-2",
-        "bytes=0-1,5-6",
-        "bytes=-",
-        "invalid",
-    ] {
-        let response = request(
-            router(state.clone()),
-            "GET",
-            "/api/assets/music-hub.mp3",
-            Body::empty(),
-            &[("range", range)],
-        )
-        .await;
-        assert_eq!(
-            response.status(),
-            StatusCode::RANGE_NOT_SATISFIABLE,
-            "{range}"
-        );
-        assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */10");
-    }
-}
-
-#[tokio::test]
-async fn native_stat_ui_exposes_only_selected_exact_png_routes() {
-    let (directory, state) = fixture(false);
-    fs::create_dir_all(directory.path().join("imports")).unwrap();
-    for name in [
-        "chao-stat-panel.png",
-        "chao-stat-font.png",
-        "chao-race-parameter.png",
-    ] {
-        let bytes = format!("isolated native alias fixture {name}");
-        fs::write(
-            directory.path().join("imports").join(name),
-            bytes.as_bytes(),
-        )
-        .unwrap();
-        let response = request(
-            router(state.clone()),
-            "GET",
-            &format!("/api/assets/{name}"),
-            Body::empty(),
-            &[],
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
-        assert_eq!(
-            &response.into_body().collect().await.unwrap().to_bytes()[..],
-            bytes.as_bytes()
-        );
-    }
-    for path in [
-        "/api/assets/al_tex_common.prs",
-        "/api/assets/level00.png",
-        "/api/assets/chao-ui-provenance.json",
-        "/api/assets/../chao-stat-panel.png",
-    ] {
-        assert_eq!(
-            request(router(state.clone()), "GET", path, Body::empty(), &[])
-                .await
-                .status(),
-            StatusCode::NOT_FOUND
-        );
-    }
+        .await
+        .status(),
+        StatusCode::METHOD_NOT_ALLOWED
+    );
 }
 
 #[test]
@@ -596,6 +400,27 @@ impl LiveServer {
             serving,
             simulation,
         }
+    }
+    /// A Tiny Garden socket from this Chao's paired phone.
+    async fn phone(&self, session: &Value) -> Socket {
+        let token = session["token"].as_str().unwrap();
+        let id = session["player"]["id"].as_str().unwrap();
+        let card = self.state.game.lock().unwrap().players[id]
+            .card()
+            .to_owned();
+        let now = std::time::Instant::now();
+        let device = {
+            let mut pairings = self.state.pairings.lock().unwrap();
+            let code = pairings.start(id, &card, now);
+            pairings.claim(&code, &card, now).unwrap().unwrap().1
+        };
+        connect_async(format!(
+            "{}/ws?token={token}&tiny=1&device={device}",
+            self.url
+        ))
+        .await
+        .unwrap()
+        .0
     }
     async fn socket(&self, session: &Value) -> Socket {
         let request = format!(
@@ -1017,7 +842,7 @@ async fn real_phone_socket_runs_all_five_and_obeys_session_owned_input_and_stop(
     let server = LiveServer::start(false).await;
     let session = session(&server.state, json!({"name":"Phone"})).await;
     let id = session["player"]["id"].as_str().unwrap();
-    let mut socket = server.socket(&session).await;
+    let mut socket = server.phone(&session).await;
     let mut last = snapshot_until(&mut socket, |s| s["tinyGame"].is_null()).await;
     for game_id in ["memory", "rock_paper_scissors", "bounce", "ball", "search"] {
         let after = last["serverTime"].as_f64().unwrap() + 150.;
@@ -1071,7 +896,7 @@ async fn phone_socket_result_waits_for_durable_receipt_and_retries_without_dupli
     let server = LiveServer::start(false).await;
     let session = session(&server.state, json!({"name":"Atomic socket"})).await;
     let id = session["player"]["id"].as_str().unwrap();
-    let mut socket = server.socket(&session).await;
+    let mut socket = server.phone(&session).await;
     socket
         .send(Message::Text(
             json!({"type":"action","action":"tiny-start","gameId":"rock_paper_scissors"})
@@ -1147,51 +972,6 @@ async fn phone_socket_result_waits_for_durable_receipt_and_retries_without_dupli
     socket.close(None).await.unwrap();
 }
 
-#[test]
-fn care_model_routes_are_exact_allowlisted_names() {
-    for (path, local) in [
-        (
-            "/api/assets/animal-part-penguin-child-leftArm.glb",
-            "care/animal-part-penguin-child-leftArm.glb",
-        ),
-        (
-            "/api/assets/animal-part-phoenix-adult-tail.glb",
-            "care/animal-part-phoenix-adult-tail.glb",
-        ),
-        (
-            "/api/assets/tree-hero-mature.glb",
-            "care/tree-hero-mature.glb",
-        ),
-        (
-            "/api/assets/fruit-chao-garden.glb",
-            "care/fruit-chao-garden.glb",
-        ),
-        ("/api/assets/hat-3.glb", "care/hat-3.glb"),
-        ("/api/assets/hat-15.glb", "care/hat-15.glb"),
-        ("/api/assets/hat-9-eye.glb", "care/hat-9-eye.glb"),
-        ("/api/assets/hat-9-jaw.glb", "care/hat-9-jaw.glb"),
-    ] {
-        assert_eq!(asset_filename(path).as_deref(), Some(local), "{path}");
-    }
-    for path in [
-        "/api/assets/animal-part-yellow-chaos-drive-child-tail.glb",
-        "/api/assets/animal-part-penguin-teen-tail.glb",
-        "/api/assets/animal-part-penguin-child-hat.glb",
-        "/api/assets/tree-banana-mature.glb",
-        "/api/assets/tree-hero-seed.glb",
-        "/api/assets/fruit-../profiles.json",
-        "/api/assets/fruit-chao-garden.png",
-        "/api/assets/care/tree-hero-mature.glb",
-        "/api/assets/hat-1.glb",
-        "/api/assets/hat-2.glb",
-        "/api/assets/hat-16.glb",
-        "/api/assets/hat-03.glb",
-        "/api/assets/hat-3-eye.glb",
-        "/api/assets/hat-9.png",
-    ] {
-        assert!(asset_filename(path).is_none(), "{path}");
-    }
-}
 async fn wire(socket: &mut Socket, v: Value) {
     socket
         .send(Message::Text(v.to_string().into()))

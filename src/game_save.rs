@@ -64,6 +64,14 @@ fn path(dir: &Path, player: &str) -> PathBuf {
         .join(format!("{}.bin", crate::game::hash_token(player)))
 }
 
+/// Moves a card's save to another card key (a password reset moves the card). No save: Ok.
+pub fn rename(dir: &Path, from: &str, to: &str) -> io::Result<()> {
+    match fs::rename(path(dir, from), path(dir, to)) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
 /// The stored save as (revision, bytes); revision 0 and no bytes when none.
 pub fn read(dir: &Path, player: &str) -> io::Result<(u64, Vec<u8>)> {
     match fs::read(path(dir, player)) {

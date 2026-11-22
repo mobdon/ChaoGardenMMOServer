@@ -410,3 +410,34 @@ The independently reviewed server route slice is published for review on
 four route/test files above plus this coordination record. Source publication
 does not merge, deploy or restart the Rust authority, copy native assets, or
 modify a canonical save. The server PR records its exact immutable head.
+
+## 2026-11-22 hosting code: reset mail, phone pairing, Tiny-only assets
+
+Base `8aacf5f` (main) plus the player accounts branch `6108a2a` merged in.
+Branch `claude/project-thread-4omu8q`.
+Changed paths: `src/accounts.rs`, `src/mail.rs` (new), `src/pairing.rs` (new),
+`src/game.rs` (`move_card`, `restore_players`), `src/game_save.rs` (`rename`),
+`src/service.rs`, `src/lib.rs`, `tests/protocol.rs`, `tests/care_protocol.rs`,
+`PHONE.md`, `deploy/chao.env.example`, `Cargo.toml`, `Cargo.lock` (adds `ureq`).
+
+- `POST /api/account/forgot` and `/api/account/reset`: mailed single-use token
+  (30 minutes, one mail per account per 2 minutes, kept in memory only). A reset
+  moves the card to a new code, so old tokens, the old card code and the old
+  password stop working; the game save file moves with it.
+- `POST /api/pair/start` and `/api/pair/claim`; `/ws?tiny=1` needs `device=`.
+- `/api/assets` serves only the Tiny Garden PNG names and `discord-icon.png`.
+  Audio range support went with the audio names.
+
+Protocol dependencies: the Tiny Garden page and Android widget must claim a
+pairing and send `device=`; the web client must stop fetching the removed
+asset names (it converts them from the player's own files instead).
+
+Tests: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test` all pass. Tested offline only.
+
+Remaining limits: no real mail was sent (no Postmark account exists yet; the
+request follows Postmark's JSON API but is unverified against the live
+service). No per-IP limit on forgot/sign-up. The session token is still in the
+WebSocket URL. Observer sockets (`observe=1`) are not pairing-gated. The Node
+reference (`index.js`, `tests/reference/assets.test.js`) still lists the old
+asset names. Nothing merged, deployed or restarted.
