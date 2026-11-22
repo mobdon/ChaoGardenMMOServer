@@ -530,6 +530,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/account/login", post(account_login))
         .route("/api/account/forgot", post(account_forgot))
         .route("/api/account/reset", post(account_reset))
+        .route("/api/tiny-care", post(tiny_care))
         .route(
             "/api/tiny-chao",
             get(tiny_chao_get)
@@ -1156,12 +1157,34 @@ async fn account_reset(State(state): State<AppState>, headers: HeaderMap, body: 
     response
 }
 /// The PC stores its player's own Chao model for the phone (Bearer: the Chao's token).
-async fn tiny_chao_put(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn tiny_chao_put(
+    State(state): State<AppState>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    // The Chao that stores its model is the account's phone Chao: the other Chao on the same
+    // memory card give theirs up. `?chao=<id>` stores it for another Chao of the signed-in
+    // Chao's own memory card (the PC's Chao Transporter pick).
     let id = bearer(&headers).and_then(|token| {
         let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-        game.player_for_token(token).map(|p| p.id.clone())
+        let signed_in = game.player_for_token(token)?;
+        let picked = match query.get("chao") {
+            Some(chao) => game
+                .players
+                .get(chao)
+                .filter(|p| p.card() == signed_in.card())?,
+            None => signed_in,
+        };
+        let others: Vec<String> = game
+            .players
+            .values()
+            .filter(|p| p.card() == picked.card() && p.id != picked.id)
+            .map(|p| p.id.clone())
+            .collect();
+        Some((picked.id.clone(), others))
     });
-    let Some(id) = id else {
+    let Some((id, others)) = id else {
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
     if crate::tiny_chao::model_type(&body).is_none() {
@@ -1169,7 +1192,13 @@ async fn tiny_chao_put(State(state): State<AppState>, headers: HeaderMap, body: 
     }
     let path = crate::tiny_chao::model_path(&state.config.data_dir, &id);
     match crate::accounts::write_private(&path, &body) {
-        Ok(()) => Json(json!({"ok": true, "bytes": body.len()})).into_response(),
+        Ok(()) => {
+            for other in others {
+                let _ =
+                    fs::remove_file(crate::tiny_chao::model_path(&state.config.data_dir, &other));
+            }
+            Json(json!({"ok": true, "bytes": body.len()})).into_response()
+        }
         Err(cause) => {
             eprintln!("Chao model save failed: {cause}");
             error(
@@ -1204,6 +1233,28 @@ async fn tiny_chao_get(State(state): State<AppState>, headers: HeaderMap) -> Res
                 "Could not read the Chao model.",
             )
         }
+    }
+}
+/// The phone widget's Pet / Rest / Wake (Bearer: the Chao's token). Body: {"kind": "pet" | "rest" | "wake"}.
+async fn tiny_care(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let Some(kind) = input["kind"]
+        .as_str()
+        .filter(|kind| ["pet", "rest", "wake"].contains(kind))
+    else {
+        return error(StatusCode::BAD_REQUEST, "Unknown care.");
+    };
+    let Some(token) = bearer(&headers) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    match game.widget_care(token, kind) {
+        Ok(player) => Json(json!({"player": player})).into_response(),
+        Err(text) if text == "Invalid session token." => error(StatusCode::UNAUTHORIZED, text),
+        Err(text) => error(StatusCode::CONFLICT, text),
     }
 }
 async fn account_login(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
@@ -1482,9 +1533,21 @@ fn connection_snapshot(game: &Game, id: &str, observer: bool) -> Value {
     snapshot["connectionMode"] = json!(if observer { "observe" } else { "control" });
     snapshot
 }
+/// Tiny Chao Garden is for phones only: the browser or app must say it is a mobile one.
+fn phone_agent(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|agent| {
+            ["Mobi", "Android", "iPhone", "iPad"]
+                .iter()
+                .any(|m| agent.contains(m))
+        })
+}
 async fn upgrade(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
     let observer = match query.observe {
@@ -1504,6 +1567,9 @@ async fn upgrade(
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
     let tiny = query.tiny == Some(1);
+    if tiny && !phone_agent(&headers) {
+        return error(StatusCode::FORBIDDEN, "Tiny Chao Garden is on your phone.");
+    }
     if tiny && !crate::tiny_chao::played_once(&state.config.data_dir, &id) {
         return error(
             StatusCode::FORBIDDEN,
@@ -1950,6 +2016,125 @@ mod account_tests {
     }
 
     #[tokio::test]
+    async fn widget_care_acts_on_a_chao_that_is_out_in_a_garden() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        let app = router(state.clone());
+        let (_, token, id) = new_account(&app).await;
+        let care = |bearer: String, kind: &'static str| {
+            let app = app.clone();
+            async move {
+                let request = axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/tiny-care")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+                    .body(axum::body::Body::from(json!({"kind": kind}).to_string()))
+                    .unwrap();
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let bytes = http_body_util::BodyExt::collect(response.into_body())
+                    .await
+                    .unwrap()
+                    .to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+                )
+            }
+        };
+        assert_eq!(care("bad".into(), "pet").await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(care(token.clone(), "feed").await.0, StatusCode::BAD_REQUEST);
+        // Not out in a garden yet.
+        assert_eq!(care(token.clone(), "pet").await.0, StatusCode::CONFLICT);
+        {
+            let mut game = state.game.lock().unwrap();
+            assert!(game.connect(&id));
+            game.action(&id, &json!({"type": "action", "action": "watch-start"}));
+            game.disconnect(&id);
+        }
+        let (status, cared) = care(token.clone(), "pet").await;
+        assert_eq!(status, StatusCode::OK, "{cared}");
+        assert_eq!(cared["player"]["id"], id);
+        assert_eq!(cared["player"]["watch"]["lastCare"]["kind"], "pet");
+        // A second tap inside the care cooldown changes nothing.
+        assert_eq!(care(token, "pet").await.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn the_last_chao_to_store_a_model_is_the_phone_chao() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        let app = router(state.clone());
+        let (card, first, _) = new_account(&app).await;
+        let (status, made) = post(
+            &app,
+            "/api/session",
+            json!({"name": "Second", "card": card}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let second = made["token"].as_str().unwrap().to_owned();
+        // Synthetic test bytes with a PNG magic.
+        let mut sheet = b"\x89PNG\r\n\x1a\n".to_vec();
+        sheet.resize(64, 1);
+        assert_eq!(
+            tiny_chao(&app, "PUT", &first, sheet.clone()).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            tiny_chao(&app, "GET", &first, vec![]).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            tiny_chao(&app, "PUT", &second, sheet).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            tiny_chao(&app, "GET", &second, vec![]).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            tiny_chao(&app, "GET", &first, vec![]).await.0,
+            StatusCode::NOT_FOUND
+        );
+        // The signed-in Chao can store the sheet for another Chao of its own card, not a stranger's.
+        let first_id = {
+            let game = state.game.lock().unwrap();
+            game.player_for_token(&first).unwrap().id.clone()
+        };
+        let put_for = |bearer: String, chao: String| {
+            let app = app.clone();
+            async move {
+                let mut again = b"\x89PNG\r\n\x1a\n".to_vec();
+                again.resize(64, 2);
+                let request = axum::http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/tiny-chao?chao={chao}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+                    .body(axum::body::Body::from(again))
+                    .unwrap();
+                app.oneshot(request).await.unwrap().status()
+            }
+        };
+        assert_eq!(
+            put_for(second.clone(), first_id.clone()).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            tiny_chao(&app, "GET", &first, vec![]).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            tiny_chao(&app, "GET", &second, vec![]).await.0,
+            StatusCode::NOT_FOUND
+        );
+        let (_, stranger) = post(&app, "/api/session", json!({"name": "Other"})).await;
+        let stranger = stranger["token"].as_str().unwrap().to_owned();
+        assert_eq!(put_for(stranger, first_id).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn forgot_password_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
@@ -2070,7 +2255,10 @@ mod account_tests {
     #[tokio::test]
     async fn phone_works_from_the_same_login_after_one_pc_play() {
         use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+        use tokio_tungstenite::{
+            connect_async,
+            tungstenite::{Message as WsMessage, client::IntoClientRequest},
+        };
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
         let app = router(state.clone());
@@ -2132,7 +2320,17 @@ mod account_tests {
             StatusCode::NOT_FOUND
         );
 
-        let (mut phone, _) = connect_async(url("&tiny=1")).await.expect("phone connects");
+        // Phone only: a desktop browser is refused even after the PC has played.
+        assert!(
+            connect_async(url("&tiny=1")).await.is_err(),
+            "desktop agent"
+        );
+        let mut request = url("&tiny=1").into_client_request().unwrap();
+        let agent = "Mozilla/5.0 (Linux; Android 14) Mobile Safari/537.36";
+        request
+            .headers_mut()
+            .insert(header::USER_AGENT, agent.parse().unwrap());
+        let (mut phone, _) = connect_async(request).await.expect("phone connects");
         let _ = phone.close(None).await;
         // A PC socket can't play Tiny Garden.
         let (mut pc, _) = connect_async(url("")).await.unwrap();

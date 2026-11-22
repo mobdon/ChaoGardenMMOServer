@@ -937,6 +937,31 @@ impl Game {
         }
         Some(self.player_for_token(token)?.profile_extra["foundGear"].clone())
     }
+    /// A care tap from the phone widget, which has no socket: the same watch-care the garden
+    /// page sends, for a Chao that is out in a garden.
+    pub fn widget_care(&mut self, token: &str, kind: &str) -> Result<Value, &'static str> {
+        let id = self
+            .player_for_token(token)
+            .ok_or("Invalid session token.")?
+            .id
+            .clone();
+        let mut player = self.players.remove(&id).ok_or("Invalid session token.")?;
+        let before = player.watch.as_ref().map(|w| (w.id.clone(), w.last_care()));
+        let result = match before {
+            None => Err("Your Chao is not out in a garden right now."),
+            Some((session, last)) => {
+                let message = json!({"type": "action", "action": "watch-care", "sessionId": session, "kind": kind});
+                watch::action(self, &mut player, &message);
+                if player.watch.as_ref().and_then(|w| w.last_care()) == last {
+                    Err("Wait a moment before caring again.")
+                } else {
+                    Ok(player.public())
+                }
+            }
+        };
+        self.players.insert(id, player);
+        result
+    }
     pub fn player_for_token(&self, token: &str) -> Option<&Player> {
         if token.len() > 256 {
             return None;

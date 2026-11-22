@@ -36,8 +36,9 @@ has played on its PC:
    most 4 MiB), made in the browser from the player's own game files.
 2. Phone, logged in to the same account: `GET /api/tiny-chao` with the same
    bearer returns that model; 404 means the PC has not played yet.
-3. Phone: connect `/ws?tiny=1&token=...`. Until the model exists the handshake
-   is refused with 403. `tiny-start`, `tiny-stop` and `tiny-input` on a socket
+3. Phone: connect `/ws?tiny=1&token=...`. The handshake is refused with 403
+   until the model exists, and always for a client whose `User-Agent` does not
+   name a mobile browser or Android (Tiny Garden is phone only). `tiny-start`, `tiny-stop` and `tiny-input` on a socket
    without `tiny=1` get a `tiny-needs-phone` notice.
 
 The model is the only game-derived file the server stores (`tiny-chao/`, one

@@ -440,7 +440,8 @@ Changed paths: `src/accounts.rs`, `src/mail.rs` (new), `src/tiny_chao.rs` (new),
   password stop working; the game save file moves with it.
 - `PUT`/`GET /api/tiny-chao`: the PC stores the player's own Chao model, the
   same login reads it on the phone; `/ws?tiny=1` is refused until it exists.
-  There is no pairing code.
+  There is no pairing code. Tiny Garden sockets also need a mobile `User-Agent`
+  (phone only; a header check, not proof of a phone).
 - `/api/assets` serves only the Tiny Garden PNG names and `discord-icon.png`.
   Audio range support went with the audio names.
 
