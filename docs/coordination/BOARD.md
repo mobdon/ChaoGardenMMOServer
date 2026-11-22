@@ -516,3 +516,18 @@ the card must hold fewer than 8 Chao, and a full caller nest fails
 After breeding, the egg's keeper loses its breed need, and so does a partner on
 the same memory card; another player's Chao keeps its own and can breed again
 (`src/life.rs`, `src/life/tests.rs`, `LIFE.md`). 295 tests pass offline.
+
+## Story progress per memory card (2026-11-22, branch `claude/project-thread-h0midt`)
+
+Base `52e0c32` (main). Changed paths: `src/story.rs`, `src/lib.rs`,
+`src/service.rs`, `src/game_save.rs`, `tests/story.rs`, this board. Each memory
+card has a list of cleared action stages (`game-saves/<card>.story.json`,
+written atomically, moved with the card on a password reset). `GET /api/story`
+returns the cleared and unlocked stages and the Super Chao flag;
+`POST /api/story/clear` records a clear and answers 409 for a stage that is
+not open. Stages open in the game's story order without boss and versus
+fights, read from the installed game's story tables (offsets beside the
+tables in `src/story.rs`); one finished side opens Cannon's Core. Tests:
+`cargo test` passes with 5 new unit tests and 1 route test, fmt and Clippy
+`-D warnings` clean (tested offline). Limits: the server trusts the game's
+report of a clear; no client calls the routes yet; nothing is deployed.

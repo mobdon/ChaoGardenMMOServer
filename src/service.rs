@@ -522,6 +522,8 @@ pub fn router(state: AppState) -> Router {
             post(game_save_renew).delete(game_save_release),
         )
         .route("/api/game-save/status", get(game_save_status))
+        .route("/api/story", get(story_get))
+        .route("/api/story/clear", post(story_clear))
         .route("/api/chao-record", put(chao_record_put))
         .route("/api/chao-record/{id}", get(chao_record_get))
         .route("/api/card", get(card))
@@ -1368,6 +1370,60 @@ async fn game_save_status(State(state): State<AppState>, headers: HeaderMap) -> 
             .into_response()
         }
         Err(io_error) => save_failed("status", io_error),
+    }
+}
+fn story_json(cleared: &std::collections::BTreeSet<crate::story::Stage>) -> Response {
+    Json(json!({
+        "cleared": cleared,
+        "unlocked": crate::story::unlocked(cleared),
+        "superChao": crate::story::super_chao(cleared),
+    }))
+    .into_response()
+}
+/// The card's story progress: what the game's Stage Select may show.
+async fn story_get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let card = {
+        let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+        save_caller(&game, &headers)
+    };
+    let Some((card, _)) = card else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match crate::story::read(&state.config.data_dir, &card) {
+        Ok(cleared) => story_json(&cleared),
+        Err(cause) => save_failed("story read", cause),
+    }
+}
+/// The game reports a cleared stage as `{"stage": n, "character": c}`.
+async fn story_clear(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let (Some(stage), Some(character)) = (
+        body["stage"].as_u64().and_then(|n| u8::try_from(n).ok()),
+        body["character"]
+            .as_u64()
+            .and_then(|n| u8::try_from(n).ok()),
+    ) else {
+        return error(StatusCode::BAD_REQUEST, "Missing stage or character.");
+    };
+    // Held across the read and write so two reports for one card can't interleave.
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some((card, _)) = save_caller(&game, &headers) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    let dir = &state.config.data_dir;
+    let mut cleared = match crate::story::read(dir, &card) {
+        Ok(cleared) => cleared,
+        Err(cause) => return save_failed("story read", cause),
+    };
+    if !crate::story::clear(&mut cleared, (stage, character)) {
+        return error(StatusCode::CONFLICT, "That stage is not unlocked yet.");
+    }
+    match crate::story::write(dir, &card, &cleared) {
+        Ok(()) => story_json(&cleared),
+        Err(cause) => save_failed("story write", cause),
     }
 }
 /// The game is still running with the card in: keep the lease without moving the save.

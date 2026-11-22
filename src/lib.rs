@@ -23,6 +23,7 @@ pub mod native_tiny;
 pub mod phone;
 pub mod recomp;
 pub mod service;
+pub mod story;
 pub mod tiny_chao;
 pub mod toys;
 pub mod training;

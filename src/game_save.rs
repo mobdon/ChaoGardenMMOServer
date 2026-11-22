@@ -67,9 +67,10 @@ fn path(dir: &Path, player: &str) -> PathBuf {
 /// Moves a card's save to another card key (a password reset moves the card). No save: Ok.
 pub fn rename(dir: &Path, from: &str, to: &str) -> io::Result<()> {
     match fs::rename(path(dir, from), path(dir, to)) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        other => other,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        other => other?,
     }
+    crate::story::rename(dir, from, to)
 }
 
 /// The stored save as (revision, bytes); revision 0 and no bytes when none.
