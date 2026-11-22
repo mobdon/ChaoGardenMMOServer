@@ -2,7 +2,7 @@
 """Tool check: is every tool installed AND working, and do the tools clash?
 usage: bash check-tools.sh [--worker] [--quiet]
   default   : every tool answers a real call (MCP servers over stdio/HTTP, hooks fed sample input, CLIs on tiny files),
-              plus the conflict checks (hooks, MCP names/scopes, exact output, Caveman scope, Headroom path,
+              plus the conflict checks (hooks, MCP names/scopes, exact output, Caveman scope, API path,
               Context7 key on disk, Serena pin, worker kit wiring). About 1-2 minutes.
   --worker  : also one combined headless worker (run-worker.sh) that calls every tool in one session, then audit.py
               and transcript checks. About 5-8 minutes and some tokens; run after any kit change.
@@ -271,37 +271,6 @@ def _():
     out('PASS', 'impeccable', 'skill present, engine ran `impeccable detect` on a sample page')
 
 
-@check('headroom')
-def _():
-    if not shutil.which('headroom'):
-        return out('FAIL', 'headroom', 'not installed')
-    if 'headroom' not in user_mcp:
-        return out('FAIL', 'headroom', 'MCP server not registered at user scope')
-    rc, _ = sh("curl -s --noproxy '*' --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/health | grep -q 200")
-    if rc:
-        return out('FAIL', 'headroom', 'proxy on 127.0.0.1:8787 is down: headroom_compress stores text uncompressed; start it (install-all.sh / run-worker.sh do)')
-    data = json.dumps([{'id': i, 'name': f'room{i}', 'tiles': [0] * 20, 'flags': {'dark': False}} for i in range(200)])
-    p, rpc = mcp_stdio([shutil.which('headroom'), 'mcp', 'serve'])
-    try:
-        t = text_of(rpc('tools/call', {'name': 'headroom_compress', 'arguments': {'content': data}}, timeout=90))
-    finally:
-        p.kill()
-    if 'hash' not in t or len(t) >= len(data) * 0.9:
-        return out('FAIL', 'headroom', f'headroom_compress did not shrink JSON ({len(data)} -> {len(t)} chars)')
-    out('PASS', 'headroom', f'MCP headroom_compress shrank sample JSON {len(data)} -> {len(t)} chars, proxy up')
-
-
-@check('headroom learn')
-def _():
-    """`headroom learn` calls Gemini; a thread linked to the owner's PC gets a tighter network rule that blocks it.
-    Google answers even a keyless call with a JSON error; a proxy block gives no body at all."""
-    rc, o = sh('curl -s --max-time 10 https://generativelanguage.googleapis.com/v1beta/models')
-    if '"error"' in o or '"models"' in o:
-        return out('PASS', 'headroom learn', 'Gemini reachable: end-of-thread `headroom learn --project . --apply` can run here')
-    out('WARN', 'headroom learn', 'Gemini blocked here (a thread linked to the PC?): skip `headroom learn` at thread end, say so, '
-        'and run it from a thread that is not linked')
-
-
 @check('graphify')
 def _():
     if not shutil.which('graphify'):
@@ -424,13 +393,6 @@ def _():
     if '/microsoft/playwright' not in t:
         return out('FAIL', 'context7', 'resolve-library-id gave no Playwright id: ' + t[:120])
     out('PASS', 'context7', ('key from the environment (literal header)' if h else 'anonymous tier (no CONTEXT7_API_KEY)') + '; resolve-library-id answered')
-
-
-@check('headroom keeper')
-def _():
-    st = json.load(open(HOME + '/.claude/settings.json')).get('hooks', {}).get('SessionStart', [])
-    ok = os.path.exists(HOME + '/.claude/hooks/headroom-up.sh') and any('headroom-up.sh' in h.get('command', '') for e in st for h in e.get('hooks', []))
-    out('PASS' if ok else 'FAIL', 'headroom keeper', 'SessionStart hook restarts the proxy' if ok else 'SessionStart headroom-up.sh hook missing (re-run install-all.sh)')
 
 
 @check('unlazy')
@@ -581,7 +543,7 @@ def _():
                 names.setdefault('plugin:' + name + ':' + n, []).append('plugin')
     probs = [f'{n} defined {len(w)}x ({", ".join(w)})' for n, w in names.items() if len(w) > 1]
     probs += [f'{n} only at {w[0]} (other folders and workers never see it; use --scope user)' for n, w in names.items() if w and w[0].startswith('local:')]
-    need = ['serena', 'context7', 'headroom', 'skillsmp']
+    need = ['serena', 'context7', 'skillsmp']
     probs += [f'{n} missing at user scope' for n in need if n not in user_mcp]
     if probs:
         return out('FAIL', 'mcp', '; '.join(probs))
@@ -624,7 +586,7 @@ def _():
 
 @check('api path')
 def _():
-    """Headroom and OmniRoute never in the API path (exact reads/diffs/tests would be compressed): direct to Anthropic."""
+    """OmniRoute never in the API path (exact reads/diffs/tests would be compressed): direct to Anthropic."""
     probs = []
     files = [SET, HOME + '/.claude/settings.local.json', REPO + '/.claude/settings.json', HOME + '/.bashrc', HOME + '/.profile',
              '/etc/environment', HOME + '/.claude/launcher-settings.json']
@@ -633,11 +595,9 @@ def _():
         if os.path.exists(f):
             vals += [(f, m) for m in re.findall(r'ANTHROPIC_(?:BASE|API)_URL[^\n]*', open(f, errors='ignore').read())]
     for where, v in vals:
-        if re.search(r'8787|headroom', v):
-            probs.append(f'{where}: ANTHROPIC_BASE_URL through Headroom')
-        elif re.search(r'20128|omniroute', v):
+        if re.search(r'20128|omniroute', v):
             probs.append(f'{where}: ANTHROPIC_BASE_URL through OmniRoute (opt-in only, needs the owner\'s yes)')
-    out('FAIL' if probs else 'PASS', 'api path', '; '.join(probs) if probs else 'direct to Anthropic (no ANTHROPIC_BASE_URL); Headroom MCP-only')
+    out('FAIL' if probs else 'PASS', 'api path', '; '.join(probs) if probs else 'direct to Anthropic (no ANTHROPIC_BASE_URL)')
 
 
 @check('caveman scope')
@@ -663,8 +623,7 @@ def _():
     if len(key) < 8:
         return out('WARN', 'context7 key', 'no CONTEXT7_API_KEY in this environment; nothing to scan')
     roots = [CLAUDE_JSON, HOME + '/.claude', HOME + '/.config', HOME + '/.serena', HOME + '/.claude-mem/settings.json', WT_ROOT + '/reports',
-             '/tmp/claude-0/logs', KIT, SHARED, '/tmp/claude/memory', REPO + '/.serena',
-             '/tmp/headroom-proxy.log']
+             '/tmp/claude-0/logs', KIT, SHARED, '/tmp/claude/memory', REPO + '/.serena']
     hits, n, kb = [], 0, key.encode()
     for r in roots:
         files = [r] if os.path.isfile(r) else [os.path.join(d, f) for d, _, fs in os.walk(r) for f in fs] if os.path.isdir(r) else []
@@ -689,7 +648,7 @@ def _():
         probs.append('run-worker.sh: claude -p without </dev/null (stalls on stdin)')
     if re.search(r'--allowedTools "[^"]*Bash\(', rw):
         probs.append('run-worker.sh: narrow Bash(...) allowlist; rtk turns `ls` into `rtk ls`, so also list Bash(rtk ...:*) or allow plain Bash')
-    for s in ('serena', 'context7', 'headroom', 'claude-mem', 'skillsmp'):
+    for s in ('serena', 'context7', 'claude-mem', 'skillsmp'):
         if f'"{s}"' not in rw:
             probs.append(f'run-worker.sh: worker MCP config lacks {s}')
         if f'mcp__{s}__*' not in rw:
@@ -779,7 +738,7 @@ if '--worker' in sys.argv:
         names = ' '.join(n for _, n, _ in calls)
         used = {
             'claude-mem': 'mcp__claude-mem__' in names, 'serena': 'mcp__serena__' in names, 'context7': 'mcp__context7__' in names,
-            'headroom': 'mcp__headroom__' in names, 'skillsmp': 'mcp__skillsmp__' in names,
+            'skillsmp': 'mcp__skillsmp__' in names,
             'graphify update+ask': any('graphify update' in i for _, _, i in calls) and any(re.search(r'graphify (explain|path|query)', i) for _, _, i in calls),
             'superpowers verification': any(n == 'Skill' and 'verification-before-completion' in i for _, n, i in calls),
             'ponytail review': any(n == 'Skill' and 'ponytail' in i for _, n, i in calls),

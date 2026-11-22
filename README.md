@@ -16,7 +16,6 @@ Nothing in here holds a key or a token. You supply your own through environment 
 | claude-code-setup | Read-only recommender for hooks/skills/MCP servers for a repo | Anthropic plugin directory |
 | claude-mem | Memory across sessions (search before re-investigating) | npm `claude-mem` |
 | impeccable | UI/web design skill | github.com/pbakaus/impeccable |
-| Headroom | MCP server that compresses big outputs; `headroom learn` learns from mistakes | pip `headroom-ai` |
 | graphify | Code map: `graphify explain`, `graphify path`, `graphify query` | pip `graphifyy` |
 | SkillsMP | MCP search for skills | skillsmp.com (needs an account key) |
 | Serena | MCP symbol search and whole-function edits through language servers | github.com/oraios/serena |
@@ -39,7 +38,7 @@ All optional. Put them in the cloud environment's variables (or your shell profi
 | `REPO_DIR` | Where that clone lives (or an existing checkout to pin to) | `~/<repo name>` |
 | `CONTEXT7_API_KEY` | Context7 key (free tier works without one, with a monthly quota) | none |
 | `SKILLSMP_API_KEY` | SkillsMP account key (without it SkillsMP answers 401) | none |
-| `MCP_TIMEOUT` | Set to `120000`; Serena and Headroom take longer than the 30 s default to connect | install writes it into `~/.claude/settings.json` too |
+| `MCP_TIMEOUT` | Set to `120000`; Serena takes longer than the 30 s default to connect | install writes it into `~/.claude/settings.json` too |
 
 Keys are passed to Claude Code as a literal `${VAR}` header, which Claude expands when it connects, so the value
 never lands in `~/.claude.json`. `check-tools.sh` scans config, logs and the kit for the Context7 key and fails if it
@@ -53,8 +52,7 @@ In a cloud environment, a container is thrown away after the session. Point `SHA
 1. Put this folder somewhere the session can reach: a mounted shared folder, or commit it into your repo (say
    `tools/`).
 2. Cloud environment network: allow `github.com`, `raw.githubusercontent.com`, `registry.npmjs.org`, `pypi.org`,
-   `files.pythonhosted.org`, `mcp.context7.com`, `skillsmp.com`. Add your AI provider host for `headroom learn`
-   (it calls Gemini) if you want that.
+   `files.pythonhosted.org`, `mcp.context7.com`, `skillsmp.com`.
 3. Cloud environment Setup script: paste `cloud-setup-script.sh` (edit its `KIT_DIR` line to where step 1 put the
    kit). It runs the install before Claude starts, so plugins and MCP servers load in the first session, and it never
    fails, so a broken step can't stop sessions from starting.

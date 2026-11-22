@@ -23,7 +23,6 @@ Tools (all are expected to be used; your final reply must say how):
   first. Onboarding and its "ask the user" mode are off: you make the call. Its line numbers are 0-based. Plain Edit
   only for small in-line changes or files Serena can't parse (minified or generated code).
 - claude-mem: search before re-investigating anything. Its smart_search/smart_outline are not for code: use Serena.
-- Headroom: headroom_compress outputs over ~10k chars (test logs, long greps) instead of re-reading them.
 - Context7: look up a library's current docs before guessing an API.
 - SkillsMP: search_skills when the item is a kind of job no installed skill covers.
 - superpowers: test-driven-development (failing test first), systematic-debugging, verification-before-completion.
@@ -63,7 +62,7 @@ your diff. The reviewer is ONE Agent call (general-purpose) on `git diff <base>.
 tests; fix what is real (one fix round). Then:
 1. Commit in your worktree. Commit trailer: <the session's attribution lines>.
 2. Report to <reports dir>/<item>.md, then a final reply under 15 lines: Status (DONE | DONE_WITH_CONCERNS | BLOCKED),
-   commits, test summary, what a user now sees, concerns, the INBOX line, one line per tool (serena, graphify, claude-mem, headroom,
+   commits, test summary, what a user now sees, concerns, the INBOX line, one line per tool (serena, graphify, claude-mem,
    context7, skillsmp, ponytail; "not needed, because ..." is fine), plus one line "OBSERVATIONS: ..." listing friction
    worth keeping (a tool clash, a rule that slowed you down, a step you had to work out yourself), or
    "OBSERVATIONS: none". Do not invoke task-observer or write to the task-observer workspace.

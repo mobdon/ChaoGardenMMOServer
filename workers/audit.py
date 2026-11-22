@@ -33,7 +33,7 @@ for wt in sys.argv[1:]:
             'verification skill': sum(v for k, v in c.items() if k.startswith('skill:') and 'verification' in k),
             'reviewer sub-agent': c['sub-agent']}
     missing = [k for k, v in need.items() if not v]
-    optional = [k for k in ('headroom', 'context7', 'skillsmp') if not c[k]]
+    optional = [k for k in ('context7', 'skillsmp') if not c[k]]
     print('  MISSING (defect):', ', '.join(missing) or 'none', '| unused, needs a "not needed, because" line:', ', '.join(optional) or 'none')
     print('  FIRST3 before first edit:', 'ok' if first3_ok or first3_ok is None and all(list(need.values())[:4]) else 'NO (claude-mem, graphify update+ask and serena must come before any Edit/Write)')
     # task-observer: workers report OBSERVATIONS: lines, only the controller logs them.
