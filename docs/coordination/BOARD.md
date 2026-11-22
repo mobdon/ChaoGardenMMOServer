@@ -606,3 +606,15 @@ fmt clean; the panel page was driven headless against a local server with
 two throwaway accounts (sign-in, wrong key, chat delete, mute, kick with
 close code 4003, voice heard, leaderboard). Limits: ranks by rings only;
 not run on a hosted server.
+
+## Staff invisible mode and go-to relay (2026-11-22)
+Changed paths: `src/game.rs`, `src/service.rs`. `POST /api/panel/invisible
+{on}` hides the staff member's own connected Chao from every other
+player's snapshot (memory only, off after a restart). `POST /api/panel/goto
+{playerId, following?}` sends the staff member's own socket a `staff-goto`
+event `{room, pose, targetId, targetName}` with the target's room and last
+Chao pose (null when none); the game moves its own Chao, the server does
+not. Both are audited (a follow's repeats are not). Tests: `cargo test` 316
+pass, clippy and fmt clean; headless page check with throwaway accounts.
+Limits: no game build handles `staff-goto` yet; an invisible Chao that
+chats or talks is still named to the room.

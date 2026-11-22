@@ -472,6 +472,8 @@ pub struct Game {
     pub benched: BTreeSet<String>,
     /// Staff limits by memory card (`Player::card`). Kept in `sanctions.json` by the service.
     pub sanctions: BTreeMap<String, Sanction>,
+    /// Staff Chao that other players are not sent (memory only; off again after a restart).
+    pub invisible: BTreeSet<String>,
     /// The last `CHAT_LOG` chat lines, for staff (memory only).
     pub chat_log: std::collections::VecDeque<Value>,
     chat_lines: u64,
@@ -563,6 +565,7 @@ impl Game {
             players: BTreeMap::new(),
             benched: BTreeSet::new(),
             sanctions: BTreeMap::new(),
+            invisible: BTreeSet::new(),
             chat_log: Default::default(),
             chat_lines: 0,
             voice_tap: Default::default(),
@@ -2493,7 +2496,7 @@ impl Game {
             .players
             .get(self_id)
             .and_then(|p| activities::public_race(self, p));
-        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || ((p.connections > 0 || p.watch.is_some() || competition::reserved(p)) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
+        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || (!self.invisible.contains(&p.id) && (p.connections > 0 || p.watch.is_some() || competition::reserved(p)) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
             "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().filter(|_|mission_visible).map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
             "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
             "settings": viewer.map_or(Value::Null, |v| v.profile_extra["settings"].clone()),

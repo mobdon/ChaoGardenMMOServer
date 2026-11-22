@@ -550,6 +550,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/panel/players", get(panel_players))
         .route("/api/panel/sanction", post(panel_sanction))
         .route("/api/panel/leaderboard", get(panel_leaderboard))
+        .route("/api/panel/invisible", post(panel_invisible))
+        .route("/api/panel/goto", post(panel_goto))
         .route("/api/panel/chat", get(panel_chat))
         .route("/api/panel/chat/delete", post(panel_chat_delete))
         .route("/api/panel/voice", get(panel_voice))
@@ -1509,6 +1511,7 @@ async fn panel_players(State(state): State<AppState>, headers: HeaderMap) -> Res
         .map(|p| {
             let account = accounts.by_card(p.card());
             json!({"id": p.id, "name": p.name, "room": p.zone,
+                "invisible": game.invisible.contains(&p.id),
                 "account": account.map(|a| &a.username), "role": account.and_then(|a| a.role),
                 "limits": game.sanction(p)})
         })
@@ -1638,6 +1641,100 @@ async fn panel_leaderboard(State(state): State<AppState>, headers: HeaderMap) ->
         })
         .collect();
     no_store(json!({ "players": rows }))
+}
+/// The staff member's own Chao that is out in the game right now, if any.
+fn staff_chao(state: &AppState, game: &Game, staff: &str) -> Option<String> {
+    let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    let card = &accounts.find(staff)?.card_hash;
+    game.players
+        .values()
+        .find(|p| p.connections > 0 && p.card() == card)
+        .map(|p| p.id.clone())
+}
+/// Hides or shows the staff member's own Chao to other players in its room.
+async fn panel_invisible(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some((staff, _)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let Some(on) = input["on"].as_bool() else {
+        return error(StatusCode::BAD_REQUEST, "Say on or off.");
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(own) = staff_chao(&state, &game, &staff) else {
+        return error(
+            StatusCode::CONFLICT,
+            "Your Chao is not in the game right now.",
+        );
+    };
+    if let Err(cause) = crate::audit::record(
+        &state.config.data_dir,
+        &staff,
+        if on { "invisible-on" } else { "invisible-off" },
+        &own,
+    ) {
+        eprintln!("Audit log write failed: {cause}");
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Could not save that.");
+    }
+    if on {
+        game.invisible.insert(own);
+    } else {
+        game.invisible.remove(&own);
+    }
+    no_store(json!({"ok": true, "invisible": on}))
+}
+/// Teleport to a player: tells the staff member's own game where that player is with a
+/// `staff-goto` event (room, and the player's last Chao pose when there is one). The game
+/// moves its own Chao; the server only relays where to. A follow is this call repeated.
+async fn panel_goto(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let Some((staff, _)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(target) = input["playerId"]
+        .as_str()
+        .and_then(|id| game.players.get(id))
+        .filter(|p| p.connections > 0)
+    else {
+        return error(StatusCode::NOT_FOUND, "That player is not online.");
+    };
+    let message = json!({"type": "event", "kind": "staff-goto", "room": target.zone,
+        "pose": target.chao_pose, "targetId": target.id, "targetName": target.name});
+    let Some(own) = staff_chao(&state, &game, &staff) else {
+        return error(
+            StatusCode::CONFLICT,
+            "Your Chao is not in the game right now.",
+        );
+    };
+    // A follow repeats this call; only the first of a run is worth an audit line.
+    if input["following"] != true
+        && let Err(cause) = crate::audit::record(
+            &state.config.data_dir,
+            &staff,
+            "goto",
+            &format!("{} ({})", message["targetName"], message["targetId"]),
+        )
+    {
+        eprintln!("Audit log write failed: {cause}");
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Could not save that.");
+    }
+    game.events.push(crate::game::Event {
+        target: Some(own),
+        message,
+    });
+    publish_events(&state, &mut game);
+    no_store(json!({"ok": true}))
 }
 /// The recent chat lines, oldest first.
 async fn panel_chat(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -2683,6 +2780,86 @@ mod account_tests {
                 .iter()
                 .all(|l| l["text"] != "rude words")
         );
+        // Staff powers need the staff member's own Chao in the game.
+        let goto = Some(json!({"playerId": loud}));
+        let (status, _) = panel(
+            &app,
+            "/api/panel/goto",
+            "x-panel-token",
+            &token,
+            goto.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let own = {
+            let accounts = state.accounts.lock().unwrap();
+            let card = accounts.find("modder").unwrap().card_hash.clone();
+            let mut game = state.game.lock().unwrap();
+            game.sanctions.clear();
+            let own = game
+                .players
+                .values()
+                .find(|p| p.card() == card)
+                .unwrap()
+                .id
+                .clone();
+            assert!(game.connect(&own));
+            game.drain_events();
+            own
+        };
+        let seen = |viewer: &str, who: &str| {
+            let game = state.game.lock().unwrap();
+            game.snapshot(viewer)["players"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["id"] == who)
+        };
+        assert!(seen(&loud, &own));
+        let (status, _) = panel(
+            &app,
+            "/api/panel/invisible",
+            "x-panel-token",
+            &token,
+            Some(json!({"on": true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!seen(&loud, &own) && seen(&own, &own) && seen(&own, &loud));
+        let (_, list) = panel(&app, "/api/panel/players", "x-panel-token", &token, None).await;
+        assert!(
+            list["players"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["id"] == own.as_str() && p["invisible"] == true)
+        );
+        let mut watching = state.events.subscribe();
+        let (status, _) = panel(&app, "/api/panel/goto", "x-panel-token", &token, goto).await;
+        assert_eq!(status, StatusCode::OK);
+        let told = watching.try_recv().unwrap();
+        assert_eq!(told.target.as_deref(), Some(own.as_str()));
+        assert_eq!(
+            (
+                told.message["kind"].as_str(),
+                told.message["targetId"].as_str()
+            ),
+            (Some("staff-goto"), Some(loud.as_str()))
+        );
+        assert_eq!(
+            told.message["room"],
+            state.game.lock().unwrap().players[&loud].zone.as_str()
+        );
+        let (status, _) = panel(
+            &app,
+            "/api/panel/invisible",
+            "x-panel-token",
+            &token,
+            Some(json!({"on": false})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(seen(&loud, &own));
         // Leaderboard: richest first, with the account name.
         state
             .game
@@ -2749,6 +2926,8 @@ mod account_tests {
         for (path, body) in [
             ("/api/panel/players", None),
             ("/api/panel/sanction", Some(json!({}))),
+            ("/api/panel/invisible", Some(json!({"on": true}))),
+            ("/api/panel/goto", Some(json!({"playerId": "x"}))),
             ("/api/panel/chat", None),
             ("/api/panel/leaderboard", None),
             ("/api/panel/chat/delete", Some(json!({"line": 1}))),
@@ -2776,6 +2955,8 @@ mod account_tests {
         assert_eq!(log.matches("chat-delete").count(), 1);
         assert!(log.contains("rude words"));
         assert_eq!(log.matches("voice-listen").count(), 2);
+        assert_eq!(log.matches("invisible-o").count(), 2);
+        assert_eq!(log.matches("\"goto\"").count(), 1);
         assert_eq!(log.matches("panel-login-refused").count(), 4);
         assert!(!log.contains(&panel_key));
     }
