@@ -86,6 +86,28 @@ impl Attack {
     }
 }
 
+/// A player's pressed button, waiting for the fighter's next attack. The game
+/// lets a fighter attack only when its approach ends (fn_72_FCC8), so presses
+/// never add attacks: a new press replaces the waiting one, and one attack
+/// uses it up. A strong move the fighter may not use is refused.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pressed(Option<Attack>);
+
+impl Pressed {
+    pub fn press(&mut self, attack: Attack, fighter: &Fighter) -> bool {
+        let ok = attack.allowed(fighter);
+        if ok {
+            self.0 = Some(attack);
+        }
+        ok
+    }
+
+    /// The button for the attack starting now, if one is waiting.
+    pub fn take(&mut self) -> Option<Attack> {
+        self.0.take()
+    }
+}
+
 /// Chance that an attack in reach lands (fn_72_EA20): certain against a
 /// defender who is attacking or has given up (its phases 4 and 7), otherwise
 /// 0.1 + 1.5 * accuracy / (accuracy + evade), at most 1. The attack lands when
@@ -169,6 +191,18 @@ mod tests {
         }
         assert_eq!(Attack::from_id(6), Some(Attack::BeatingUp));
         assert_eq!(Attack::from_id(9), None);
+    }
+
+    #[test]
+    fn presses_never_add_attacks() {
+        let weak = Fighter::new(skills(0));
+        let mut p = Pressed::default();
+        assert!(p.press(Attack::Punch, &weak));
+        assert!(p.press(Attack::HardKick, &weak));
+        assert!(!p.press(Attack::Roundhouse, &weak));
+        // Three presses, one attack: the last allowed one.
+        assert_eq!(p.take(), Some(Attack::HardKick));
+        assert_eq!(p.take(), None);
     }
 
     #[test]
