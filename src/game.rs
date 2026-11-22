@@ -1752,10 +1752,18 @@ impl Game {
                 self.last_tick_residents += 1;
             }
             let water = p.zone == "garden" && dist(p.x, p.z, -8., 0.) < 5.;
-            let metal = p.gear.look.as_deref() == Some("metal-sonic-chao");
+            // The owner's own Chao moves like Metal Sonic, as does the Metal Sonic Chao look.
+            let metal = p.admin || p.gear.look.as_deref() == Some("metal-sonic-chao");
             let gravity = if metal { METAL_CHAO_GRAVITY } else { 12. };
             let land_speed = if metal {
                 METAL_CHAO_TOP_SPEED
+            } else if p.race.is_none() {
+                // Hub/gardens: Run points scale from the base walk up to full Sonic/Shadow top
+                // speed (same value as row 12) at a perfect S: 98 level-ups of the native
+                // best gain (fn_60_2131C: 11 + 3 * grade 5 + 4).
+                let perfect_s = 98. * (11. + 3. * 5. + 4.);
+                1.4 + (METAL_CHAO_TOP_SPEED - 1.4)
+                    * (f64::from(p.stats["run"].points) / perfect_s).min(1.)
             } else {
                 1.4 + f64::from(p.stats["run"].level) * 0.006
             };
