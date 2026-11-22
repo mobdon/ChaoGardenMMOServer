@@ -138,6 +138,9 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     pub accounts: Arc<Mutex<crate::accounts::Accounts>>,
     mailer: Arc<Option<crate::mail::Mailer>>,
+    /// Open panel sessions: token hash -> (lowercase username, last use). Memory only.
+    panel_sessions: Arc<Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>>,
+    started: std::time::Instant,
     connections: Arc<Semaphore>,
     seen_connections: Arc<Mutex<BTreeSet<String>>>,
 }
@@ -286,6 +289,8 @@ impl AppState {
                 config.data_dir.clone(),
             )?)),
             mailer: Arc::new(crate::mail::Mailer::from_env()),
+            panel_sessions: Arc::default(),
+            started: std::time::Instant::now(),
             game: Arc::new(Mutex::new(game)),
             config: Arc::new(config),
             events,
@@ -532,6 +537,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/account/login", post(account_login))
         .route("/api/account/forgot", post(account_forgot))
         .route("/api/account/reset", post(account_reset))
+        .route("/api/panel/login", post(panel_login))
+        .route("/api/panel/me", get(panel_me))
+        .route("/api/panel/status", get(panel_status))
         .route("/api/tiny-care", post(tiny_care))
         .route(
             "/api/tiny-chao",
@@ -1328,6 +1336,138 @@ async fn account_login(State(state): State<AppState>, headers: HeaderMap, body: 
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     response
 }
+/// A panel session ends after this long without a request.
+const PANEL_IDLE: Duration = Duration::from_secs(15 * 60);
+
+fn no_store(body: Value) -> Response {
+    let mut response = Json(body).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
+}
+/// Panel sign-in: account password plus that person's own key (`x-admin-key` header).
+/// Every refusal looks the same, so it never tells a player whether an account is staff.
+async fn panel_login(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let login = input["login"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let password = input["password"].as_str().unwrap_or_default().to_owned();
+    let panel_key = headers
+        .get("x-admin-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let refused = || error(StatusCode::UNAUTHORIZED, "Wrong login.");
+    if login.is_empty() || login.len() > 254 || password.len() > 512 {
+        return refused();
+    }
+    let now = std::time::Instant::now();
+    let account = {
+        let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+        if accounts.locked(&login, now) {
+            return error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many tries. Wait a minute.",
+            );
+        }
+        accounts.find(&login).cloned()
+    };
+    let staff = account
+        .as_ref()
+        .filter(|a| a.key_ok(panel_key))
+        .and_then(|a| Some((a.username.clone(), a.role?)));
+    // The slow password check always runs, so timing does not show which part was wrong.
+    let password_ok = tokio::task::spawn_blocking(move || match account {
+        Some(account) => account.open(&password).is_some(),
+        None => {
+            crate::accounts::waste_a_check(&password);
+            false
+        }
+    })
+    .await
+    .unwrap_or(false);
+    let mut accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    let Some((username, role)) = staff.filter(|_| password_ok) else {
+        accounts.failed(&login, now);
+        drop(accounts);
+        let _ = crate::audit::record(&state.config.data_dir, &login, "panel-login-refused", "");
+        return refused();
+    };
+    accounts.succeeded(&login);
+    drop(accounts);
+    // No sign-in without its audit entry.
+    if let Err(cause) = crate::audit::record(&state.config.data_dir, &username, "panel-login", "") {
+        eprintln!("Audit log write failed: {cause}");
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Could not sign in.");
+    }
+    let token = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let mut sessions = state
+        .panel_sessions
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    sessions.retain(|_, (_, used)| now.duration_since(*used) < PANEL_IDLE);
+    sessions.insert(
+        crate::game::hash_token(&token),
+        (username.to_lowercase(), now),
+    );
+    drop(sessions);
+    no_store(json!({"token": token, "username": username, "role": role}))
+}
+/// The staff member a request's `x-panel-token` belongs to. The role is read from the
+/// account on every request, so removing a role ends that person's panel at once.
+fn panel_staff(state: &AppState, headers: &HeaderMap) -> Option<(String, crate::accounts::Role)> {
+    let token = headers.get("x-panel-token")?.to_str().ok()?;
+    if token.len() > 128 {
+        return None;
+    }
+    let now = std::time::Instant::now();
+    let name = {
+        let mut sessions = state
+            .panel_sessions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let hash = crate::game::hash_token(token);
+        let (name, used) = sessions.get_mut(&hash)?;
+        if now.duration_since(*used) >= PANEL_IDLE {
+            sessions.remove(&hash);
+            return None;
+        }
+        *used = now;
+        name.clone()
+    };
+    let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    let account = accounts.find(&name)?;
+    Some((account.username.clone(), account.role?))
+}
+/// Who the panel is signed in as. Not found for anyone without an open staff session.
+async fn panel_me(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    match panel_staff(&state, &headers) {
+        Some((username, role)) => no_store(json!({"username": username, "role": role})),
+        None => error(StatusCode::NOT_FOUND, "Not found."),
+    }
+}
+/// Server status for staff: players online and how long the server has been up.
+async fn panel_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if panel_staff(&state, &headers).is_none() {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    }
+    let online = state
+        .game
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .online_connections();
+    no_store(json!({"online": online, "uptimeSeconds": state.started.elapsed().as_secs()}))
+}
 /// The login screen's delete: copies profiles.json aside first, then removes the Chao for good.
 async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(token) = bearer(&headers) else {
@@ -2037,6 +2177,116 @@ mod account_tests {
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
+    }
+
+    async fn panel(
+        app: &Router,
+        path: &str,
+        header_name: &str,
+        value: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let request = match &body {
+            Some(_) => axum::http::Request::post(path),
+            None => axum::http::Request::get(path),
+        }
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header_name, value)
+        .body(axum::body::Body::from(
+            body.map(|b| b.to_string()).unwrap_or_default(),
+        ))
+        .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_panel_opens_only_for_staff_with_password_and_their_own_key() {
+        use crate::accounts::Role;
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        let app = router(state.clone());
+        for name in ["Modder", "Player"] {
+            let (_, made) = post(&app, "/api/session", json!({"name": "Test"})).await;
+            let (status, _) = post(
+                &app,
+                "/api/account/register",
+                json!({"username": name, "email": format!("{name}@example.com"), "password": "correct horse", "card": made["card"]}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let set = |name: &str, role| state.accounts.lock().unwrap().set_role(name, role).unwrap();
+        let panel_key = set("modder", Some(Role::Moderator)).unwrap();
+        let sign_in = |login: &'static str, password: &'static str, sent: String| {
+            let app = app.clone();
+            async move {
+                panel(
+                    &app,
+                    "/api/panel/login",
+                    "x-admin-key",
+                    &sent,
+                    Some(json!({"login": login, "password": password})),
+                )
+                .await
+            }
+        };
+        // A player with a real staff key, a wrong password, a wrong key and no key all fail alike.
+        for (login, password, sent) in [
+            ("player", "correct horse", panel_key.clone()),
+            ("modder", "wrong horse", panel_key.clone()),
+            ("modder", "correct horse", "0".repeat(64)),
+            ("modder", "correct horse", String::new()),
+        ] {
+            let (status, body) = sign_in(login, password, sent).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert_eq!(body["error"], "Wrong login.");
+        }
+        let (status, body) = sign_in("modder", "correct horse", panel_key.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["role"], "moderator");
+        let token = body["token"].as_str().unwrap().to_owned();
+        let (status, me) = panel(&app, "/api/panel/me", "x-panel-token", &token, None).await;
+        assert_eq!(
+            (status, me["username"].as_str()),
+            (StatusCode::OK, Some("Modder"))
+        );
+        let (status, live) = panel(&app, "/api/panel/status", "x-panel-token", &token, None).await;
+        assert_eq!((status, live["online"].as_u64()), (StatusCode::OK, Some(0)));
+        // No token, a made-up token and the key itself open nothing.
+        for (name, value) in [
+            ("x-panel-token", "nope".to_owned()),
+            ("x-admin-key", panel_key.clone()),
+        ] {
+            for path in ["/api/panel/me", "/api/panel/status"] {
+                let (status, _) = panel(&app, path, name, &value, None).await;
+                assert_eq!(status, StatusCode::NOT_FOUND);
+            }
+        }
+        // An idle session ends.
+        for (_, used) in state.panel_sessions.lock().unwrap().values_mut() {
+            *used -= PANEL_IDLE;
+        }
+        let (status, _) = panel(&app, "/api/panel/me", "x-panel-token", &token, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // Removing the role ends an open session at once.
+        let (_, body) = sign_in("modder", "correct horse", panel_key.clone()).await;
+        let token = body["token"].as_str().unwrap().to_owned();
+        set("modder", None);
+        let (status, _) = panel(&app, "/api/panel/me", "x-panel-token", &token, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let log = fs::read_to_string(dir.path().join("audit.log")).unwrap();
+        assert_eq!(log.matches("\"panel-login\"").count(), 2);
+        assert_eq!(log.matches("panel-login-refused").count(), 4);
+        assert!(!log.contains(&panel_key));
     }
 
     #[tokio::test]

@@ -59,6 +59,32 @@ fn run_release_migration() -> io::Result<()> {
     Ok(())
 }
 
+/// `chao-game-server staff <login> <admin|moderator|none>`: gives or removes a staff
+/// role on the machine itself and prints the new panel key once.
+// shortcut: edits accounts.json directly, so run it with the server stopped; move to a
+// panel action once admins can manage staff there.
+fn run_staff(login: &str, role: &str) -> io::Result<()> {
+    use chao_game_server::accounts::{Accounts, Role};
+    let role = match role {
+        "admin" => Some(Role::Admin),
+        "moderator" => Some(Role::Moderator),
+        "none" => None,
+        _ => return Err(io::Error::other("role must be admin, moderator or none")),
+    };
+    let config = Config::from_env().map_err(io::Error::other)?;
+    let mut accounts = Accounts::load(config.data_dir.clone())?;
+    if accounts.find(login).is_none() {
+        return Err(io::Error::other("no such account"));
+    }
+    let panel_key = accounts.set_role(login, role)?;
+    chao_game_server::audit::record(&config.data_dir, "server-console", "set-role", login)?;
+    match panel_key {
+        Some(panel_key) => println!("Panel key (shown once, save it to a file): {panel_key}"),
+        None => println!("Role and panel key removed."),
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
     // `chao-game-server migrate` is the controlled release step; anything else
@@ -67,6 +93,12 @@ async fn main() -> io::Result<()> {
         && command == "migrate"
     {
         return run_release_migration();
+    }
+    let arguments: Vec<String> = std::env::args().collect();
+    if let [_, command, login, role] = arguments.as_slice()
+        && command == "staff"
+    {
+        return run_staff(login, role);
     }
     let config = Config::from_env().map_err(io::Error::other)?;
     let state = AppState::load(config)?;

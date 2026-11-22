@@ -550,3 +550,19 @@ git). Limits: every face part in the model is drawn (eyelids, mouth); the
 face rule, head ball, body families with morphs, colour table, the full
 motion set and eggs are not converted yet; Steam folder only, no disc image;
 not run on a hosted server.
+
+## Staff panel groundwork (2026-11-22)
+Base commit: f80efa8. Changed paths: `src/accounts.rs`, `src/audit.rs`,
+`src/lib.rs`, `src/main.rs`, `src/service.rs`. Accounts carry an optional
+staff role (moderator, admin) and the hash of that person's own panel key;
+both survive a password reset. `chao-game-server staff <login>
+<admin|moderator|none>` sets a role on the machine and prints a fresh key
+once. `POST /api/panel/login` (password in the body, key in `x-admin-key`)
+gives a 15-minute idle panel token; `GET /api/panel/me` and
+`GET /api/panel/status` take it in `x-panel-token` and answer 404 without
+one. Sign-ins and refusals go to an append-only `audit.log` in the data
+folder. Tests: `cargo test` 316 pass, clippy and fmt clean (tested offline).
+Limits: no moderation actions, voice listen-in or panel page yet; the staff
+command edits `accounts.json` and needs the server stopped; sessions end on
+restart; one shared `CHAO_ADMIN_KEY` scheme on another branch is not merged
+with this one; not run on a hosted server.
