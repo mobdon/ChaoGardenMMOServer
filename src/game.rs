@@ -116,6 +116,9 @@ pub struct Player {
     /// it, relayed so other games draw that Chao (live only; not saved).
     pub chao_record: Vec<u8>,
     pub chao_record_version: u64,
+    /// The Chao's stats from the last record its game sent (saved, so the
+    /// phone app and the race rules have them while the game is closed).
+    pub native_stats: Option<crate::game_save::NativeStats>,
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
     pub care: crate::care::CareState,
@@ -236,7 +239,7 @@ impl Player {
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
             "energy":self.energy,"hunger":self.hunger,"care":self.care,"body":self.body,"life":self.life,"garden":self.garden,"tinyCollection":self.tiny_collection,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
-            "tinyRecords": self.tiny_records,
+            "tinyRecords": self.tiny_records, "nativeStats": self.native_stats,
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed, "bestRaceMs": self.best_race_ms});
         phone::project_profile(self, &mut profile);
@@ -648,6 +651,7 @@ impl Game {
             chao_pose: Value::Null,
             chao_record: Vec::new(),
             chao_record_version: 0,
+            native_stats: serde_json::from_value(data["nativeStats"].clone()).ok(),
             tiny_result: None,
             watch: None,
             care: crate::care::CareState::restore(data.get("care"))?,
