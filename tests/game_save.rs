@@ -227,6 +227,24 @@ async fn care_on_the_socket_is_refused_while_the_game_holds_the_chao() {
     .await
     .expect("a notice before the timeout");
     assert_eq!(refused["code"], "in-game");
+    // Chat still reaches the room while the game holds the Chao.
+    socket
+        .send(Message::Text(json!({"type":"action","action":"chat","channel":"world","text":"hi"}).to_string().into()))
+        .await
+        .unwrap();
+    let chat = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = socket.next().await {
+                let value: Value = serde_json::from_str(&text).unwrap();
+                if value["kind"] == "chat" || value["code"].is_string() {
+                    return value;
+                }
+            }
+        }
+    })
+    .await
+    .expect("a chat event before the timeout");
+    assert_eq!(chat["kind"], "chat", "{chat}");
 
     // The one care request the game may send: it removes the item and nothing else.
     let before = {

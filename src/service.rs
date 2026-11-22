@@ -2898,7 +2898,9 @@ async fn handle_socket(
                             response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"observer-read-only","text":"This connection only observes your Chao. Open Tiny Garden for activities."}).to_string().into()), 0));
                         } else if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
                             let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-                            let moving = value["type"] == "input" || (value["type"] == "action" && value["action"] == "save");
+                            // Chat, voice, mutes, the room join and the Chao's pose stay open while the game holds the card: the player is in that room.
+                            let social = value["type"] == "action" && value["action"].as_str().is_some_and(|a| matches!(a, "chat" | "voice" | "mute" | "chao-pose" | "chao-world"));
+                            let moving = social || value["type"] == "input" || (value["type"] == "action" && value["action"] == "save");
                             // The game's own Karate menu queues from inside the game, so the queue actions pass while the game holds the card.
                             let queueing = value["type"] == "action" && value["action"].as_str().is_some_and(|a| matches!(a, "queue-join" | "queue-ready" | "queue-leave" | "queue-attack" | "queue-cheer"));
                             // The game hands an inventory item to the Chao itself; the server only removes the item.
