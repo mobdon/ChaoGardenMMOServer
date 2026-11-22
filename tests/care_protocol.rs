@@ -62,6 +62,18 @@ impl TestServer {
         )
     }
 
+    /// A Tiny Garden socket from this Chao's phone, after its PC has played once.
+    async fn phone(&self, session: &Value) -> Socket {
+        let token = session["token"].as_str().unwrap();
+        let id = session["player"]["id"].as_str().unwrap();
+        let path = chao_game_server::tiny_chao::model_path(&self.state.config.data_dir, id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"glTF synthetic test model").unwrap();
+        connect_async(format!("{}/ws?token={token}&tiny=1", self.url))
+            .await
+            .unwrap()
+            .0
+    }
     async fn socket(&self, session: &Value) -> Socket {
         connect_async(format!(
             "{}/ws?token={}",
@@ -358,7 +370,7 @@ async fn tiny_shop_remote_buy_feed_duplicate_sockets_and_transport_replay_after_
 async fn tiny_enter_minigame_and_passive_widget_keep_one_resident_without_a_take_control_step() {
     let (server, owner, _) = TestServer::start().await;
     let id = owner["player"]["id"].as_str().unwrap();
-    let mut phone = server.socket(&owner).await;
+    let mut phone = server.phone(&owner).await;
     let initial = receive(&mut phone, |v| v["type"] == "snapshot").await;
     assert_eq!(initial["care"]["tinyResident"]["enabled"], false);
     assert_eq!(initial["connectionMode"], "control");

@@ -137,6 +137,7 @@ pub struct AppState {
     pub shutdown: watch::Sender<bool>,
     pub metrics: Arc<Metrics>,
     pub accounts: Arc<Mutex<crate::accounts::Accounts>>,
+    mailer: Arc<Option<crate::mail::Mailer>>,
     connections: Arc<Semaphore>,
     seen_connections: Arc<Mutex<BTreeSet<String>>>,
 }
@@ -284,6 +285,7 @@ impl AppState {
             accounts: Arc::new(Mutex::new(crate::accounts::Accounts::load(
                 config.data_dir.clone(),
             )?)),
+            mailer: Arc::new(crate::mail::Mailer::from_env()),
             game: Arc::new(Mutex::new(game)),
             config: Arc::new(config),
             events,
@@ -523,11 +525,19 @@ pub fn router(state: AppState) -> Router {
         .route("/api/chao-record", put(chao_record_put))
         .route("/api/chao-record/{id}", get(chao_record_get))
         .route("/api/card", get(card))
-        .route("/api/settings", get(settings_get).post(settings_post))
-        .route("/api/gear-pickup", post(gear_pickup))
+        .route("/api/chao", delete(delete_chao))
         .route("/api/account/register", post(account_register))
         .route("/api/account/login", post(account_login))
-        .route("/api/chao", delete(delete_chao))
+        .route("/api/account/forgot", post(account_forgot))
+        .route("/api/account/reset", post(account_reset))
+        .route(
+            "/api/tiny-chao",
+            get(tiny_chao_get)
+                .put(tiny_chao_put)
+                .layer(DefaultBodyLimit::max(crate::tiny_chao::MODEL_MAX)),
+        )
+        .route("/api/settings", get(settings_get).post(settings_post))
+        .route("/api/gear-pickup", post(gear_pickup))
         // Deployment probes and metrics: unauthenticated, cheap, excluded from
         // the request metrics themselves.
         .route("/livez", get(livez))
@@ -1023,6 +1033,171 @@ async fn account_register(
 }
 /// Username (or email) and password: answers with the card code and the
 /// card's Chao, as `/api/card` does for a card code.
+/// Mails a password-reset link. Always answers the same, so it can't tell who has an account.
+async fn account_forgot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let login = input["login"].as_str().unwrap_or_default().trim();
+    if !login.is_empty() && login.len() <= 254 {
+        let started = state
+            .accounts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .start_reset(login, std::time::Instant::now());
+        match (started, state.mailer.as_ref()) {
+            (Some((email, username, token)), Some(_)) => {
+                let mailer = state.mailer.clone();
+                tokio::task::spawn_blocking(move || {
+                    if let Some(mailer) = mailer.as_ref()
+                        && let Err(cause) = mailer.send_reset(&email, &username, &token)
+                    {
+                        eprintln!("Reset mail failed: {cause}");
+                    }
+                });
+            }
+            (Some(_), None) => eprintln!("Reset asked for, but mail is not configured."),
+            (None, _) => {}
+        }
+    }
+    Json(json!({"ok": true, "text": "If that account exists, a reset link is on its way."}))
+        .into_response()
+}
+/// Sets a new password with a mailed token. The card moves to a new code (the old
+/// one is sealed under the forgotten password), so every device signs in again.
+async fn account_reset(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let password = input["password"].as_str().unwrap_or_default().to_owned();
+    if !crate::accounts::valid_password(&password) {
+        return error(StatusCode::BAD_REQUEST, "Use 8 to 128 characters.");
+    }
+    let token = input["token"].as_str().unwrap_or_default();
+    let Some(old) = state
+        .accounts
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take_reset(token, std::time::Instant::now())
+    else {
+        return error(
+            StatusCode::GONE,
+            "That reset link is used up or too old. Ask for a new one.",
+        );
+    };
+    let card = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let (username, email, sealed_for) = (old.username.clone(), old.email.clone(), card.clone());
+    let made = tokio::task::spawn_blocking(move || {
+        crate::accounts::Account::new(&username, &email, &password, &sealed_for)
+    })
+    .await;
+    let Ok(Ok(account)) = made else {
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not reset your password.",
+        );
+    };
+    let failed = |what: &str, cause: io::Error| {
+        eprintln!("Password reset {what} failed: {cause}");
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not reset your password.",
+        )
+    };
+    let new_hash = account.card_hash.clone();
+    let dir = &state.config.data_dir;
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let before = game.move_card(&old.card_hash, &card);
+    if let Err(cause) = crate::game_save::rename(dir, &old.card_hash, &new_hash) {
+        game.restore_players(before);
+        return failed("save move", cause);
+    }
+    let undo = |game: &mut Game, before| {
+        let _ = crate::game_save::rename(dir, &new_hash, &old.card_hash);
+        game.restore_players(before);
+        let _ = state.persist(game);
+    };
+    if let Err(cause) = state.persist(&mut game) {
+        undo(&mut game, before);
+        return failed("profile save", cause);
+    }
+    if let Err(cause) = state
+        .accounts
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .replace(account)
+    {
+        undo(&mut game, before);
+        return failed("account save", cause);
+    }
+    let chao = game.card_sessions(&card);
+    let mut response = Json(json!({"card": card, "chao": chao})).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
+}
+/// The PC stores its player's own Chao model for the phone (Bearer: the Chao's token).
+async fn tiny_chao_put(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let id = bearer(&headers).and_then(|token| {
+        let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+        game.player_for_token(token).map(|p| p.id.clone())
+    });
+    let Some(id) = id else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    if crate::tiny_chao::model_type(&body).is_none() {
+        return error(StatusCode::BAD_REQUEST, "Send a PNG or GLB file.");
+    }
+    let path = crate::tiny_chao::model_path(&state.config.data_dir, &id);
+    match crate::accounts::write_private(&path, &body) {
+        Ok(()) => Json(json!({"ok": true, "bytes": body.len()})).into_response(),
+        Err(cause) => {
+            eprintln!("Chao model save failed: {cause}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not save the Chao model.",
+            )
+        }
+    }
+}
+/// The phone, logged in to the same account, fetches its player's Chao model (Bearer: the
+/// Chao's token). Nobody else can read it.
+async fn tiny_chao_get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let id = bearer(&headers).and_then(|token| {
+        let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+        game.player_for_token(token).map(|p| p.id.clone())
+    });
+    let Some(id) = id else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match tokio::fs::read(crate::tiny_chao::model_path(&state.config.data_dir, &id)).await {
+        Ok(bytes) => match crate::tiny_chao::model_type(&bytes) {
+            Some(mime) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
+            None => error(StatusCode::NOT_FOUND, "No Chao model stored yet."),
+        },
+        Err(cause) if cause.kind() == io::ErrorKind::NotFound => {
+            error(StatusCode::NOT_FOUND, "No Chao model stored yet.")
+        }
+        Err(cause) => {
+            eprintln!("Chao model read failed: {cause}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not read the Chao model.",
+            )
+        }
+    }
+}
 async fn account_login(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     let input = match json_body(&headers, &body) {
         Ok(input) => input,
@@ -1102,7 +1277,10 @@ async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Respo
     }
     match game.delete_chao(token) {
         Ok(id) => match state.persist(&mut game) {
-            Ok(()) => Json(json!({"deleted": id})).into_response(),
+            Ok(()) => {
+                let _ = fs::remove_file(crate::tiny_chao::model_path(&state.config.data_dir, &id));
+                Json(json!({"deleted": id})).into_response()
+            }
             Err(cause) => save_failed("delete", cause),
         },
         Err(message) => error(StatusCode::CONFLICT, message),
@@ -1161,8 +1339,9 @@ async fn game_save_release(State(state): State<AppState>, headers: HeaderMap) ->
     Json(json!({"ok": true})).into_response()
 }
 
+/// The only game-derived files the server hands out: what the Tiny Chao Garden phone app
+/// and widget draw. Everything else comes from each player's own game files in the browser.
 pub fn asset_filename(path: &str) -> Option<String> {
-    // Tiny Garden's own art routes (the client's phone preview names them this way).
     match path {
         "/__widget-art/tiny-garden-a2ne.png" => return Some("tiny-garden-a2ne.png".into()),
         "/__widget-art/tiny-garden-a2ne-sidebar-1.png" => {
@@ -1171,290 +1350,82 @@ pub fn asset_filename(path: &str) -> Option<String> {
         _ => {}
     }
     let filename = path.strip_prefix("/api/assets/")?;
-    let glbs = [
-        "chao",
-        "chao-egg",
-        "chao-egg-hatching",
-        "hub",
-        "garden",
-        "hero-garden",
-        "dark-garden",
-        "neutral-chaos",
-        "hero-chaos",
-        "dark-chaos",
-        "tails",
-        "knuckles",
-        "amy",
-        "chaos-emerald",
-        "tree-neutral",
-        "dark-chao-walker",
-        "dark-walker-shot",
-        "dark-walker-booster",
-        "shadow-air-shoes-left",
-        "shadow-air-shoes-right",
-        "sonic-light-shoes-left",
-        "sonic-light-shoes-right",
-        "knuckles-hammer-gloves-left",
-        "knuckles-hammer-gloves-right",
-        // Native Chao behaviour clips selected locally by the client tooling.
-        "chao-behaviour",
-    ];
-    let colors = ["red", "purple", "cyan", "green", "blue", "yellow", "white"];
-    let pngs = [
-        "chao-flame.png",
-        "chao-shadow.png",
-        "emotion-flame.png",
-        "emotion-flame-atlas.png",
-        "emotion-sphere.png",
-        "chao-stat-panel.png",
-        // The Kindergarten medical chart pages (al_stg_kinder_ad_tex entry 7, laid out by
-        // ChaoStgKinder fn_74_C50C), cropped to the panel, as the MMO Tab menu background.
-        "medchart-page-a.png",
-        "medchart-page-b.png",
-        "medchart-page-c.png",
-        "medchart-page-a5.png",
-        "medchart-page-b5.png",
-        "medchart-page-c5.png",
-        "medchart-page-d.png",
-        "medchart-page-e.png",
-        "chao-stat-font.png",
-        "chao-race-parameter.png",
-        "chao-select-window.png",
-        "item-panel-fruit.png",
-        "item-panel-egg.png",
-        "chao-icon-heart.png",
-        "discord-icon.png",
-        "login-chao.png",
+    const TINY: [&str; 11] = [
         "tiny-neutral-chaos.png",
         "tiny-hero-chaos.png",
         "tiny-dark-chaos.png",
-        // Tiny Garden art the client's android/tools export makes from the player's A2NE ROM.
         "tiny-garden-a2ne.png",
         "tiny-garden-sidebar-0-a2ne.png",
         "tiny-garden-sidebar-1-a2ne.png",
+        // The phone page's stat panel, face emeralds and flame (src/tiny.js, tiny-avatar.js).
+        "chao-stat-panel.png",
+        "chao-stat-font.png",
+        "chao-flame.png",
+        "emerald-sky.png",
+        // Not game data.
+        "discord-icon.png",
     ];
-    let audio = [
-        "music-hub",
-        "music-garden",
-        "music-hero",
-        "music-dark",
-        "voice-knuckles",
-        "voice-tails",
-        "voice-amy",
-        "jingle-chao-g-dance",
-    ];
-    if filename == "hub-grass.png" {
-        return Some("nativehubgrass.png".into());
-    }
-    if chao_appearance_asset(filename) {
-        return Some(filename.into());
-    }
-    if filename == "shadow-skate-motion.json" {
-        return Some(filename.into());
-    }
-    if [
-        "race-normal.glb",
-        "race-dark.glb",
-        "race-hero.glb",
-        "karate-arena.glb",
-    ]
-    .contains(&filename)
-    {
-        return Some(format!("activities/{filename}"));
-    }
-    if let Some(local) = care_asset(filename) {
-        return Some(local);
-    }
-    if let Some(local) = metal_chao_asset(filename) {
-        return Some(local);
-    }
-    if glbs.iter().any(|name| filename == format!("{name}.glb"))
-        || colors.iter().any(|color| {
-            filename == format!("emerald-{color}.glb") || filename == format!("emerald-{color}.png")
-        })
-        || filename == "emerald-sky.png"
-        || pngs.contains(&filename)
-        // The game's own inventory panels for native items 0-24 (al_panel).
-        || (0..25).any(|id| filename == format!("item-panel-{id}.png"))
-        || audio.iter().any(|name| filename == format!("{name}.mp3"))
-    {
-        Some(filename.into())
-    } else {
-        None
-    }
-}
-/// The owner's Metal Sonic Chao parts, converted locally by the client's
-/// `scripts/metal-chao/convert.py` into ignored `imports/metal-chao/`.
-fn metal_chao_asset(filename: &str) -> Option<String> {
-    const PARTS: [&str; 1] = ["rigged"];
-    let ok = filename == "metal-chao-skin.png"
-        || filename
-            .strip_prefix("metal-chao-")
-            .and_then(|rest| rest.strip_suffix(".glb"))
-            .is_some_and(|part| PARTS.contains(&part));
-    ok.then(|| format!("metal-chao/{filename}"))
-}
-
-/// Locally converted native care models (ignored `imports/care/`), by exact name:
-/// `animal-part-<species>-<child|adult>-<socket>.glb`, `tree-<family>-<stage>.glb`,
-/// `fruit-<fruit>.glb` and `hat-<id>.glb` (plus `hat-9-eye`/`hat-9-jaw`).
-/// Names are allowlisted; nothing else is reachable.
-fn care_asset(filename: &str) -> Option<String> {
-    let stem = filename.strip_suffix(".glb")?;
-    const SOCKETS: [&str; 13] = [
-        "leftArm",
-        "rightArm",
-        "leftEar",
-        "rightEar",
-        "forehead",
-        "leftHorn",
-        "rightHorn",
-        "leftLeg",
-        "rightLeg",
-        "tail",
-        "leftWing",
-        "rightWing",
-        "tongue",
-    ];
-    let ok = if let Some(rest) = stem.strip_prefix("animal-part-") {
-        crate::care_catalog::ANIMAL_KEYS.iter().any(|species| {
-            ["child", "adult"].iter().any(|age| {
-                SOCKETS
-                    .iter()
-                    .any(|socket| rest == format!("{species}-{age}-{socket}"))
-            })
-        })
-    } else if let Some(rest) = stem.strip_prefix("tree-") {
-        crate::garden::SEEDS.iter().any(|family| {
-            ["young", "mature", "dying"]
-                .iter()
-                .any(|stage| rest == format!("{family}-{stage}"))
-        })
-    } else if let Some(rest) = stem.strip_prefix("fruit-") {
-        crate::care_catalog::FRUIT_KEYS.contains(&rest)
-    } else if let Some(rest) = stem.strip_prefix("hat-") {
-        // Worn Black Market hats 3-15 (GC al_draw_B); the Pan also draws
-        // its eye and jaw pieces.
-        crate::black_market::HATS
+    let colors = ["red", "purple", "cyan", "green", "blue", "yellow", "white"];
+    (TINY.contains(&filename)
+        || colors
             .iter()
-            .any(|hat| rest == hat.0.to_string())
-            || rest == "9-eye"
-            || rest == "9-jaw"
-    } else {
-        false
-    };
-    ok.then(|| format!("care/{filename}"))
-}
-
-/// Locally converted evolution bodies, face and look textures (never in Git).
-/// `chao-body-al_<align><family>z.glb`, `chao-face.json`, `chao-look.json`,
-/// `chao-eye-<name>.png`, `chao-mouth-<name>.png` and `chao-look-<name>.png` with a bounded lowercase name.
-fn chao_appearance_asset(filename: &str) -> bool {
-    if filename == "chao-face.json" || filename == "chao-look.json" {
-        return true;
-    }
-    if let Some(family) = filename
-        .strip_prefix("chao-body-al_")
-        .and_then(|rest| rest.strip_suffix("z.glb"))
-    {
-        let bytes = family.as_bytes();
-        return bytes.len() == 2 && b"ndh".contains(&bytes[0]) && b"cnsfrp".contains(&bytes[1]);
-    }
-    ["chao-eye-", "chao-look-", "chao-mouth-"]
-        .iter()
-        .any(|prefix| {
-            filename
-                .strip_prefix(prefix)
-                .and_then(|rest| rest.strip_suffix(".png"))
-                .is_some_and(|name| {
-                    (1..=32).contains(&name.len())
-                        && name
-                            .bytes()
-                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-                })
-        })
+            .any(|color| filename == format!("emerald-{color}.png")))
+    .then(|| filename.into())
 }
 
 #[cfg(test)]
-mod appearance_asset_tests {
+mod asset_list_tests {
     use super::asset_filename;
 
     #[test]
-    fn metal_chao_assets_are_exact_names() {
-        for ok in ["metal-chao-rigged.glb", "metal-chao-skin.png"] {
-            assert_eq!(
-                asset_filename(&format!("/api/assets/{ok}")),
-                Some(format!("metal-chao/{ok}"))
-            );
-        }
-        for bad in [
-            "metal-chao-x.glb",
-            "metal-chao-head.glb",
-            "metal-chao-../head.glb",
-            "metal-chao-head.png",
-            "metal-chao-skin.glb",
-        ] {
-            assert_eq!(asset_filename(&format!("/api/assets/{bad}")), None, "{bad}");
-        }
-    }
-
-    #[test]
-    fn appearance_assets_are_bounded() {
+    fn only_tiny_garden_assets_are_served() {
         for ok in [
-            "chao-body-al_ncz.glb",
-            "chao-body-al_dpz.glb",
-            "chao-face.json",
-            "chao-eye-al_eye01.png",
-            "chao-look-al_jewel_ruby.png",
+            "tiny-dark-chaos.png",
+            "tiny-garden-a2ne.png",
+            "chao-flame.png",
+            "emerald-cyan.png",
+            "discord-icon.png",
         ] {
             assert_eq!(
                 asset_filename(&format!("/api/assets/{ok}")).as_deref(),
                 Some(ok)
             );
         }
-        for bad in [
-            "chao-body-al_xcz.glb",
-            "chao-body-al_nczz.glb",
-            "chao-eye-../x.png",
-            "chao-look-.png",
-            "chao-eye-AL.png",
-            "chao-look-a/b.png",
+        assert_eq!(
+            asset_filename("/__widget-art/tiny-garden-a2ne-sidebar-1.png").as_deref(),
+            Some("tiny-garden-sidebar-1-a2ne.png")
+        );
+        for gone in [
+            "chao.glb",
+            "hub.glb",
+            "garden.glb",
+            "shadow-air-shoes-left.glb",
+            "music-hub.mp3",
+            "medchart-page-a.png",
+            "item-panel-3.png",
+            "chao-body-al_ncz.glb",
+            "metal-chao-rigged.glb",
+            "hat-1.glb",
+            "activities/race-normal.glb",
+            "race-normal.glb",
+            "hub-grass.png",
+            "shadow-skate-motion.json",
+            "emerald-cyan.glb",
+            "../tiny-dark-chaos.png",
         ] {
-            assert_eq!(asset_filename(&format!("/api/assets/{bad}")), None, "{bad}");
+            assert_eq!(
+                asset_filename(&format!("/api/assets/{gone}")),
+                None,
+                "{gone}"
+            );
         }
     }
 }
 
-fn byte_range(header_value: &str, length: usize) -> Option<(usize, usize)> {
-    let range = header_value.strip_prefix("bytes=")?;
-    let (left, right) = range.split_once('-')?;
-    if left.is_empty() {
-        let suffix = right.parse::<usize>().ok()?;
-        if suffix == 0 || length == 0 {
-            return None;
-        }
-        return Some((length.saturating_sub(suffix), length - 1));
-    }
-    let start = left.parse::<usize>().ok()?;
-    if start >= length {
-        return None;
-    }
-    let end = if right.is_empty() {
-        length - 1
-    } else {
-        right.parse::<usize>().ok()?.min(length - 1)
-    };
-    if end < start {
-        None
-    } else {
-        Some((start, end))
-    }
-}
 async fn asset_or_missing(
     State(state): State<AppState>,
     OriginalUri(uri): OriginalUri,
     method: Method,
-    headers: HeaderMap,
 ) -> Response {
     let Some(filename) = asset_filename(uri.path()) else {
         return error(StatusCode::NOT_FOUND, "Not found.");
@@ -1479,52 +1450,14 @@ async fn asset_or_missing(
                 );
             }
         };
-    let audio = filename.ends_with(".mp3");
-    let mime = if audio {
-        "audio/mpeg"
-    } else if filename.ends_with(".png") {
-        "image/png"
-    } else if filename.ends_with(".json") {
-        "application/json; charset=utf-8"
-    } else {
-        "model/gltf-binary"
-    };
-    let total = contents.len();
-    let mut status = StatusCode::OK;
-    let mut start = 0;
-    let mut end_exclusive = total;
-    let mut builder = Response::builder().header(header::CONTENT_TYPE, mime);
-    if audio {
-        builder = builder.header(header::ACCEPT_RANGES, "bytes");
-        if let Some(value) = headers.get(header::RANGE) {
-            let Some((first, last)) = value
-                .to_str()
-                .ok()
-                .and_then(|value| byte_range(value, total))
-            else {
-                return builder
-                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                    .header(header::CONTENT_RANGE, format!("bytes */{total}"))
-                    .header(header::CONTENT_LENGTH, "0")
-                    .body(Body::empty())
-                    .unwrap();
-            };
-            status = StatusCode::PARTIAL_CONTENT;
-            start = first;
-            end_exclusive = last + 1;
-            builder = builder.header(
-                header::CONTENT_RANGE,
-                format!("bytes {first}-{last}/{total}"),
-            );
-        }
-    }
-    builder
-        .status(status)
-        .header(header::CONTENT_LENGTH, end_exclusive - start)
+    // Every name on the list is a PNG.
+    Response::builder()
+        .header(header::CONTENT_TYPE, "image/png")
+        .header(header::CONTENT_LENGTH, contents.len())
         .body(if method == Method::HEAD {
             Body::empty()
         } else {
-            Body::from(contents[start..end_exclusive].to_vec())
+            Body::from(contents)
         })
         .unwrap()
 }
@@ -1562,7 +1495,14 @@ async fn upgrade(
     let Some(id) = id else {
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
-    if !observer && query.tiny != Some(1) {
+    let tiny = query.tiny == Some(1);
+    if tiny && !crate::tiny_chao::played_once(&state.config.data_dir, &id) {
+        return error(
+            StatusCode::FORBIDDEN,
+            "Play once on your PC first, then your Chao is here.",
+        );
+    }
+    if !observer && !tiny {
         let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
         game.bring_tiny_egg(&id);
     }
@@ -1577,7 +1517,7 @@ async fn upgrade(
         .max_frame_size(2048)
         .write_buffer_size(0)
         .max_write_buffer_size(state.config.max_snapshot_bytes + 65536)
-        .on_upgrade(move |socket| handle_socket(socket, state, id, permit, observer))
+        .on_upgrade(move |socket| handle_socket(socket, state, id, permit, observer, tiny))
 }
 
 // One in-flight frame per socket; snapshots are made on demand, never queued.
@@ -1645,6 +1585,7 @@ async fn handle_socket(
     id: String,
     _permit: OwnedSemaphorePermit,
     observer: bool,
+    tiny: bool,
 ) {
     let mut events = state.events.subscribe();
     let mut shutdown = state.shutdown.subscribe();
@@ -1746,7 +1687,10 @@ async fn handle_socket(
                         } else if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
                             let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
                             let moving = value["type"] == "input" || (value["type"] == "action" && value["action"] == "save");
-                            if !moving && game.players.get(&id).is_some_and(|p| crate::game_save::leased(&game, p.card(), std::time::Instant::now())) {
+                            let tiny_play = value["type"] == "tiny-input" || (value["type"] == "action" && value["action"].as_str().is_some_and(|a| a.starts_with("tiny-")));
+                            if tiny_play && !tiny {
+                                response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"tiny-needs-phone","text":"Tiny Chao Garden plays on your phone."}).to_string().into()), 0));
+                            } else if !moving && game.players.get(&id).is_some_and(|p| crate::game_save::leased(&game, p.card(), std::time::Instant::now())) {
                                 response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"in-game","text":"Your Chao is in the big garden right now. Leave the game to care for it here."}).to_string().into()), 0));
                             } else {
                             match value["type"].as_str() {
@@ -1982,5 +1926,223 @@ mod account_tests {
         );
         let on_disk = fs::read_to_string(dir.path().join("accounts.json")).unwrap();
         assert!(!on_disk.contains(&card) && !on_disk.contains("long enough pw"));
+    }
+
+    async fn new_account(app: &Router) -> (String, String, String) {
+        let (_, made) = post(app, "/api/session", json!({"name": "Test"})).await;
+        let card = made["card"].as_str().unwrap().to_owned();
+        let token = made["token"].as_str().unwrap().to_owned();
+        let id = made["player"]["id"].as_str().unwrap().to_owned();
+        let account = json!({"username": "tester", "email": "t@example.com", "password": "long enough pw", "card": card});
+        assert_eq!(
+            post(app, "/api/account/register", account).await.0,
+            StatusCode::OK
+        );
+        (card, token, id)
+    }
+
+    #[tokio::test]
+    async fn forgot_password_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        let app = router(state.clone());
+        let (card, token, id) = new_account(&app).await;
+        crate::game_save::write(
+            dir.path(),
+            &crate::game::hash_token(&card),
+            3,
+            b"SA2CARD1 save",
+        )
+        .unwrap();
+        // The same answer whether or not the account exists.
+        for login in ["tester", "nobody"] {
+            let (status, body) = post(&app, "/api/account/forgot", json!({"login": login})).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["ok"], true);
+        }
+        // Mail is off in tests: take a fresh link the way the mailer would get it.
+        let reset = state
+            .accounts
+            .lock()
+            .unwrap()
+            .start_reset(
+                "t@example.com",
+                std::time::Instant::now() + crate::accounts::MAIL_GAP,
+            )
+            .unwrap()
+            .2;
+        let short = json!({"token": reset, "password": "short"});
+        assert_eq!(
+            post(&app, "/api/account/reset", short).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, done) = post(
+            &app,
+            "/api/account/reset",
+            json!({"token": reset, "password": "a brand new pw"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{done}");
+        let new_card = done["card"].as_str().unwrap().to_owned();
+        assert_ne!(new_card, card);
+        assert_eq!(done["chao"][0]["player"]["id"], id.as_str());
+        // Single use.
+        let again = json!({"token": reset, "password": "another new pw"});
+        assert_eq!(
+            post(&app, "/api/account/reset", again).await.0,
+            StatusCode::GONE
+        );
+        // Old password and old credentials are dead; the new password opens the same Chao.
+        let old_login = json!({"login": "tester", "password": "long enough pw"});
+        assert_eq!(
+            post(&app, "/api/account/login", old_login).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        let resume = json!({"token": token, "resumeOnly": true});
+        assert_eq!(
+            post(&app, "/api/session", resume).await.0,
+            StatusCode::NOT_FOUND
+        );
+        let (status, login) = post(
+            &app,
+            "/api/account/login",
+            json!({"login": "tester", "password": "a brand new pw"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(login["card"], new_card.as_str());
+        let new_token = login["chao"][0]["token"].as_str().unwrap();
+        let resume = json!({"token": new_token, "resumeOnly": true});
+        assert_eq!(post(&app, "/api/session", resume).await.0, StatusCode::OK);
+        // The game save moved with the card.
+        let (revision, bytes) =
+            crate::game_save::read(dir.path(), &crate::game::hash_token(&new_card)).unwrap();
+        assert_eq!((revision, bytes.as_slice()), (3, &b"SA2CARD1 save"[..]));
+        // It survives a restart.
+        let reloaded = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        assert!(
+            reloaded
+                .game
+                .lock()
+                .unwrap()
+                .player_for_token(new_token)
+                .is_some()
+        );
+        assert!(
+            reloaded
+                .game
+                .lock()
+                .unwrap()
+                .player_for_token(&token)
+                .is_none()
+        );
+    }
+
+    async fn tiny_chao(
+        app: &Router,
+        method: &str,
+        bearer: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, Vec<u8>) {
+        let request = axum::http::Request::builder()
+            .method(method)
+            .uri("/api/tiny-chao")
+            .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+            .body(axum::body::Body::from(body))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        (status, bytes.to_vec())
+    }
+
+    #[tokio::test]
+    async fn phone_works_from_the_same_login_after_one_pc_play() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        let app = router(state.clone());
+        let (_, token, id) = new_account(&app).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(axum::serve(listener, app.clone()).into_future());
+        let url = |extra: &str| format!("ws://{address}/ws?token={token}{extra}");
+
+        // Before the PC has played: no model, and the phone's Tiny Garden does not connect.
+        assert_eq!(
+            tiny_chao(&app, "GET", &token, vec![]).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert!(connect_async(url("&tiny=1")).await.is_err());
+
+        // The PC plays once and stores the player's own Chao model.
+        // Synthetic test bytes with a GLB magic, larger than the default 2 KB body limit.
+        let mut model = b"glTF".to_vec();
+        model.resize(8192, 7);
+        assert_eq!(
+            tiny_chao(&app, "PUT", "bad", model.clone()).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        let junk = b"not a model".to_vec();
+        assert_eq!(
+            tiny_chao(&app, "PUT", &token, junk).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            tiny_chao(&app, "PUT", &token, model.clone()).await.0,
+            StatusCode::OK
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = crate::tiny_chao::model_path(dir.path(), &id);
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        // The same login on the phone (a fresh login returns the same Chao token) gets the model.
+        let (_, login) = post(
+            &app,
+            "/api/account/login",
+            json!({"login": "tester", "password": "long enough pw"}),
+        )
+        .await;
+        let phone_token = login["chao"][0]["token"].as_str().unwrap();
+        let (status, bytes) = tiny_chao(&app, "GET", phone_token, vec![]).await;
+        assert_eq!((status, bytes), (StatusCode::OK, model));
+        // Another player gets their own (missing) model, never this one.
+        let (_, other) = post(&app, "/api/session", json!({"name": "Other"})).await;
+        let other_token = other["token"].as_str().unwrap();
+        assert_eq!(
+            tiny_chao(&app, "GET", other_token, vec![]).await.0,
+            StatusCode::NOT_FOUND
+        );
+
+        let (mut phone, _) = connect_async(url("&tiny=1")).await.expect("phone connects");
+        let _ = phone.close(None).await;
+        // A PC socket can't play Tiny Garden.
+        let (mut pc, _) = connect_async(url("")).await.unwrap();
+        let start = json!({"type":"action","action":"tiny-start","gameId":"memory"});
+        pc.send(WsMessage::Text(start.to_string().into()))
+            .await
+            .unwrap();
+        let refused = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(Ok(message)) = pc.next().await {
+                if let WsMessage::Text(text) = message
+                    && text.contains("tiny-needs-phone")
+                {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        assert_eq!(refused, Ok(true));
     }
 }

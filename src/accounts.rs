@@ -41,6 +41,11 @@ pub struct Accounts {
     list: BTreeMap<String, Account>,
     /// Failed logins per lowercase login name: count and time of the last one.
     failures: HashMap<String, (u32, Instant)>,
+    /// Open password resets: token hash -> (lowercase username, when made). Memory only,
+    /// so a restart voids every mailed link (the player just asks again).
+    resets: HashMap<String, (String, Instant)>,
+    /// When each account (lowercase username) was last sent a reset mail.
+    last_mail: HashMap<String, Instant>,
 }
 
 pub const PASSWORD_MIN: usize = 8;
@@ -48,6 +53,10 @@ const PASSWORD_MAX: usize = 128;
 /// Failures before each further try for that name must wait `LOCKOUT`.
 const FREE_TRIES: u32 = 5;
 const LOCKOUT: Duration = Duration::from_secs(60);
+/// How long a mailed reset link works.
+pub const RESET_LIFE: Duration = Duration::from_secs(30 * 60);
+/// At most one reset mail per account this often.
+pub const MAIL_GAP: Duration = Duration::from_secs(120);
 
 pub fn valid_username(name: &str) -> bool {
     (3..=20).contains(&name.len())
@@ -147,6 +156,8 @@ impl Accounts {
                 .map(|a| (a.username.to_lowercase(), a))
                 .collect(),
             failures: HashMap::new(),
+            resets: HashMap::new(),
+            last_mail: HashMap::new(),
         })
     }
     /// The account a login name (username or email, any case) names.
@@ -169,6 +180,52 @@ impl Accounts {
             return Some("This memory card already has an account.");
         }
         None
+    }
+    /// Starts a password reset for the account `login` names: (email, username, token)
+    /// to mail, or None when there is no such account or one was mailed too recently.
+    pub fn start_reset(&mut self, login: &str, now: Instant) -> Option<(String, String, String)> {
+        let account = self.find(login)?;
+        let key = account.username.to_lowercase();
+        if self
+            .last_mail
+            .get(&key)
+            .is_some_and(|at| now.duration_since(*at) < MAIL_GAP)
+        {
+            return None;
+        }
+        let (email, username) = (account.email.clone(), account.username.clone());
+        let mut bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut bytes);
+        let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        self.resets
+            .retain(|_, (name, at)| *name != key && now.duration_since(*at) < RESET_LIFE);
+        self.resets
+            .insert(crate::game::hash_token(&token), (key.clone(), now));
+        self.last_mail.insert(key, now);
+        Some((email, username, token))
+    }
+    /// Uses up a reset token: the account it opens, if it is real and fresh.
+    pub fn take_reset(&mut self, token: &str, now: Instant) -> Option<Account> {
+        if token.len() > 128 {
+            return None;
+        }
+        let (name, at) = self.resets.remove(&crate::game::hash_token(token))?;
+        (now.duration_since(at) < RESET_LIFE)
+            .then(|| self.list.get(&name).cloned())
+            .flatten()
+    }
+    /// Swaps in a rebuilt account (same username), putting the old one back if saving fails.
+    pub fn replace(&mut self, account: Account) -> io::Result<()> {
+        let key = account.username.to_lowercase();
+        let old = self.list.insert(key.clone(), account);
+        self.save().inspect_err(|_| match &old {
+            Some(old) => {
+                self.list.insert(key.clone(), old.clone());
+            }
+            None => {
+                self.list.remove(&key);
+            }
+        })
     }
     pub fn insert(&mut self, account: Account) -> io::Result<()> {
         let key = account.username.to_lowercase();
@@ -195,26 +252,33 @@ impl Accounts {
         self.failures.remove(&login.to_lowercase());
     }
     fn save(&self) -> io::Result<()> {
-        if let Some(dir) = self.path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let temporary = self.path.with_extension("json.tmp");
-        let bytes = serde_json::to_vec_pretty(&self.list.values().collect::<Vec<_>>())?;
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        {
-            use std::io::Write;
-            let mut file = options.open(&temporary)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-        }
-        fs::rename(temporary, &self.path)
+        write_private(
+            &self.path,
+            &serde_json::to_vec_pretty(&self.list.values().collect::<Vec<_>>())?,
+        )
     }
+}
+
+/// Writes `bytes` to `path` atomically, readable by the owner only (mode 0600).
+pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let temporary = path.with_extension("json.tmp");
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    {
+        use std::io::Write;
+        let mut file = options.open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    fs::rename(temporary, path)
 }
 
 #[cfg(test)]
@@ -256,6 +320,29 @@ mod tests {
         }
         assert!(list.locked("RIDER", now));
         assert!(!list.locked("rider", now + LOCKOUT));
+    }
+
+    #[test]
+    fn forgot_password_tokens_are_single_use_and_expire() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut list = Accounts::load(dir.path().into()).unwrap();
+        list.insert(Account::new("Rider", "r@example.com", "correct horse", "card").unwrap())
+            .unwrap();
+        let now = Instant::now();
+        assert!(list.start_reset("nobody", now).is_none());
+        let (email, name, token) = list.start_reset("R@EXAMPLE.com", now).unwrap();
+        assert_eq!((email.as_str(), name.as_str()), ("r@example.com", "Rider"));
+        // A second mail within the gap is refused; the first link still works once.
+        assert!(list.start_reset("rider", now).is_none());
+        assert!(list.take_reset("wrong", now).is_none());
+        assert_eq!(list.take_reset(&token, now).unwrap().username, "Rider");
+        assert!(list.take_reset(&token, now).is_none());
+        // An old link is dead.
+        let (_, _, late) = list.start_reset("rider", now + MAIL_GAP).unwrap();
+        assert!(
+            list.take_reset(&late, now + MAIL_GAP + RESET_LIFE)
+                .is_none()
+        );
     }
 
     #[test]

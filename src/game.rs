@@ -862,6 +862,42 @@ impl Game {
         }
         (!self.card_chao(credential).is_empty()).then(|| hash_token(credential))
     }
+    /// Moves every Chao on the card `old_card_hash` to the card code `new_card`: new card
+    /// hash and new session tokens, so the old code and old tokens stop working.
+    /// Returns the moved Chao as they were, so a failed save can put them back.
+    pub fn move_card(&mut self, old_card_hash: &str, new_card: &str) -> Vec<Player> {
+        let new_hash = hash_token(new_card);
+        let ids: Vec<String> = self
+            .players
+            .values()
+            .filter(|p| p.card() == old_card_hash)
+            .map(|p| p.id.clone())
+            .collect();
+        let mut before = Vec::new();
+        for id in ids {
+            let player = self.players.get_mut(&id).expect("listed");
+            before.push(player.clone());
+            self.tokens.remove(&player.token_hash);
+            player.card_hash = Some(new_hash.clone());
+            player.token_hash = hash_token(&chao_token(new_card, &id));
+            self.tokens.insert(player.token_hash.clone(), id);
+        }
+        self.game_save_leases.remove(old_card_hash);
+        self.dirty = true;
+        before
+    }
+    /// Puts back Chao `move_card` changed.
+    pub fn restore_players(&mut self, before: Vec<Player>) {
+        for player in before {
+            if let Some(now) = self.players.get(&player.id) {
+                self.tokens.remove(&now.token_hash);
+            }
+            self.tokens
+                .insert(player.token_hash.clone(), player.id.clone());
+            self.players.insert(player.id.clone(), player);
+        }
+        self.dirty = true;
+    }
     /// Local owner login (loopback + CHAO_OWNER_BOOTSTRAP only): a fresh token for the admin Chao.
     pub fn owner_token(&mut self) -> Option<String> {
         let id = self.players.values().find(|p| p.admin)?.id.clone();
