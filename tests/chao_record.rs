@@ -178,3 +178,39 @@ async fn own_record_relays_to_the_room_with_a_version() {
     );
     serving.abort();
 }
+
+#[tokio::test]
+async fn a_record_saves_the_chaos_stats_across_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let load = || AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+    let state = load();
+    let (token, id) = session(&state, "Alpha").await;
+    let put = |body: Vec<u8>| {
+        call(
+            router(state.clone()),
+            "PUT",
+            "/api/chao-record",
+            Some(&token),
+            body,
+        )
+    };
+    let mut record = vec![0u8; CHAO_RECORD_BYTES];
+    record[0x80] = 5;
+    record[0x30 + 2] = 42; // Run level
+    record[0x38 + 4..0x38 + 6].copy_from_slice(&1234u16.to_be_bytes()); // Run points
+    assert_eq!(put(record).await.status(), StatusCode::OK);
+    // An empty record (type 0) keeps the saved stats.
+    assert_eq!(
+        put(vec![0; CHAO_RECORD_BYTES]).await.status(),
+        StatusCode::OK
+    );
+    state.persist(&mut state.game.lock().unwrap()).unwrap();
+
+    let reloaded = load();
+    let game = reloaded.game.lock().unwrap();
+    let stats = &game.players[&id].profile()["nativeStats"];
+    assert_eq!(stats["type"], 5);
+    assert_eq!(stats["skills"][2]["level"], 42);
+    assert_eq!(stats["skills"][2]["points"], 1234);
+    assert_eq!(stats["skills"][0]["points"], 0);
+}

@@ -859,3 +859,48 @@ fn voice_reaches_only_near_chao_in_the_same_room() {
     );
     assert!(game.events.iter().all(|e| e.message["kind"] != "voice"));
 }
+
+#[test]
+fn extras_settings_keep_only_allowed_values_and_save_with_the_profile() {
+    let (mut game, a) = fixture(false);
+    game.dirty = false;
+    game.action(
+        &a,
+        &json!({"type":"action","action":"settings","settings":{
+            "sound":"mono","fps":165,"music":false,"volume":7,"voiceMode":"open",
+            "fps2":1,"menuTheme":"zz","volume2":3}}),
+    );
+    assert!(game.dirty);
+    let saved = game.snapshot(&a)["settings"].clone();
+    assert_eq!(
+        saved,
+        json!({"sound":"mono","fps":165,"music":false,"volume":7,"voiceMode":"open"})
+    );
+    game.time += 1001.;
+    game.action(
+        &a,
+        &json!({"type":"action","action":"settings","settings":{"fps":144,"volume":11,"sound":"stereo"}}),
+    );
+    let saved = game.snapshot(&a)["settings"].clone();
+    assert_eq!(saved["fps"], 165, "144 is not a frame cap choice");
+    assert_eq!(saved["volume"], 7, "volume is 0..=10");
+    assert_eq!(saved["sound"], "stereo");
+    let exported = game.export_profiles();
+    let me = exported.iter().find(|p| p["id"] == a.as_str()).unwrap();
+    assert_eq!(me["settings"]["sound"], "stereo");
+}
+
+#[test]
+fn extras_settings_by_token_for_a_page_without_a_room() {
+    let mut game = Game::new(vec![], BTreeMap::new(), false, 1000.).unwrap();
+    let session = game
+        .create_session(&json!({"name":"Synthetic level"}))
+        .unwrap();
+    let token = session["token"].as_str().unwrap().to_owned();
+    assert_eq!(game.settings_for_token("nope", None), None);
+    let saved = game
+        .settings_for_token(&token, Some(&json!({"fps":120,"chat":"yes"})))
+        .unwrap();
+    assert_eq!(saved, json!({"fps":120}));
+    assert_eq!(game.settings_for_token(&token, None).unwrap()["fps"], 120);
+}

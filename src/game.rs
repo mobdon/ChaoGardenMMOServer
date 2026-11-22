@@ -116,6 +116,9 @@ pub struct Player {
     /// it, relayed so other games draw that Chao (live only; not saved).
     pub chao_record: Vec<u8>,
     pub chao_record_version: u64,
+    /// The Chao's stats from the last record its game sent (saved, so the
+    /// phone app and the race rules have them while the game is closed).
+    pub native_stats: Option<crate::game_save::NativeStats>,
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
     pub care: crate::care::CareState,
@@ -236,7 +239,7 @@ impl Player {
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
             "energy":self.energy,"hunger":self.hunger,"care":self.care,"body":self.body,"life":self.life,"garden":self.garden,"tinyCollection":self.tiny_collection,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
-            "tinyRecords": self.tiny_records,
+            "tinyRecords": self.tiny_records, "nativeStats": self.native_stats,
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed, "bestRaceMs": self.best_race_ms});
         phone::project_profile(self, &mut profile);
@@ -244,6 +247,23 @@ impl Player {
         let mut preserved = self.profile_extra.clone();
         merge_profile(&mut preserved, profile);
         preserved
+    }
+}
+
+/// The pause menu's Extras rows and their allowed values.
+fn settings_value_ok(key: &str, value: &Value) -> bool {
+    let one_of = |allowed: &[&str]| value.as_str().is_some_and(|v| allowed.contains(&v));
+    match key {
+        "voiceLanguage" => one_of(&["japanese", "english"]),
+        "sound" => one_of(&["stereo", "mono"]),
+        "menuTheme" => one_of(&[
+            "def", "sn", "sd", "tl", "kn", "rg", "am", "eg", "ma", "ch", "se",
+        ]),
+        "voiceMode" => one_of(&["hold", "open"]),
+        "vibration" | "chat" | "music" => value.is_boolean(),
+        "volume" => value.as_u64().is_some_and(|v| v <= 10),
+        "fps" => value.as_u64().is_some_and(|v| [60, 120, 165].contains(&v)),
+        _ => false,
     }
 }
 
@@ -631,6 +651,7 @@ impl Game {
             chao_pose: Value::Null,
             chao_record: Vec::new(),
             chao_record_version: 0,
+            native_stats: serde_json::from_value(data["nativeStats"].clone()).ok(),
             tiny_result: None,
             watch: None,
             care: crate::care::CareState::restore(data.get("care"))?,
@@ -845,6 +866,42 @@ impl Game {
         }
         (!self.card_chao(credential).is_empty()).then(|| hash_token(credential))
     }
+    /// Moves every Chao on the card `old_card_hash` to the card code `new_card`: new card
+    /// hash and new session tokens, so the old code and old tokens stop working.
+    /// Returns the moved Chao as they were, so a failed save can put them back.
+    pub fn move_card(&mut self, old_card_hash: &str, new_card: &str) -> Vec<Player> {
+        let new_hash = hash_token(new_card);
+        let ids: Vec<String> = self
+            .players
+            .values()
+            .filter(|p| p.card() == old_card_hash)
+            .map(|p| p.id.clone())
+            .collect();
+        let mut before = Vec::new();
+        for id in ids {
+            let player = self.players.get_mut(&id).expect("listed");
+            before.push(player.clone());
+            self.tokens.remove(&player.token_hash);
+            player.card_hash = Some(new_hash.clone());
+            player.token_hash = hash_token(&chao_token(new_card, &id));
+            self.tokens.insert(player.token_hash.clone(), id);
+        }
+        self.game_save_leases.remove(old_card_hash);
+        self.dirty = true;
+        before
+    }
+    /// Puts back Chao `move_card` changed.
+    pub fn restore_players(&mut self, before: Vec<Player>) {
+        for player in before {
+            if let Some(now) = self.players.get(&player.id) {
+                self.tokens.remove(&now.token_hash);
+            }
+            self.tokens
+                .insert(player.token_hash.clone(), player.id.clone());
+            self.players.insert(player.id.clone(), player);
+        }
+        self.dirty = true;
+    }
     /// Local owner login (loopback + CHAO_OWNER_BOOTSTRAP only): a fresh token for the admin Chao.
     pub fn owner_token(&mut self) -> Option<String> {
         let id = self.players.values().find(|p| p.admin)?.id.clone();
@@ -879,6 +936,31 @@ impl Game {
             }
         }
         Some(self.player_for_token(token)?.profile_extra["foundGear"].clone())
+    }
+    /// A care tap from the phone widget, which has no socket: the same watch-care the garden
+    /// page sends, for a Chao that is out in a garden.
+    pub fn widget_care(&mut self, token: &str, kind: &str) -> Result<Value, &'static str> {
+        let id = self
+            .player_for_token(token)
+            .ok_or("Invalid session token.")?
+            .id
+            .clone();
+        let mut player = self.players.remove(&id).ok_or("Invalid session token.")?;
+        let before = player.watch.as_ref().map(|w| (w.id.clone(), w.last_care()));
+        let result = match before {
+            None => Err("Your Chao is not out in a garden right now."),
+            Some((session, last)) => {
+                let message = json!({"type": "action", "action": "watch-care", "sessionId": session, "kind": kind});
+                watch::action(self, &mut player, &message);
+                if player.watch.as_ref().and_then(|w| w.last_care()) == last {
+                    Err("Wait a moment before caring again.")
+                } else {
+                    Ok(player.public())
+                }
+            }
+        };
+        self.players.insert(id, player);
+        result
     }
     pub fn player_for_token(&self, token: &str) -> Option<&Player> {
         if token.len() > 256 {
@@ -1258,6 +1340,10 @@ impl Game {
             }
             "chat" => {
                 self.chat(p, message);
+                return;
+            }
+            "settings" => {
+                self.settings(p, message);
                 return;
             }
             "attack" => {
@@ -2134,6 +2220,48 @@ impl Game {
             });
         }
     }
+    /// Pause-menu Extras settings: only known keys with allowed values are kept,
+    /// saved on every Chao of the player's memory card (the server is the only save).
+    fn settings(&mut self, p: &mut Player, message: &Value) {
+        let Some(changes) = message["settings"].as_object() else {
+            return;
+        };
+        let mut kept = serde_json::Map::new();
+        for (key, value) in changes {
+            if settings_value_ok(key, value) {
+                kept.insert(key.clone(), value.clone());
+            }
+        }
+        if kept.is_empty() {
+            return;
+        }
+        let card = p.card().to_owned();
+        for q in std::iter::once(p).chain(self.players.values_mut().filter(|q| q.card() == card)) {
+            if !q.profile_extra.is_object() {
+                q.profile_extra = json!({});
+            }
+            let saved = &mut q.profile_extra["settings"];
+            if !saved.is_object() {
+                *saved = json!({});
+            }
+            for (key, value) in &kept {
+                saved[key] = value.clone();
+            }
+        }
+        self.dirty = true;
+    }
+    /// The Extras settings for a Chao's token, read or changed outside a room
+    /// (the game page in a level has no room socket).
+    pub fn settings_for_token(&mut self, token: &str, changes: Option<&Value>) -> Option<Value> {
+        let id = self.player_for_token(token)?.id.clone();
+        let mut player = self.players.remove(&id)?;
+        if let Some(changes) = changes {
+            self.settings(&mut player, &json!({ "settings": changes }));
+        }
+        let saved = player.profile_extra["settings"].clone();
+        self.players.insert(id, player);
+        Some(saved)
+    }
     /// Push-to-talk audio: relayed only to players in the same room whose Chao
     /// is within VOICE_RADIUS, so no player ever learns another's address.
     fn voice(&mut self, p: &mut Player, message: &Value) {
@@ -2257,6 +2385,7 @@ impl Game {
         json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || ((p.connections > 0 || p.watch.is_some() || competition::reserved(p)) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
             "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().filter(|_|mission_visible).map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
             "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
+            "settings": viewer.map_or(Value::Null, |v| v.profile_extra["settings"].clone()),
             "care":crate::care::public(self,self_id),
             "life":crate::life::public(self,self_id),
             "competitionCatalog":self.competition_catalog.public(),

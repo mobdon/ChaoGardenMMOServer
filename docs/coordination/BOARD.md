@@ -425,6 +425,54 @@ owner is connected. Tests: `cargo test` 279 passed, fmt and Clippy
 / `import_record`, f7854ea, not in client main) and the page's fetch bridge are
 not wired to this yet; no live test. No content check of the record bytes yet.
 
+## 2026-11-22 hosting code: reset mail, phone Chao model, Tiny-only assets
+
+Base `8aacf5f` (main) plus the player accounts branch `6108a2a` merged in.
+Branch `claude/project-thread-4omu8q`.
+Changed paths: `src/accounts.rs`, `src/mail.rs` (new), `src/tiny_chao.rs` (new),
+`src/game.rs` (`move_card`, `restore_players`), `src/game_save.rs` (`rename`),
+`src/service.rs`, `src/lib.rs`, `tests/protocol.rs`, `tests/care_protocol.rs`,
+`PHONE.md`, `deploy/chao.env.example`, `Cargo.toml`, `Cargo.lock` (adds `ureq`).
+
+- `POST /api/account/forgot` and `/api/account/reset`: mailed single-use token
+  (30 minutes, one mail per account per 2 minutes, kept in memory only). A reset
+  moves the card to a new code, so old tokens, the old card code and the old
+  password stop working; the game save file moves with it.
+- `PUT`/`GET /api/tiny-chao`: the PC stores the player's own Chao model, the
+  same login reads it on the phone; `/ws?tiny=1` is refused until it exists.
+  There is no pairing code. Tiny Garden sockets also need a mobile `User-Agent`
+  (phone only; a header check, not proof of a phone).
+- `/api/assets` serves only the Tiny Garden PNG names and `discord-icon.png`.
+  Audio range support went with the audio names.
+
+Protocol dependencies: the PC game page must upload the Chao model; the Tiny
+Garden page checks `GET /api/tiny-chao` before connecting; the web client must stop fetching the removed
+asset names (it converts them from the player's own files instead).
+
+Tests: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test` all pass. Tested offline only.
+
+Remaining limits: no real mail was sent (no Postmark account exists yet; the
+request follows Postmark's JSON API but is unverified against the live
+service). No per-IP limit on forgot/sign-up. The session token is still in the
+WebSocket URL. Observer sockets (`observe=1`) are not gated on the model. The
+stored model's content is not checked beyond its magic bytes. The Node
+reference (`index.js`, `tests/reference/assets.test.js`) still lists the old
+asset names. Nothing merged, deployed or restarted.
+
+## Saved native Chao stats (2026-11-22)
+
+Base `eaa2646` (main). Changed paths: `src/game.rs`, `src/game_save.rs`,
+`src/service.rs`, `tests/chao_record.rs`, this board. Each changed record on
+`PUT /api/chao-record` now also has its type byte and seven skills (points,
+level, grade, progress; Swim, Fly, Run, Power, Stamina, Luck, Intelligence)
+read by `game_save::native_stats` and saved on the player as `nativeStats`
+in `profiles.json` and in the profile JSON, so they are there while the game
+is closed (phone, race rules). An empty record (type 0) keeps the saved stats.
+Tests: `cargo test` 292 passed, fmt and Clippy `-D warnings` clean (tested
+offline, synthetic bytes). The stats are whatever the player's game sends: no
+growth check yet. Nothing reads `nativeStats` yet (phone app, race check).
+
 ### 2026-11-22 PvP Chao Karate rules, step 1 (branch `claude/project-thread-z381c9`)
 
 Base `90610cf` (main). Changed paths: `src/karate_pvp.rs`, `src/lib.rs`, this

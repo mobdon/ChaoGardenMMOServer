@@ -28,7 +28,22 @@ evidence and exclusions are documented in `crates/tiny-garden-core/NATIVE_*.md`.
 Resume a selected browser save with `POST /api/session` and JSON
 `{ "token":"...", "resumeOnly":true }`. Unknown/missing credentials return
 404 without creating another Chao. Connect `/ws?token=...` as in the main game.
-Separate-device pairing and an exclusive device lease are not implemented.
+A Tiny Garden socket (`/ws?tiny=1`) works from the same login once the account
+has played on its PC:
+
+1. PC game page: `PUT /api/tiny-chao` with `Authorization: Bearer <Chao token>`
+   and the player's own Chao model as the body (PNG or GLB by magic bytes, at
+   most 4 MiB), made in the browser from the player's own game files.
+2. Phone, logged in to the same account: `GET /api/tiny-chao` with the same
+   bearer returns that model; 404 means the PC has not played yet.
+3. Phone: connect `/ws?tiny=1&token=...`. The handshake is refused with 403
+   until the model exists, and always for a client whose `User-Agent` does not
+   name a mobile browser or Android (Tiny Garden is phone only). `tiny-start`, `tiny-stop` and `tiny-input` on a socket
+   without `tiny=1` get a `tiny-needs-phone` notice.
+
+The model is the only game-derived file the server stores (`tiny-chao/`, one
+file per Chao, mode 0600, removed with the Chao). An exclusive device lease is
+not implemented.
 Multiple sockets using one credential share one profile, one clock, one active
 minigame and one reward receipt. They can issue competing intents.
 
