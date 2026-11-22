@@ -256,8 +256,10 @@ async fn record_numbers_reach_the_profile_only_when_the_game_changed_them() {
         .level = 51;
     let mut same = record(50);
     same[0x7FF] = 9; // other bytes moved, the numbers did not
-    put(same).await;
+    let answer: Value = serde_json::from_slice(&bytes(put(same).await).await).unwrap();
     assert_eq!(run().0, 51);
+    // The answer hands the game the profile's numbers: [level, progress, points].
+    assert_eq!(answer["skills"][2], json!([51, 40, 0]));
     // The game grew the Chao itself: its numbers win.
     put(record(52)).await;
     assert_eq!(run().0, 52);
