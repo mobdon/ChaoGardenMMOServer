@@ -896,6 +896,12 @@ async fn chao_record_put(
         p.chao_record_version += 1;
         // An empty record (type 0) keeps the stats already saved.
         if let Some(stats) = crate::game_save::native_stats(&body) {
+            // Only numbers the game itself changed replace the profile's. A record
+            // that still holds the last numbers seen must not undo what the Tiny
+            // Garden gave since; the game takes those from the profile instead.
+            if p.native_stats != Some(stats) && !p.admin {
+                stats.apply(&mut p.stats, &mut p.life.exp);
+            }
             p.native_stats = Some(stats);
         }
     }

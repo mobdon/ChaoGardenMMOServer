@@ -214,3 +214,51 @@ async fn a_record_saves_the_chaos_stats_across_a_restart() {
     assert_eq!(stats["skills"][2]["points"], 1234);
     assert_eq!(stats["skills"][0]["points"], 0);
 }
+
+/// The profile takes the record's numbers only when the game changed them, so
+/// what the Tiny Garden gave between two uploads of the same record stays.
+#[tokio::test]
+async fn record_numbers_reach_the_profile_only_when_the_game_changed_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+    let (token, id) = session(&state, "Alpha").await;
+    // Synthetic record: type set, run (skill 2) at the given level.
+    let record = |level: u8| {
+        let mut r = vec![0u8; CHAO_RECORD_BYTES];
+        r[0x80] = 1;
+        r[0x30 + 2] = level;
+        r[0x20 + 2] = 40;
+        r
+    };
+    let put = |body: Vec<u8>| {
+        let app = router(state.clone());
+        let token = token.clone();
+        async move { call(app, "PUT", "/api/chao-record", Some(&token), body).await }
+    };
+    let run = || {
+        let game = state.game.lock().unwrap();
+        let p = &game.players[&id];
+        (p.stats["run"].level, p.life.exp[2])
+    };
+    put(record(50)).await;
+    assert_eq!(run(), (50, 40));
+    // A Tiny Garden gain, then the game sends a record it has not changed.
+    state
+        .game
+        .lock()
+        .unwrap()
+        .players
+        .get_mut(&id)
+        .unwrap()
+        .stats
+        .get_mut("run")
+        .unwrap()
+        .level = 51;
+    let mut same = record(50);
+    same[0x7FF] = 9; // other bytes moved, the numbers did not
+    put(same).await;
+    assert_eq!(run().0, 51);
+    // The game grew the Chao itself: its numbers win.
+    put(record(52)).await;
+    assert_eq!(run().0, 52);
+}
