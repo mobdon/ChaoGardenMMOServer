@@ -86,25 +86,41 @@ impl Attack {
     }
 }
 
-/// A player's pressed button, waiting for the fighter's next attack. The game
-/// lets a fighter attack only when its approach ends (fn_72_FCC8), so presses
-/// never add attacks: a new press replaces the waiting one, and one attack
-/// uses it up. A strong move the fighter may not use is refused.
+/// A player's chosen move. The game lets a fighter attack only when its
+/// approach ends (fn_72_FCC8), so a press never adds an attack. Once a move is
+/// chosen it is seen through: no other press is taken until that attack has
+/// finished. A strong move the fighter may not use is refused.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Pressed(Option<Attack>);
+pub enum Chosen {
+    #[default]
+    Nothing,
+    Waiting(Attack),
+    Attacking,
+}
 
-impl Pressed {
+impl Chosen {
     pub fn press(&mut self, attack: Attack, fighter: &Fighter) -> bool {
-        let ok = attack.allowed(fighter);
+        let ok = *self == Self::Nothing && attack.allowed(fighter);
         if ok {
-            self.0 = Some(attack);
+            *self = Self::Waiting(attack);
         }
         ok
     }
 
-    /// The button for the attack starting now, if one is waiting.
-    pub fn take(&mut self) -> Option<Attack> {
-        self.0.take()
+    /// The fighter starts an attack now: the chosen move, if one is waiting.
+    pub fn start(&mut self) -> Option<Attack> {
+        let Self::Waiting(attack) = *self else {
+            return None;
+        };
+        *self = Self::Attacking;
+        Some(attack)
+    }
+
+    /// The fighter's attack is over; the next press is taken again.
+    pub fn finish(&mut self) {
+        if *self == Self::Attacking {
+            *self = Self::Nothing;
+        }
     }
 }
 
@@ -194,15 +210,19 @@ mod tests {
     }
 
     #[test]
-    fn presses_never_add_attacks() {
+    fn a_chosen_move_is_seen_through() {
         let weak = Fighter::new(skills(0));
-        let mut p = Pressed::default();
-        assert!(p.press(Attack::Punch, &weak));
-        assert!(p.press(Attack::HardKick, &weak));
-        assert!(!p.press(Attack::Roundhouse, &weak));
-        // Three presses, one attack: the last allowed one.
-        assert_eq!(p.take(), Some(Attack::HardKick));
-        assert_eq!(p.take(), None);
+        let mut c = Chosen::default();
+        assert!(!c.press(Attack::Roundhouse, &weak));
+        assert!(c.press(Attack::Punch, &weak));
+        // Waiting and attacking both refuse another move.
+        assert!(!c.press(Attack::HardKick, &weak));
+        c.finish(); // nothing is attacking yet: the choice stays
+        assert_eq!(c.start(), Some(Attack::Punch));
+        assert!(!c.press(Attack::HardKick, &weak));
+        assert_eq!(c.start(), None);
+        c.finish();
+        assert!(c.press(Attack::HardKick, &weak));
     }
 
     #[test]
