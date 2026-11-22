@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod activities;
 pub mod behaviour;
 pub mod black_market;
