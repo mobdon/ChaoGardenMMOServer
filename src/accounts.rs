@@ -191,6 +191,13 @@ impl Accounts {
             .get(&login)
             .or_else(|| self.list.values().find(|a| a.email.to_lowercase() == login))
     }
+    /// Every account with a staff role, as (username, role).
+    pub fn staff(&self) -> Vec<(&str, Role)> {
+        self.list
+            .values()
+            .filter_map(|a| Some((a.username.as_str(), a.role?)))
+            .collect()
+    }
     /// The account a memory card (by its hash) belongs to.
     pub fn by_card(&self, card_hash: &str) -> Option<&Account> {
         self.list.values().find(|a| a.card_hash == card_hash)

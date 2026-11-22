@@ -651,3 +651,16 @@ Tests: `cargo test` 320 pass, clippy and fmt clean; headless page check as
 a throwaway admin (tested offline). Limits: own Chao only; the shared
 `CHAO_ADMIN_KEY` path on the test route still exists beside it; not run on
 a hosted server.
+
+## Admin tools in the staff panel: test buttons, roles, audit view (2026-11-22)
+Changed paths: `src/service.rs`, `src/game.rs`, `src/accounts.rs`. Admin
+role only (moderators get 403): `GET /api/panel/grants` lists the test
+buttons and `POST /api/panel/grant {id}` presses one on the admin's own
+Chao (rings, clear found gear, and one button per `FOUND_GEAR` item through
+the shared `Game::give_gear`); `GET/POST /api/panel/staff` lists staff and
+sets a role, returning the fresh key once, ending that person's panel
+sessions, and refusing a change to one's own role; `GET /api/panel/audit`
+returns the newest 200 audit entries. Tests: `cargo test` 320 pass, clippy
+and fmt clean; headless page check as a throwaway admin (tested offline).
+Limits: gear buttons cover only the two items the server knows; no egg or
+other grants; not run on a hosted server.

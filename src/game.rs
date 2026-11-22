@@ -974,6 +974,14 @@ impl Game {
             return None;
         }
         let card = self.player_for_token(token)?.card().to_owned();
+        self.give_gear(&card, item)?;
+        Some(self.player_for_token(token)?.profile_extra["foundGear"].clone())
+    }
+    /// Adds a found gear item to every Chao of a memory card, once.
+    pub fn give_gear(&mut self, card: &str, item: &str) -> Option<()> {
+        if !FOUND_GEAR.contains(&item) {
+            return None;
+        }
         for q in self.players.values_mut().filter(|q| q.card() == card) {
             if !q.profile_extra.is_object() {
                 q.profile_extra = json!({});
@@ -987,7 +995,7 @@ impl Game {
                 self.dirty = true;
             }
         }
-        Some(self.player_for_token(token)?.profile_extra["foundGear"].clone())
+        Some(())
     }
     /// A care tap from the phone widget, which has no socket: the same watch-care the garden
     /// page sends, for a Chao that is out in a garden.

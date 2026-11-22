@@ -581,6 +581,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/panel/sanction", post(panel_sanction))
         .route("/api/panel/leaderboard", get(panel_leaderboard))
         .route("/api/panel/override", post(panel_override))
+        .route("/api/panel/grants", get(panel_grants))
+        .route("/api/panel/grant", post(panel_grant))
+        .route(
+            "/api/panel/staff",
+            get(panel_staff_list).post(panel_staff_set),
+        )
+        .route("/api/panel/audit", get(panel_audit))
         .route("/api/panel/invisible", post(panel_invisible))
         .route("/api/panel/goto", post(panel_goto))
         .route("/api/panel/chat", get(panel_chat))
@@ -1766,6 +1773,176 @@ async fn panel_goto(State(state): State<AppState>, headers: HeaderMap, body: Byt
     });
     publish_events(&state, &mut game);
     no_store(json!({"ok": true}))
+}
+/// Test buttons for an admin's own Chao: (id, label). A new one is a line here and an arm
+/// in `panel_grant`; every found gear item gets its own button from `FOUND_GEAR`.
+const GRANTS: [(&str, &str); 3] = [
+    ("rings-1000", "Add 1,000 rings"),
+    ("rings-zero", "Set rings to 0"),
+    ("gear-clear", "Remove all found gear"),
+];
+/// Admin only: the test buttons this server offers.
+async fn panel_grants(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = panel_admin(&state, &headers) {
+        return response;
+    }
+    let gear = crate::game::FOUND_GEAR
+        .iter()
+        .map(|item| json!({"id": format!("gear:{item}"), "label": format!("Give gear: {item}")}));
+    let grants: Vec<Value> = GRANTS
+        .iter()
+        .map(|(id, label)| json!({"id": id, "label": label}))
+        .chain(gear)
+        .collect();
+    no_store(json!({ "grants": grants }))
+}
+/// Admin only: presses one test button on the admin's own Chao (the one out, else the
+/// first on the card). Audited before anything changes.
+async fn panel_grant(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let staff = match panel_admin(&state, &headers) {
+        Ok(staff) => staff,
+        Err(response) => return response,
+    };
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let grant = input["id"].as_str().unwrap_or_default();
+    let gear = grant
+        .strip_prefix("gear:")
+        .filter(|item| crate::game::FOUND_GEAR.contains(item));
+    if gear.is_none() && !GRANTS.iter().any(|(id, _)| *id == grant) {
+        return error(StatusCode::BAD_REQUEST, "Unknown test button.");
+    }
+    let card = {
+        let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+        accounts.find(&staff).map(|a| a.card_hash.clone())
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let own = card.and_then(|card| {
+        let mut mine: Vec<_> = game.players.values().filter(|p| p.card() == card).collect();
+        mine.sort_by_key(|p| p.connections == 0);
+        mine.first().map(|p| (p.id.clone(), card.clone()))
+    });
+    let Some((id, card)) = own else {
+        return error(StatusCode::CONFLICT, "Your account has no Chao.");
+    };
+    if let Err(cause) = crate::audit::record(&state.config.data_dir, &staff, "grant", grant) {
+        eprintln!("Audit log write failed: {cause}");
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Could not save that.");
+    }
+    match (grant, gear) {
+        (_, Some(item)) => {
+            game.give_gear(&card, item);
+        }
+        ("gear-clear", _) => {
+            for p in game.players.values_mut().filter(|p| p.card() == card) {
+                if let Some(extra) = p.profile_extra.as_object_mut() {
+                    extra.remove("foundGear");
+                }
+            }
+        }
+        ("rings-1000", _) | ("rings-zero", _) => {
+            let p = game.players.get_mut(&id).expect("own Chao was just found");
+            p.rings = if grant == "rings-zero" {
+                0
+            } else {
+                p.rings.saturating_add(1000)
+            };
+        }
+        _ => unreachable!("checked against GRANTS above"),
+    }
+    game.dirty = true;
+    if let Err(cause) = state.persist(&mut game) {
+        return save_failed("grant write", cause);
+    }
+    let p = &game.players[&id];
+    no_store(json!({"ok": true, "rings": p.rings, "foundGear": p.profile_extra["foundGear"]}))
+}
+/// The admin role of a panel session, or the refusal to send instead.
+#[allow(clippy::result_large_err)]
+fn panel_admin(state: &AppState, headers: &HeaderMap) -> Result<String, Response> {
+    match panel_staff(state, headers) {
+        Some((staff, crate::accounts::Role::Admin)) => Ok(staff),
+        Some(_) => Err(error(StatusCode::FORBIDDEN, "Only an admin can do that.")),
+        None => Err(error(StatusCode::NOT_FOUND, "Not found.")),
+    }
+}
+/// Admin only: every account with a staff role.
+async fn panel_staff_list(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = panel_admin(&state, &headers) {
+        return response;
+    }
+    let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    no_store(json!({ "staff": accounts.staff() }))
+}
+/// Admin only: gives an account a role with a fresh key (in the answer, once) or removes
+/// both with `"role": "none"`. An admin cannot change their own role here, so the last
+/// admin can never lock everyone out by mistake.
+async fn panel_staff_set(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    use crate::accounts::Role;
+    let staff = match panel_admin(&state, &headers) {
+        Ok(staff) => staff,
+        Err(response) => return response,
+    };
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let role = match input["role"].as_str() {
+        Some("admin") => Some(Role::Admin),
+        Some("moderator") => Some(Role::Moderator),
+        Some("none") => None,
+        _ => return error(StatusCode::BAD_REQUEST, "Unknown role."),
+    };
+    let login = input["login"].as_str().unwrap_or_default().trim();
+    let mut accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(username) = accounts.find(login).map(|a| a.username.clone()) else {
+        return error(StatusCode::NOT_FOUND, "No such account.");
+    };
+    if username.eq_ignore_ascii_case(&staff) {
+        return error(StatusCode::FORBIDDEN, "You can't change your own role.");
+    }
+    if let Err(cause) = crate::audit::record(
+        &state.config.data_dir,
+        &staff,
+        &format!("set-role:{}", input["role"].as_str().unwrap_or_default()),
+        &username,
+    ) {
+        eprintln!("Audit log write failed: {cause}");
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Could not save that.");
+    }
+    // Whatever the change, that person's open panel sessions end: they sign in with the new key.
+    state
+        .panel_sessions
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|_, (name, _)| !name.eq_ignore_ascii_case(&username));
+    match accounts.set_role(&username, role) {
+        Ok(panel_key) => no_store(json!({"ok": true, "username": username, "key": panel_key})),
+        Err(cause) => {
+            eprintln!("Role could not be saved: {cause}");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "Could not save that.")
+        }
+    }
+}
+/// Admin only: the newest audit entries, newest first.
+async fn panel_audit(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = panel_admin(&state, &headers) {
+        return response;
+    }
+    let text = fs::read_to_string(state.config.data_dir.join("audit.log")).unwrap_or_default();
+    let entries: Vec<Value> = text
+        .lines()
+        .rev()
+        .take(200)
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    no_store(json!({ "entries": entries }))
 }
 /// The recent chat lines, oldest first.
 async fn panel_chat(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -3073,6 +3250,96 @@ mod account_tests {
             99
         );
         assert!(state.game.lock().unwrap().players[&loud].stats["run"].level < 99);
+        // Test buttons: listed for the admin, pressed on the admin's own Chao only.
+        let (status, offered) =
+            panel(&app, "/api/panel/grants", "x-panel-token", &boss, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            offered["grants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|g| g["id"] == "gear:sonic-light-shoes")
+        );
+        let press = |id: &'static str| {
+            let (app, boss) = (app.clone(), boss.clone());
+            async move {
+                panel(
+                    &app,
+                    "/api/panel/grant",
+                    "x-panel-token",
+                    &boss,
+                    Some(json!({"id": id})),
+                )
+                .await
+            }
+        };
+        let before = state.game.lock().unwrap().players[&own].rings;
+        let (status, got) = press("rings-1000").await;
+        assert_eq!(
+            (status, got["rings"].as_u64()),
+            (StatusCode::OK, Some(u64::from(before) + 1000))
+        );
+        let (_, got) = press("gear:sonic-light-shoes").await;
+        assert_eq!(got["foundGear"], json!(["sonic-light-shoes"]));
+        let (_, got) = press("gear:sonic-light-shoes").await;
+        assert_eq!(got["foundGear"], json!(["sonic-light-shoes"]));
+        let (_, got) = press("gear-clear").await;
+        assert!(got["foundGear"].is_null());
+        assert_eq!(press("rings-zero").await.1["rings"], 0);
+        assert_eq!(press("gear:made-up").await.0, StatusCode::BAD_REQUEST);
+        assert_ne!(state.game.lock().unwrap().players[&loud].rings, 0);
+        // An admin hands out and takes back roles, but not their own; the key is given once.
+        let staff = |body: Option<Value>| {
+            let (app, boss) = (app.clone(), boss.clone());
+            async move { panel(&app, "/api/panel/staff", "x-panel-token", &boss, body).await }
+        };
+        let (status, made) = staff(Some(json!({"login": "player", "role": "moderator"}))).await;
+        assert_eq!(status, StatusCode::OK);
+        let handed = made["key"].as_str().unwrap().to_owned();
+        let (status, body) = sign_in("player", "correct horse", handed.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        let helper = body["token"].as_str().unwrap().to_owned();
+        // A moderator session gets neither the staff list nor the audit log.
+        for path in ["/api/panel/staff", "/api/panel/audit", "/api/panel/grants"] {
+            let (status, _) = panel(&app, path, "x-panel-token", &helper, None).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        }
+        // Promoted, the old session is over: the new key is needed.
+        let (_, made) = staff(Some(json!({"login": "player", "role": "admin"}))).await;
+        let (status, _) = panel(&app, "/api/panel/audit", "x-panel-token", &helper, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let handed = made["key"].as_str().unwrap().to_owned();
+        let (_, listed) = staff(None).await;
+        assert_eq!(listed["staff"].as_array().unwrap().len(), 2);
+        assert!(!listed.to_string().contains(&handed));
+        let (status, _) = staff(Some(json!({"login": "player", "role": "none"}))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            sign_in("player", "correct horse", handed).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            staff(Some(json!({"login": "modder", "role": "none"})))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            staff(Some(json!({"login": "nobody", "role": "admin"})))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            staff(Some(json!({"login": "player", "role": "king"})))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, audit) = panel(&app, "/api/panel/audit", "x-panel-token", &boss, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(audit["entries"][0]["action"], "panel-login-refused");
         // The old moderator key and session are gone with the new role's key.
         let panel_key = set("modder", Some(Role::Moderator)).unwrap();
         let (_, body) = sign_in("modder", "correct horse", panel_key.clone()).await;
@@ -3145,6 +3412,10 @@ mod account_tests {
             ("/api/panel/sanction", Some(json!({}))),
             ("/api/panel/invisible", Some(json!({"on": true}))),
             ("/api/panel/override", Some(json!({}))),
+            ("/api/panel/staff", None),
+            ("/api/panel/audit", None),
+            ("/api/panel/grants", None),
+            ("/api/panel/grant", Some(json!({"id": "rings-1000"}))),
             ("/api/panel/goto", Some(json!({"playerId": "x"}))),
             ("/api/panel/chat", None),
             ("/api/panel/leaderboard", None),
@@ -3167,7 +3438,8 @@ mod account_tests {
         let (status, _) = panel(&app, "/api/panel/me", "x-panel-token", &token, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         let log = fs::read_to_string(dir.path().join("audit.log")).unwrap();
-        assert_eq!(log.matches("\"panel-login\"").count(), 4);
+        assert_eq!(log.matches("\"panel-login\"").count(), 5);
+        assert_eq!(log.matches("\"grant\"").count(), 5);
         assert_eq!(log.matches("\"override\"").count(), 2);
         assert_eq!(log.matches("\"chat:10\"").count(), 1);
         assert_eq!(log.matches("\"kick:null\"").count(), 1);
@@ -3176,7 +3448,7 @@ mod account_tests {
         assert_eq!(log.matches("voice-listen").count(), 2);
         assert_eq!(log.matches("invisible-o").count(), 2);
         assert_eq!(log.matches("\"goto\"").count(), 1);
-        assert_eq!(log.matches("panel-login-refused").count(), 4);
+        assert_eq!(log.matches("panel-login-refused").count(), 5);
         assert!(!log.contains(&panel_key));
     }
 
