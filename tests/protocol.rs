@@ -1621,6 +1621,49 @@ async fn chao_world_areas_are_shared_rooms() {
     snapshot_until(&mut one, |s| s["players"].as_array().unwrap().len() == 1).await;
 }
 
+#[tokio::test]
+async fn chao_pose_is_relayed_to_the_same_area_room() {
+    let server = LiveServer::start(false).await;
+    let a = session(&server.state, json!({"name":"Ana"})).await;
+    let b = session(&server.state, json!({"name":"Bo"})).await;
+    let ida = a["player"]["id"].as_str().unwrap().to_string();
+    let mut one = server.socket(&a).await;
+    let mut two = server.socket(&b).await;
+    let send = |v: Value| Message::Text(v.to_string().into());
+    let pause = || tokio::time::sleep(std::time::Duration::from_millis(120));
+    one.send(send(
+        json!({"type":"action","action":"chao-world","area":"garden"}),
+    ))
+    .await
+    .unwrap();
+    two.send(send(
+        json!({"type":"action","action":"chao-world","area":"garden"}),
+    ))
+    .await
+    .unwrap();
+    pause().await;
+    // Not a number: refused, nothing relayed.
+    one.send(send(
+        json!({"type":"action","action":"chao-pose","pose":{"x":"far"}}),
+    ))
+    .await
+    .unwrap();
+    pause().await;
+    one.send(send(json!({"type":"action","action":"chao-pose","pose":{"x":1.5,"y":0,"z":-2,"angle":16384,"motion":3,"frame":12.5}}))).await.unwrap();
+    snapshot_until(&mut two, |s| player(s, &ida)["chaoPose"]["angle"] == 16384).await;
+    // A new area clears the pose until the game sends one from there.
+    pause().await;
+    one.send(send(
+        json!({"type":"action","action":"chao-world","area":"hub"}),
+    ))
+    .await
+    .unwrap();
+    snapshot_until(&mut one, |s| {
+        player(s, &ida)["zone"] == "hub" && player(s, &ida)["chaoPose"].is_null()
+    })
+    .await;
+}
+
 fn player_zone<'a>(snapshot: &'a Value, id: &str) -> &'a str {
     player(snapshot, id)["zone"].as_str().unwrap_or_default()
 }

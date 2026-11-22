@@ -109,6 +109,9 @@ pub struct Player {
     pub activity_result: Option<Value>,
     pub tiny_records: BTreeMap<String, TinyRecord>,
     pub tiny_game: Option<TinyRun>,
+    /// The player's Chao as its game draws it in a Chao World area (draw-only
+    /// for others; not saved).
+    pub chao_pose: Value,
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
     pub care: crate::care::CareState,
@@ -218,6 +221,7 @@ impl Player {
             "bestRaceMs": self.best_race_ms, "evolution": self.evolution(), "body": self.body.public(),
             "life": crate::life::public_summary(self),
             "animalParts": self.care.animal_parts, "hat": self.care.hat,
+            "chaoPose": if self.connections > 0 { self.chao_pose.clone() } else { Value::Null },
         })
     }
     pub fn profile(&self) -> Value {
@@ -600,6 +604,7 @@ impl Game {
             activity_result: None,
             tiny_records: phone::restore_records(&data["tinyRecords"]),
             tiny_game: None,
+            chao_pose: Value::Null,
             tiny_result: None,
             watch: None,
             care: crate::care::CareState::restore(data.get("care"))?,
@@ -1096,6 +1101,18 @@ impl Game {
             );
             return;
         }
+        if action == "chao-pose" {
+            // Relayed as is to the same area room; other games only draw it.
+            let pose = &message["pose"];
+            let ok = CHAO_WORLD_ZONES.contains(&p.zone.as_str())
+                && pose.as_object().is_some_and(|o| {
+                    o.len() <= 8 && o.values().all(|v| v.as_f64().is_some_and(f64::is_finite))
+                });
+            if ok {
+                p.chao_pose = pose.clone();
+            }
+            return;
+        }
         if action == "chao-world" {
             // The game's own Chao World area the player's game is in (client
             // sa2_boot::start_stage): one shared room per area. The game owns
@@ -1116,6 +1133,7 @@ impl Game {
                 return;
             }
             p.zone = zone.into();
+            p.chao_pose = Value::Null;
             p.input = Input::default();
             p.race = None;
             p.karate = None;
