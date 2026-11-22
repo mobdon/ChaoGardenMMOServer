@@ -16,6 +16,8 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 tiny-garden-games = { path = "crates/tiny-garden-games" }
 tiny-garden-core = { path = "crates/tiny-garden-core" }
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
 
 [dev-dependencies]
 http-body-util = "0.1"
