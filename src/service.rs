@@ -932,6 +932,11 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "emotion-flame-atlas.png",
         "emotion-sphere.png",
         "chao-stat-panel.png",
+        // The Kindergarten medical chart pages (al_stg_kinder_ad_tex entry 7, laid out by
+        // ChaoStgKinder fn_74_C50C), cropped to the panel, as the MMO Tab menu background.
+        "medchart-page-a.png",
+        "medchart-page-b.png",
+        "medchart-page-c.png",
         "chao-stat-font.png",
         "chao-race-parameter.png",
         "chao-select-window.png",
