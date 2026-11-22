@@ -1832,7 +1832,9 @@ async fn handle_socket(
                             response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"observer-read-only","text":"This connection only observes your Chao. Open Tiny Garden for activities."}).to_string().into()), 0));
                         } else if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
                             let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-                            let moving = value["type"] == "input" || (value["type"] == "action" && value["action"] == "save");
+                            // Chat, voice, mutes, the room join and the Chao's pose stay open while the game holds the card: the player is in that room.
+                            let social = value["type"] == "action" && value["action"].as_str().is_some_and(|a| matches!(a, "chat" | "voice" | "mute" | "chao-pose" | "chao-world"));
+                            let moving = social || value["type"] == "input" || (value["type"] == "action" && value["action"] == "save");
                             let tiny_play = value["type"] == "tiny-input" || (value["type"] == "action" && value["action"].as_str().is_some_and(|a| a.starts_with("tiny-")));
                             if tiny_play && !tiny {
                                 response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"tiny-needs-phone","text":"Tiny Chao Garden plays on your phone."}).to_string().into()), 0));
