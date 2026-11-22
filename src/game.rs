@@ -35,6 +35,9 @@ pub const CHAO_WORLD_ZONES: [&str; 9] = [
     "stadium",
     "chao-karate",
 ];
+/// Chao World areas that are menus or events, not rooms players walk in:
+/// no room chat or voice there (world chat still works).
+pub const MENU_ZONES: [&str; 3] = ["stadium", "chao-race", "chao-karate"];
 pub const TERRAIN_ZONES: [&str; 4] = ["hub", "garden", "hero", "dark"];
 pub const RACE_CHECKPOINTS: [(f64, f64); 5] =
     [(0., 12.), (-12., 0.), (0., -12.), (12., 0.), (0., 12.)];
@@ -2320,6 +2323,14 @@ impl Game {
         if text.is_empty() || !p.cooldown("chat", self.time, 1000.) {
             return;
         }
+        if channel == "room" && MENU_ZONES.contains(&p.zone.as_str()) {
+            self.notice(
+                &p.id,
+                "Room chat is off here. World chat still works.",
+                "error",
+            );
+            return;
+        }
         if self.sanction(p).chat_until > 0 {
             self.events.push(Event {
                 target: Some(p.id.clone()),
@@ -2398,6 +2409,9 @@ impl Game {
     /// Push-to-talk audio: relayed only to players in the same room whose Chao
     /// is within VOICE_RADIUS, so no player ever learns another's address.
     fn voice(&mut self, p: &mut Player, message: &Value) {
+        if MENU_ZONES.contains(&p.zone.as_str()) {
+            return;
+        }
         let Some(data) = message["data"].as_str() else {
             return;
         };
