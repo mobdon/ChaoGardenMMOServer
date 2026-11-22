@@ -742,3 +742,98 @@ fn unavailable_tiny_source_preserves_owned_fruit_and_rejects_noncanonical_ids() 
         false
     );
 }
+
+#[test]
+fn chat_room_reaches_only_the_room_and_world_reaches_everyone() {
+    let (mut game, a) = fixture(false);
+    let b = game.create_session(&json!({"name":"Synthetic b"})).unwrap()["player"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    game.connect(&b);
+    game.players.get_mut(&b).unwrap().zone = "elsewhere".into();
+    game.events.clear();
+    game.action(
+        &a,
+        &json!({"type":"action","action":"chat","channel":"room","text":" hi\u{7}\n "}),
+    );
+    let chats: Vec<_> = game
+        .events
+        .iter()
+        .filter(|e| e.message["kind"] == "chat")
+        .collect();
+    assert_eq!(chats.len(), 1);
+    assert_eq!(chats[0].target.as_deref(), Some(a.as_str()));
+    assert_eq!(chats[0].message["text"], "hi");
+    game.events.clear();
+    game.action(
+        &a,
+        &json!({"type":"action","action":"chat","channel":"world","text":"again"}),
+    );
+    assert!(
+        game.events.iter().all(|e| e.message["kind"] != "chat"),
+        "1 s chat cooldown"
+    );
+    game.time += 1001.;
+    game.action(
+        &a,
+        &json!({"type":"action","action":"chat","channel":"world","text":"x".repeat(500)}),
+    );
+    let chats: Vec<_> = game
+        .events
+        .iter()
+        .filter(|e| e.message["kind"] == "chat")
+        .collect();
+    assert_eq!(chats.len(), 2, "world reaches the other room too");
+    assert_eq!(chats[0].message["text"].as_str().unwrap().len(), 200);
+    // b mutes a: saved in b's profile, and a's chat no longer reaches b.
+    game.action(&b, &json!({"type":"action","action":"mute","playerId":a}));
+    assert_eq!(game.players[&b].profile()["muted"], json!([a]));
+    game.time += 1001.;
+    game.events.clear();
+    game.action(
+        &a,
+        &json!({"type":"action","action":"chat","channel":"world","text":"hi"}),
+    );
+    let chats: Vec<_> = game
+        .events
+        .iter()
+        .filter(|e| e.message["kind"] == "chat")
+        .collect();
+    assert_eq!(chats.len(), 1);
+    assert_eq!(chats[0].target.as_deref(), Some(a.as_str()));
+}
+
+#[test]
+fn voice_reaches_only_near_chao_in_the_same_room() {
+    let (mut game, a) = fixture(false);
+    let mut ids = vec![];
+    for (name, x) in [("near", 50.), ("far", 400.)] {
+        let id = game.create_session(&json!({"name":name})).unwrap()["player"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        game.connect(&id);
+        game.players.get_mut(&id).unwrap().chao_pose = json!({"x":x,"z":0});
+        ids.push(id);
+    }
+    game.players.get_mut(&a).unwrap().chao_pose = json!({"x":0,"z":0});
+    game.events.clear();
+    game.action(&a, &json!({"type":"action","action":"voice","data":"AAAA"}));
+    let v: Vec<_> = game
+        .events
+        .iter()
+        .filter(|e| e.message["kind"] == "voice")
+        .collect();
+    assert_eq!(v.len(), 1);
+    assert_eq!(v[0].target.as_deref(), Some(ids[0].as_str()));
+    assert!(v[0].message["fromName"].is_string());
+    assert!((v[0].message["volume"].as_f64().unwrap() - (1. - 50. / 150.)).abs() < 1e-9);
+    game.time += 100.;
+    game.events.clear();
+    game.action(
+        &a,
+        &json!({"type":"action","action":"voice","data":"A".repeat(1401)}),
+    );
+    assert!(game.events.iter().all(|e| e.message["kind"] != "voice"));
+}
