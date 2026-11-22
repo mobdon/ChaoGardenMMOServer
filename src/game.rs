@@ -3,6 +3,7 @@ use crate::activities::{self, ActivityCatalog, ActivityRecord, KarateBout};
 use crate::competition::{self, CompetitionCatalog, CompetitionState};
 use crate::phone::{self, TinyRecord, TinyRun};
 use crate::watch::{self, WatchState};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -233,6 +234,10 @@ impl Player {
             "chaoRecordVersion": if self.connections > 0 && !self.chao_record.is_empty() { json!(self.chao_record_version) } else { Value::Null },
         })
     }
+    /// The copy of this Chao's native record as base64; None before it has played.
+    pub fn record_base64(&self) -> Option<String> {
+        (!self.chao_record.is_empty()).then(|| BASE64.encode(&self.chao_record))
+    }
     pub fn profile(&self) -> Value {
         let mut profile = json!({"id": self.id, "tokenHash": self.token_hash, "cardHash": self.card_hash, "name": self.name, "admin": self.admin,
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
@@ -240,6 +245,7 @@ impl Player {
             "energy":self.energy,"hunger":self.hunger,"care":self.care,"body":self.body,"life":self.life,"garden":self.garden,"tinyCollection":self.tiny_collection,
             "raceRecords": self.race_records, "karateRecords": self.karate_records,
             "tinyRecords": self.tiny_records, "nativeStats": self.native_stats,
+            "chaoRecord": self.record_base64(),
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
             "missionsCompleted": self.missions_completed, "racesCompleted": self.races_completed, "bestRaceMs": self.best_race_ms});
         phone::project_profile(self, &mut profile);
@@ -649,7 +655,12 @@ impl Game {
             tiny_records: phone::restore_records(&data["tinyRecords"]),
             tiny_game: None,
             chao_pose: Value::Null,
-            chao_record: Vec::new(),
+            // Only a whole record comes back; anything else is as if it never played.
+            chao_record: data["chaoRecord"]
+                .as_str()
+                .and_then(|text| BASE64.decode(text).ok())
+                .filter(|bytes| bytes.len() == crate::game_save::CHAO_RECORD)
+                .unwrap_or_default(),
             chao_record_version: 0,
             native_stats: serde_json::from_value(data["nativeStats"].clone()).ok(),
             tiny_result: None,
@@ -837,7 +848,11 @@ impl Game {
                 } else {
                     chao_token(card, &p.id)
                 };
-                json!({"token": token, "player": p.public()})
+                let mut entry = json!({"token": token, "player": p.public()});
+                if let Some(record) = p.record_base64() {
+                    entry["record"] = json!(record);
+                }
+                entry
             })
             .collect()
     }

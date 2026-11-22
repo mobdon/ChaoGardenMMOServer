@@ -19,6 +19,7 @@ tiny-garden-core = { path = "crates/tiny-garden-core" }
 argon2 = "0.5"
 chacha20poly1305 = "0.10"
 ureq = "3"
+base64 = "0.22"
 
 [dev-dependencies]
 http-body-util = "0.1"
