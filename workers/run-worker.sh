@@ -1,5 +1,5 @@
 #!/bin/bash
-# Headless worker with the full tool set (Serena on ITS worktree, Context7, Headroom, claude-mem, SkillsMP;
+# Headless worker with the full tool set (Serena on ITS worktree, Context7, claude-mem, SkillsMP;
 # Caveman voice; rtk, syntax and task-observer hooks from ~/.claude/settings.json).
 # usage: run-worker.sh <worktree dir> <brief file> [--resume]
 #   brief file: the whole task (common rules + the item). With --resume the brief is sent as a follow-up to the
@@ -22,8 +22,6 @@ pgrep -x graphify >/dev/null || rm -f graphify-out/.rebuild.lock   # a stopped w
 [ -f .serena/project.yml ] || yes n | serena project create --name "$NAME" "$WT" >/dev/null 2>&1   # "n": extra-server prompts abort without a terminal
 G=$(git rev-parse --git-common-dir); grep -qx '.serena/' "$G/info/exclude" 2>/dev/null || echo '.serena/' >> "$G/info/exclude"
 MEM=$(ls -d /root/.claude/plugins/cache/thedotmack/claude-mem/*/ 2>/dev/null | sort -V | tail -1)
-curl -s --noproxy '*' --max-time 2 http://127.0.0.1:8787/health >/dev/null || \
-  (HEADROOM_BEACON=off nohup headroom proxy --host 127.0.0.1 --port 8787 --no-subscription-tracking >/tmp/headroom-proxy.log 2>&1 &)   # headroom_compress needs it
 CFG="$OUT/mcp-$NAME.json"
 # Serena's first start in a fresh container can pass Claude's 30 s MCP connect limit (CONNECT_TIMEOUT), and the
 # worker then runs without it. Warm it with one handshake (retried once) and give MCP servers 2 minutes to connect.
@@ -45,7 +43,6 @@ import json,sys
 wt,mem,cfg=sys.argv[1:4]
 s={"serena":{"command":"serena","args":["start-mcp-server","--context=claude-code","--project",wt,"--open-web-dashboard","false","--agent-interface","tools"]},
    "context7":{"type":"http","url":"https://mcp.context7.com/mcp"},
-   "headroom":{"command":"/usr/local/bin/headroom","args":["mcp","serve"]},
    "skillsmp":{"type":"http","url":"https://skillsmp.com/mcp"}}
 import os
 if os.environ.get("CONTEXT7_API_KEY"): s["context7"]["headers"]={"CONTEXT7_API_KEY":"${CONTEXT7_API_KEY}"}  # expanded by claude at connect time; the key is never written
@@ -61,6 +58,6 @@ C=(); [ "$MODE" = "--resume" ] && C=(-c)
 claude "${C[@]}" -p "$(cat "$BRIEF")" --append-system-prompt "$CAVE
 
 $NOTE" --strict-mcp-config --mcp-config "$CFG" \
-  --allowedTools "Bash,Edit,Write,Read,Grep,Glob,Agent,Task,TodoWrite,Skill,mcp__serena__*,mcp__context7__*,mcp__headroom__*,mcp__claude-mem__*,mcp__skillsmp__*" \
+  --allowedTools "Bash,Edit,Write,Read,Grep,Glob,Agent,Task,TodoWrite,Skill,mcp__serena__*,mcp__context7__*,mcp__claude-mem__*,mcp__skillsmp__*" \
   --max-turns 600 </dev/null >> "$OUT/$NAME.log" 2>&1
 echo "WORKER $NAME EXIT $?" >> "$OUT/$NAME.log"

@@ -18,7 +18,6 @@ If a tool below is missing from your tool list, say so in your reply instead of 
 - **superpowers** skills: systematic-debugging for bugs, test-driven-development for new logic,
   verification-before-completion before you say anything is done.
 - **ponytail**: smallest complete change; run ponytail-review on your diff before opening a PR.
-- **Headroom**: `headroom_compress` big outputs (logs, JSON dumps) instead of pasting them whole.
 - **MarkItDown**: `markitdown <file>` for PDF/Word/Excel/PowerPoint uploads.
 - **SkillsMP**: search for a skill when you hit a new kind of job (needs SKILLSMP_API_KEY).
 - **Syntax hook**: "syntax check failed" after an Edit/Write means fix it now.

@@ -4,7 +4,7 @@
 # claude-mem save; default ~/toolkit-data), REPO_URL + REPO_DIR (clone your repo and pin Serena/graphify there),
 # CONTEXT7_API_KEY, SKILLSMP_API_KEY. Keys stay in the environment only, never in files.
 KIT_DIR=${KIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}; SHARED_DIR=${SHARED_DIR:-$HOME/toolkit-data}; export KIT_DIR SHARED_DIR
-# Plugins and MCP servers load in the NEXT session; scripts (graphify, headroom learn, impeccable) work at once.
+# Plugins and MCP servers load in the NEXT session; scripts (graphify, impeccable) work at once.
 # Ends with check-tools.sh (one PASS/WARN/FAIL line per tool and per clash) and exits with its result, so a step that
 # failed silently can't pass. Combined all-tools worker test: bash "$KIT_DIR/check-tools.sh" --worker
 cd ~ || exit 1   # run from inside a mounted folder, the mount dropped the cwd mid-run and every later step failed silently
@@ -42,14 +42,11 @@ tmp=$(mktemp -d) && git clone -q --depth 1 https://github.com/pbakaus/impeccable
   && mkdir -p ~/.claude/skills && rm -rf ~/.claude/skills/impeccable \
   && cp -r "$tmp/impeccable/.claude/skills/impeccable" ~/.claude/skills/ && rm -rf "$tmp"
 sh ~/.claude/skills/impeccable/scripts/impeccable telemetry off >/dev/null 2>&1 || true   # no usage beacon
-# headroom-ai needs a newer PyYAML than Debian's, which pip cannot uninstall
-pip install --break-system-packages -q --ignore-installed PyYAML
-pip install --break-system-packages -q "headroom-ai[mcp,proxy]" &&   # [mcp] pins mcp<2; mcp 2.x breaks headroom mcp serve
- headroom mcp install --agent claude
-# headroom_compress only shrinks output when Headroom's local proxy runs (else it stores the text uncompressed, "router:noop").
-# 127.0.0.1 only, upload beacon off. JSON/structured output compresses; plain-text compression needs huggingface.co (blocked).
-curl -s --noproxy '*' --max-time 2 http://127.0.0.1:8787/health >/dev/null || \
-  (HEADROOM_BEACON=off nohup headroom proxy --host 127.0.0.1 --port 8787 --no-subscription-tracking >/tmp/headroom-proxy.log 2>&1 &)
+# Headroom is not part of the kit: undo what older kit versions installed (MCP server, proxy, keeper hook).
+claude mcp remove headroom -s user >/dev/null 2>&1 || true
+pkill -f 'bin/headroom proxy' >/dev/null 2>&1 || true   # a python process, so match the command line
+rm -f ~/.claude/hooks/headroom-up.sh /tmp/headroom-proxy.log
+pip uninstall --break-system-packages -y -q headroom-ai >/dev/null 2>&1 || true
 pip install --break-system-packages -q graphifyy && graphify install --platform claude
 # user scope: without --scope it landed in local scope for the cwd only, invisible to threads in the local clone and workers
 python3 -c "
@@ -166,8 +163,6 @@ cp "$KIT_DIR/hooks/syntax-check.py" ~/.claude/hooks/syntax-check.py
 # rtk guard: runs rtk's rewrite, then keeps NAME=... assignments
 # and excluded commands inside ( ) exact, and restores graphify-out/ before git pull/rebase/merge.
 cp "$KIT_DIR/hooks/rtk-guard.py" ~/.claude/hooks/rtk-guard.py
-# Headroom proxy keeper: SessionStart restarts the proxy when a long-lived container lost it.
-cp "$KIT_DIR/hooks/headroom-up.sh" ~/.claude/hooks/headroom-up.sh
 python3 - <<'EOF'   # register the caveman sub-agent hook and the syntax hook, and put the rtk guard in rtk's place (idempotent)
 import json, os
 p = os.path.expanduser('~/.claude/settings.json')
@@ -188,21 +183,24 @@ pre[:] = [e for e in pre if e.get('hooks')]
 if not seen:
     pre.append({'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': guard}]})
 for ev, cmd, matcher in (('SubagentStart', 'python3 ~/.claude/hooks/caveman-subagent.py', None),
-                         ('PostToolUse', 'python3 ~/.claude/hooks/syntax-check.py', 'Edit|Write|MultiEdit'),
-                         ('SessionStart', 'bash ~/.claude/hooks/headroom-up.sh', None)):
+                         ('PostToolUse', 'python3 ~/.claude/hooks/syntax-check.py', 'Edit|Write|MultiEdit')):
     hooks = s.setdefault('hooks', {}).setdefault(ev, [])
     if not any(h.get('command') == cmd for e in hooks for h in e.get('hooks', [])):
         e = {'hooks': [{'type': 'command', 'command': cmd, 'timeout': 60 if matcher else 10}]}
         if matcher:
             e['matcher'] = matcher
         hooks.append(e)
+for ev, es in s.get('hooks', {}).items():   # drop the Headroom keeper hook older kit versions registered
+    for e in es:
+        e['hooks'] = [h for h in e.get('hooks', []) if 'headroom' not in h.get('command', '')]
+    es[:] = [e for e in es if e.get('hooks')]
 # claude-mem's code-outline tools duplicate Serena: deny them so code symbols have one path (memory tools stay)
 deny = s.setdefault('permissions', {}).setdefault('deny', [])
 for t in ('smart_search', 'smart_outline', 'smart_unfold'):
     t = 'mcp__plugin_claude-mem_mcp-search__' + t
     if t not in deny:
         deny.append(t)
-# MCP_TIMEOUT: Serena/Headroom need over the 30 s default to connect; the cloud env var was missing once and Serena timed
+# MCP_TIMEOUT: Serena needs over the 30 s default to connect; the cloud env var was missing once and Serena timed
 # out . RTK_SUPPRESS_HOOK_WARNING: rtk-guard replaces rtk's own hook, and rtk otherwise prints
 # "No hook installed, run rtk init" into command output . 
 for k, v in (('MCP_TIMEOUT', '120000'), ('RTK_SUPPRESS_HOOK_WARNING', '1')):
