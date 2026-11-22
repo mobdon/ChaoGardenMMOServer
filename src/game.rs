@@ -477,6 +477,12 @@ pub struct Game {
     /// The last `CHAT_LOG` chat lines, for staff (memory only).
     pub chat_log: std::collections::VecDeque<Value>,
     chat_lines: u64,
+    /// Open player reports for staff, newest last.
+    // shortcut: memory only, a restart drops open reports (audit.log keeps each one); move to a file if reports must outlive restarts.
+    pub reports: std::collections::VecDeque<Value>,
+    pub reports_made: u64,
+    /// When each player (id) last reported, Unix seconds.
+    pub last_report: BTreeMap<String, u64>,
     /// Voice frames kept for staff listening in, only while `voice_tap_until`
     /// (Unix seconds) is ahead of now. Nothing is written to disk.
     pub voice_tap: std::collections::VecDeque<Value>,
@@ -568,6 +574,9 @@ impl Game {
             invisible: BTreeSet::new(),
             chat_log: Default::default(),
             chat_lines: 0,
+            reports: Default::default(),
+            reports_made: 0,
+            last_report: BTreeMap::new(),
             voice_tap: Default::default(),
             voice_tap_until: 0,
             voice_frames: 0,

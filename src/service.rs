@@ -591,6 +591,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/panel/invisible", post(panel_invisible))
         .route("/api/panel/goto", post(panel_goto))
         .route("/api/panel/chat", get(panel_chat))
+        .route("/api/report", post(report))
+        .route("/api/panel/reports", get(panel_reports))
+        .route("/api/panel/reports/done", post(panel_report_done))
         .route("/api/panel/chat/delete", post(panel_chat_delete))
         .route("/api/panel/voice", get(panel_voice))
         .route("/api/tiny-care", post(tiny_care))
@@ -1990,6 +1993,112 @@ async fn panel_chat_delete(
     }
     no_store(json!({"ok": true}))
 }
+/// A player may report this often, and this many open reports are kept.
+const REPORT_GAP_SECONDS: u64 = 30;
+const REPORTS_KEPT: usize = 200;
+/// A player reports another player to the staff, optionally naming a chat line.
+async fn report(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some((by_id, by_name)) = bearer(&headers)
+        .and_then(|token| game.player_for_token(token))
+        .map(|p| (p.id.clone(), p.name.clone()))
+    else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    let target_id = input["targetId"].as_str().unwrap_or_default();
+    let Some(target_name) = game
+        .players
+        .get(target_id)
+        .filter(|_| target_id != by_id)
+        .map(|p| p.name.clone())
+    else {
+        return error(StatusCode::NOT_FOUND, "No such player.");
+    };
+    let now = crate::game::unix_now();
+    if game
+        .last_report
+        .get(&by_id)
+        .is_some_and(|at| at + REPORT_GAP_SECONDS > now)
+    {
+        return error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Please wait a moment before reporting again.",
+        );
+    }
+    let reason: String = input["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(200)
+        .collect();
+    // The words come from the server's own log, never from the reporter.
+    let text = input["line"].as_u64().and_then(|line| {
+        game.chat_log
+            .iter()
+            .find(|l| l["line"] == line && l["fromId"] == target_id)
+            .map(|l| l["text"].clone())
+    });
+    game.last_report.insert(by_id.clone(), now);
+    game.reports_made += 1;
+    if game.reports.len() == REPORTS_KEPT {
+        game.reports.pop_front();
+    }
+    let entry = json!({"id": game.reports_made, "at": now, "byId": by_id, "byName": by_name,
+        "targetId": target_id, "targetName": target_name, "reason": reason, "text": text});
+    game.reports.push_back(entry);
+    drop(game);
+    if let Err(cause) = crate::audit::record(
+        &state.config.data_dir,
+        &format!("player:{by_name}"),
+        "report",
+        &format!("{target_name}: {reason}"),
+    ) {
+        eprintln!("Audit log write failed: {cause}");
+    }
+    no_store(json!({"ok": true}))
+}
+async fn panel_reports(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if panel_staff(&state, &headers).is_none() {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    }
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    no_store(json!({ "reports": game.reports }))
+}
+/// Staff close a report once it is dealt with.
+async fn panel_report_done(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some((staff, _)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(at) = game.reports.iter().position(|r| r["id"] == input["id"]) else {
+        return error(StatusCode::NOT_FOUND, "No such report.");
+    };
+    let done = game.reports.remove(at).unwrap_or_default();
+    drop(game);
+    if let Err(cause) = crate::audit::record(
+        &state.config.data_dir,
+        &staff,
+        "report-done",
+        &done.to_string(),
+    ) {
+        eprintln!("Audit log write failed: {cause}");
+    }
+    no_store(json!({"ok": true}))
+}
 /// A listen-in counts as one sitting while its polls are this close together.
 const LISTEN_GAP: Duration = Duration::from_secs(10);
 
@@ -3121,6 +3230,61 @@ mod account_tests {
             (last["text"].as_str(), last["fromId"].as_str()),
             (Some("rude words"), Some(loud.as_str()))
         );
+        // Reports: a player reports the line, staff see the server's words, and close it once.
+        let (_, quiet) = post(&app, "/api/session", json!({"name": "Quiet"})).await;
+        let bearer = format!("Bearer {}", quiet["token"].as_str().unwrap());
+        let complaint = json!({"targetId": loud, "line": last["line"], "reason": "  being rude  "});
+        let report = |body: Value| panel(&app, "/api/report", "authorization", &bearer, Some(body));
+        assert_eq!(
+            report(json!({"targetId": quiet["player"]["id"]})).await.0,
+            StatusCode::NOT_FOUND,
+            "nobody reports themselves"
+        );
+        assert_eq!(report(complaint.clone()).await.0, StatusCode::OK);
+        assert_eq!(
+            report(complaint.clone()).await.0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            panel(
+                &app,
+                "/api/report",
+                "authorization",
+                "Bearer nope",
+                Some(complaint)
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        let (_, reports) = panel(&app, "/api/panel/reports", "x-panel-token", &token, None).await;
+        let open = &reports["reports"][0];
+        assert_eq!(
+            (
+                open["targetName"].as_str(),
+                open["byName"].as_str(),
+                open["reason"].as_str(),
+                open["text"].as_str()
+            ),
+            (
+                Some("Loud"),
+                Some("Quiet"),
+                Some("being rude"),
+                Some("rude words")
+            )
+        );
+        let done = Some(json!({"id": open["id"]}));
+        for expected in [StatusCode::OK, StatusCode::NOT_FOUND] {
+            let (status, _) = panel(
+                &app,
+                "/api/panel/reports/done",
+                "x-panel-token",
+                &token,
+                done.clone(),
+            )
+            .await;
+            assert_eq!(status, expected);
+        }
         let mut watching = state.events.subscribe();
         let delete = Some(json!({"line": last["line"]}));
         let (status, _) = panel(
@@ -3427,6 +3591,8 @@ mod account_tests {
             ("/api/panel/grant", Some(json!({"id": "rings-1000"}))),
             ("/api/panel/goto", Some(json!({"playerId": "x"}))),
             ("/api/panel/chat", None),
+            ("/api/panel/reports", None),
+            ("/api/panel/reports/done", Some(json!({"id": 1}))),
             ("/api/panel/leaderboard", None),
             ("/api/panel/chat/delete", Some(json!({"line": 1}))),
             ("/api/panel/voice?room=x", None),

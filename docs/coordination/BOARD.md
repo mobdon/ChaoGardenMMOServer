@@ -673,3 +673,13 @@ a required tick box and serves the page at `/terms.html`. Tests: `cargo test`
 320 pass, clippy and fmt clean (tested offline). Limits: a client without the
 tick box can no longer sign up, so both sides ship together; accounts made
 earlier carry no `terms` and are not asked again.
+
+## Player reports (2026-11-22)
+`POST /api/report` (player Bearer token; `targetId`, optional chat `line`,
+`reason` up to 200 characters) files a report, one per 30 seconds per player;
+the reported words are taken from the server's chat log. Staff read open
+reports at `GET /api/panel/reports` and close one with
+`POST /api/panel/reports/done` (`id`). Reports and closures go to the audit
+log. Tests: `cargo test` 320 pass, clippy and fmt clean (tested offline).
+Limits: open reports are held in memory and a restart drops them; no page or
+game button calls these routes yet.
