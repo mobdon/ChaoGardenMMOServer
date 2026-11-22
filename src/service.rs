@@ -878,6 +878,7 @@ async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Respo
         },
         Err(message) => error(StatusCode::CONFLICT, message),
     }
+}
 #[allow(clippy::result_large_err)]
 fn json_body(headers: &HeaderMap, body: &Bytes) -> Result<Value, Response> {
     if !headers
