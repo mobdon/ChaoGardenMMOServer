@@ -162,6 +162,7 @@ pub fn validate_player(player: &Player) -> Result<(), String> {
             match quoted_cost {
                 None => receipt.effects == json!({"training":{"jobId":job.job_id,"outcome":"started","costRings":0}}),
                 Some(cost) => (1..=4).any(|rate| ring_quote(duration,rate)==Some(*cost) && receipt.effects == start_effect(job.job_id,rate,*cost))
+                    || fruit_receipt(&receipt.effects, job.job_id, duration, *cost)
             }
         }) {
             return Err("Training job is missing its durable start receipt".into());
@@ -227,12 +228,79 @@ fn stat_name(stat: Stat) -> &'static str {
 fn start_effect(job: u64, rate: u32, cost: u32) -> Value {
     json!({"rings":-i64::from(cost),"training":{"jobId":job,"outcome":"started","costRings":cost,"ratePerMinute":rate,"tariff":"skill-band-v1"}})
 }
+/// MMO price (mob 2026-11-22): a trained point costs half of what the same
+/// point costs as Tiny Garden fruit, because training takes time. The fruit is
+/// the cheapest one per point for that skill; a fruit gives its byte x 10 points
+/// (care.rs, tiny fruit). None when the fruit data is not loaded or no fruit
+/// grows the skill; the skill band price is used then.
+fn fruit(game: &Game, stat: Stat) -> Option<(u32, u32)> {
+    let column = 2 + crate::game::MAIN_STATS
+        .iter()
+        .position(|name| *name == stat_name(stat))?;
+    game.tiny_shop_catalog
+        .as_ref()?
+        .fruits
+        .iter()
+        .filter(|fruit| fruit.raw[column] > 0)
+        .map(|fruit| (fruit.price, fruit.raw[column] as u32 * 10))
+        .min_by_key(|(price, points)| (u64::from(*price) * 1000) / u64::from(*points))
+}
+/// Rings for `duration_ms` of training at one point a minute: half the fruit's
+/// price for those points, rounded up, never free.
+fn fruit_quote(duration_ms: u64, (price, points): (u32, u32)) -> Option<u32> {
+    ring_quote(duration_ms, 1)?;
+    let minutes = duration_ms / 60_000;
+    u32::try_from(
+        (minutes * u64::from(price))
+            .div_ceil(2 * u64::from(points))
+            .max(1),
+    )
+    .ok()
+}
+fn fruit_effect(job: u64, cost: u32, (price, points): (u32, u32)) -> Value {
+    json!({"rings":-i64::from(cost),"training":{"jobId":job,"outcome":"started","costRings":cost,"fruitPrice":price,"fruitPoints":points,"tariff":"half-fruit-v1"}})
+}
+/// True when a saved start receipt is a half-fruit one whose cost follows from
+/// the fruit numbers it recorded.
+fn fruit_receipt(effects: &Value, job: u64, duration_ms: u64, cost: u32) -> bool {
+    let number = |key| {
+        effects["training"][key]
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .filter(|v| *v > 0)
+    };
+    let (Some(price), Some(points)) = (number("fruitPrice"), number("fruitPoints")) else {
+        return false;
+    };
+    fruit_quote(duration_ms, (price, points)) == Some(cost)
+        && *effects == fruit_effect(job, cost, (price, points))
+}
+/// The cost of a session and the receipt effect that records how it was priced.
+fn price(
+    game: &Game,
+    player: &Player,
+    stat: Stat,
+    duration_ms: u64,
+    job: u64,
+) -> Option<(u32, Value)> {
+    match fruit(game, stat) {
+        Some(fruit) => {
+            let cost = fruit_quote(duration_ms, fruit)?;
+            Some((cost, fruit_effect(job, cost, fruit)))
+        }
+        None => {
+            let rate = ring_rate(player.stats[stat_name(stat)].level);
+            let cost = ring_quote(duration_ms, rate)?;
+            Some((cost, start_effect(job, rate, cost)))
+        }
+    }
+}
 const MENU_MINUTES: [u64; 4] = [1, 15, 60, 480];
 pub fn capability() -> Value {
     json!({"enabled":true,"rulesVersion":RULES,"policy":{"tickMs":60000,"pointsPerTick":1,"maxDurationMs":28800000,"maxPoints":480,"tariff":"skill-band-v1","cancelRefund":false,"menuMinutes":MENU_MINUTES},
         "stats":["swim","fly","run","power","stamina"]})
 }
-pub fn public(player: &Player, now: u64) -> Value {
+pub fn public(game: &Game, player: &Player, now: u64) -> Value {
     let mut result = capability();
     let view = core(player).and_then(|ledger| ledger.view(now).map_err(code));
     let (job, error) = match view {
@@ -270,11 +338,12 @@ pub fn public(player: &Player, now: u64) -> Value {
         }
     });
     let mut quotes = serde_json::Map::new();
-    for name in ["swim", "fly", "run", "power", "stamina"] {
-        let rate = ring_rate(player.stats[name].level);
+    for stat in [Stat::Swim, Stat::Fly, Stat::Run, Stat::Power, Stat::Stamina] {
         quotes.insert(
-            name.into(),
-            json!(MENU_MINUTES.map(|minutes| ring_quote(minutes * 60000, rate).unwrap())),
+            stat_name(stat).into(),
+            json!(MENU_MINUTES.map(|minutes| {
+                price(game, player, stat, minutes * 60000, 0).map(|(cost, _)| cost)
+            })),
         );
     }
     result["quotes"] = Value::Object(quotes);
@@ -330,8 +399,8 @@ pub fn apply(
             let id = ledger
                 .start(*stat, *duration_ms, now, TrainingPolicy::default())
                 .map_err(code)?;
-            let rate = ring_rate(player.stats[stat_name(*stat)].level);
-            let cost = ring_quote(*duration_ms, rate).ok_or("invalid-training-duration")?;
+            let (cost, effect) =
+                price(game, player, *stat, *duration_ms, id).ok_or("invalid-training-duration")?;
             if *quoted_cost != Some(cost) {
                 return Err("training-price-changed");
             }
@@ -339,7 +408,7 @@ pub fn apply(
             player.care.activity_lock = Some(lock(id));
             player.watch = None;
             player.input = Input::default();
-            (None, start_effect(id, rate, cost))
+            (None, effect)
         }
         Intent::TrainingCancel { job_id } | Intent::TrainingSettle { job_id } => {
             if (!automatic && player.connections == 0)

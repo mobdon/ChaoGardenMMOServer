@@ -638,7 +638,7 @@ pub fn public(game: &Game, id: &str) -> Value {
         "shop":shop(game),"market":market_view(p),"emblems":p.care.emblems.public(),"hat":p.care.hat,
         "tinyShop":tiny_shop,
         "tinyResident":crate::watch::tiny_public(p),
-        "training":crate::training::public(p,crate::service::trusted_unix_ms()),
+        "training":crate::training::public(game,p,crate::service::trusted_unix_ms()),
         "tinyEggShop":crate::collection::shop_public(game,p,crate::service::trusted_unix_ms()),
         "tinyCollection":crate::collection::public(game,p,crate::service::trusted_unix_ms()),
         "tinyToys":game.tiny_egg_source.as_ref().map(|src|p.care.toys.as_ref().unwrap_or(&Default::default()).public(src)),
