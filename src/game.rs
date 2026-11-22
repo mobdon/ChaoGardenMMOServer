@@ -2083,7 +2083,7 @@ impl Game {
             self.events.push(Event {
                 target: Some(target),
                 message: json!({"type":"event","kind":"voice",
-                "fromId":p.id,"volume":volume,"data":data}),
+                "fromId":p.id,"fromName":p.name,"volume":volume,"data":data}),
             });
         }
     }

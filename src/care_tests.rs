@@ -811,6 +811,7 @@ fn voice_reaches_only_near_chao_in_the_same_room() {
         .collect();
     assert_eq!(v.len(), 1);
     assert_eq!(v[0].target.as_deref(), Some(ids[0].as_str()));
+    assert!(v[0].message["fromName"].is_string());
     assert!((v[0].message["volume"].as_f64().unwrap() - (1. - 50. / 150.)).abs() < 1e-9);
     game.time += 100.;
     game.events.clear();
