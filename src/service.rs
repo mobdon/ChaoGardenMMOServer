@@ -281,6 +281,10 @@ impl AppState {
                 game.activities.terrains.insert(world, terrain);
             }
         }
+        let sanctions = config.data_dir.join("sanctions.json");
+        if sanctions.exists() {
+            game.sanctions = serde_json::from_slice(&fs::read(sanctions)?)?;
+        }
         let (events, _) = broadcast::channel(config.event_capacity);
         let (shutdown, _) = watch::channel(false);
         let connections = Arc::new(Semaphore::new(config.max_connections));
@@ -540,6 +544,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/panel/login", post(panel_login))
         .route("/api/panel/me", get(panel_me))
         .route("/api/panel/status", get(panel_status))
+        .route("/api/panel/players", get(panel_players))
+        .route("/api/panel/sanction", post(panel_sanction))
         .route("/api/tiny-care", post(tiny_care))
         .route(
             "/api/tiny-chao",
@@ -1468,6 +1474,127 @@ async fn panel_status(State(state): State<AppState>, headers: HeaderMap) -> Resp
         .online_connections();
     no_store(json!({"online": online, "uptimeSeconds": state.started.elapsed().as_secs()}))
 }
+/// Who is online, with room, account name, staff role and running limits.
+async fn panel_players(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if panel_staff(&state, &headers).is_none() {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    }
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    let players: Vec<Value> = game
+        .players
+        .values()
+        .filter(|p| p.connections > 0)
+        .map(|p| {
+            let account = accounts.by_card(p.card());
+            json!({"id": p.id, "name": p.name, "room": p.zone,
+                "account": account.map(|a| &a.username), "role": account.and_then(|a| a.role),
+                "limits": game.sanction(p)})
+        })
+        .collect();
+    no_store(json!({ "players": players }))
+}
+/// The longest limit a moderator may set; longer and permanent ones need an admin.
+const MODERATOR_MAX_MINUTES: u64 = 7 * 24 * 60;
+/// A kick is a ban this short: the sockets close and the player can come straight back.
+const KICK_SECONDS: u64 = 60;
+
+/// Mute chat, mute voice, kick or ban one player's memory card, or lift a limit
+/// (`minutes: 0`). `minutes: "forever"` lasts until lifted.
+async fn panel_sanction(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    use crate::accounts::Role;
+    let Some((staff, role)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let kind = input["kind"].as_str().unwrap_or_default();
+    let minutes = match &input["minutes"] {
+        Value::String(text) if text == "forever" => Some(u64::MAX),
+        value => value.as_u64().filter(|m| *m <= 10 * 365 * 24 * 60),
+    };
+    let (Some(minutes), true) = (
+        if kind == "kick" { Some(1) } else { minutes },
+        matches!(kind, "chat" | "voice" | "ban" | "kick"),
+    ) else {
+        return error(StatusCode::BAD_REQUEST, "Unknown limit or length.");
+    };
+    let admin_only = minutes > MODERATOR_MAX_MINUTES || (kind == "ban" && minutes == 0);
+    if admin_only && role < Role::Admin {
+        return error(StatusCode::FORBIDDEN, "Only an admin can do that.");
+    }
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(target) = input["playerId"]
+        .as_str()
+        .and_then(|id| game.players.get(id))
+    else {
+        return error(StatusCode::NOT_FOUND, "No such player.");
+    };
+    let target_role = state
+        .accounts
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .by_card(target.card())
+        .and_then(|a| a.role);
+    // Staff never act on their equals or betters, and nobody acts on the owner's Chao.
+    if target.admin || target_role.is_some_and(|other| other >= role) {
+        return error(StatusCode::FORBIDDEN, "You can't act on that player.");
+    }
+    let (card, name) = (target.card().to_owned(), target.name.clone());
+    let now = crate::game::unix_now();
+    let until = match (kind, minutes) {
+        ("kick", _) => now + KICK_SECONDS,
+        (_, 0) => 0,
+        (_, u64::MAX) => u64::MAX,
+        (_, minutes) => now + minutes * 60,
+    };
+    let before = game.sanctions.get(&card).copied();
+    let mut next = before.unwrap_or_default();
+    match kind {
+        "chat" => next.chat_until = until,
+        "voice" => next.voice_until = until,
+        // A kick never shortens a ban that is already running.
+        _ => {
+            next.ban_until = if kind == "kick" {
+                next.ban_until.max(until)
+            } else {
+                until
+            }
+        }
+    }
+    game.sanctions.insert(card.clone(), next);
+    game.sanctions
+        .retain(|_, s| s.chat_until.max(s.voice_until).max(s.ban_until) > now);
+    // Nothing takes effect unless both the limits file and the audit entry are written.
+    let saved = serde_json::to_vec_pretty(&game.sanctions)
+        .map_err(io::Error::other)
+        .and_then(|bytes| {
+            crate::accounts::write_private(&state.config.data_dir.join("sanctions.json"), &bytes)
+        })
+        .and_then(|()| {
+            crate::audit::record(
+                &state.config.data_dir,
+                &staff,
+                &format!("{kind}:{}", input["minutes"]),
+                &format!("{name} ({card})"),
+            )
+        });
+    if let Err(cause) = saved {
+        eprintln!("Limit could not be saved: {cause}");
+        match before {
+            Some(before) => game.sanctions.insert(card, before),
+            None => game.sanctions.remove(&card),
+        };
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Could not save that.");
+    }
+    no_store(json!({"ok": true, "limits": next}))
+}
 /// The login screen's delete: copies profiles.json aside first, then removes the Chao for good.
 async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(token) = bearer(&headers) else {
@@ -1778,6 +1905,14 @@ async fn upgrade(
     let Some(id) = id else {
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
+    if state
+        .game
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .banned(&id)
+    {
+        return error(StatusCode::FORBIDDEN, "This account is banned.");
+    }
     let tiny = query.tiny == Some(1);
     if tiny && !phone_agent(&headers) {
         return error(StatusCode::FORBIDDEN, "Tiny Chao Garden is on your phone.");
@@ -1929,6 +2064,10 @@ async fn handle_socket(
         let outgoing: Option<(Message, usize)> = tokio::select! {
             _ = shutdown.changed() => break,
             _ = snapshots.tick() => {
+                if state.game.lock().unwrap_or_else(|p| p.into_inner()).banned(&id) {
+                    let _ = send_bounded(&mut writer, Message::Close(Some(CloseFrame { code: 4003, reason: "Removed by a moderator.".into() })), &state).await;
+                    break;
+                }
                 if !observer && state.game.lock().unwrap_or_else(|p| p.into_inner()).benched.contains(&id) {
                     let _ = send_bounded(&mut writer, Message::Close(Some(CloseFrame { code: 4001, reason: "Another Chao from this memory card is out now.".into() })), &state).await;
                     break;
@@ -2271,6 +2410,96 @@ mod account_tests {
                 assert_eq!(status, StatusCode::NOT_FOUND);
             }
         }
+        // Limits: a moderator mutes, kicks and bans a player, but not for good and not staff.
+        let (_, made) = post(&app, "/api/session", json!({"name": "Loud"})).await;
+        let loud = made["player"]["id"].as_str().unwrap().to_owned();
+        let act = |id: String, kind: &'static str, minutes: Value| {
+            let (app, token) = (app.clone(), token.clone());
+            async move {
+                panel(
+                    &app,
+                    "/api/panel/sanction",
+                    "x-panel-token",
+                    &token,
+                    Some(json!({"playerId": id, "kind": kind, "minutes": minutes})),
+                )
+                .await
+            }
+        };
+        assert_eq!(act(loud.clone(), "chat", json!(10)).await.0, StatusCode::OK);
+        {
+            let mut game = state.game.lock().unwrap();
+            assert!(game.connect(&loud));
+            game.drain_events();
+            game.action(
+                &loud,
+                &json!({"type":"action","action":"chat","channel":"world","text":"hi"}),
+            );
+            let events = game.drain_events();
+            assert!(events.iter().all(|e| e.message["text"] != "hi"));
+            // Lifted, the same line goes out.
+            game.sanctions.clear();
+            game.time += 2000.;
+            game.action(
+                &loud,
+                &json!({"type":"action","action":"chat","channel":"world","text":"hi"}),
+            );
+            assert!(
+                game.drain_events()
+                    .iter()
+                    .any(|e| e.message["text"] == "hi")
+            );
+            game.sanctions =
+                serde_json::from_slice(&fs::read(dir.path().join("sanctions.json")).unwrap())
+                    .unwrap();
+            assert!(!game.banned(&loud));
+        }
+        assert_eq!(
+            act(loud.clone(), "ban", json!("forever")).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            act(loud.clone(), "ban", json!(0)).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            act(loud.clone(), "fly", json!(1)).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            act("nobody".into(), "chat", json!(1)).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            act(loud.clone(), "kick", Value::Null).await.0,
+            StatusCode::OK
+        );
+        assert!(state.game.lock().unwrap().banned(&loud));
+        let (status, list) = panel(&app, "/api/panel/players", "x-panel-token", &token, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(list["players"][0]["limits"]["chatUntil"].as_u64().unwrap() > 0);
+        // The limits survive a restart; the moderator's own card can't be limited by a moderator.
+        let again = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        assert!(again.game.lock().unwrap().banned(&loud));
+        let own = {
+            let accounts = state.accounts.lock().unwrap();
+            let card = accounts.find("modder").unwrap().card_hash.clone();
+            let game = state.game.lock().unwrap();
+            game.players
+                .values()
+                .find(|p| p.card() == card)
+                .unwrap()
+                .id
+                .clone()
+        };
+        assert_eq!(act(own, "chat", json!(1)).await.0, StatusCode::FORBIDDEN);
+        for (path, body) in [
+            ("/api/panel/players", None),
+            ("/api/panel/sanction", Some(json!({}))),
+        ] {
+            let (status, _) = panel(&app, path, "x-panel-token", "nope", body).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
         // An idle session ends.
         for (_, used) in state.panel_sessions.lock().unwrap().values_mut() {
             *used -= PANEL_IDLE;
@@ -2285,6 +2514,8 @@ mod account_tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         let log = fs::read_to_string(dir.path().join("audit.log")).unwrap();
         assert_eq!(log.matches("\"panel-login\"").count(), 2);
+        assert_eq!(log.matches("\"chat:10\"").count(), 1);
+        assert_eq!(log.matches("\"kick:null\"").count(), 1);
         assert_eq!(log.matches("panel-login-refused").count(), 4);
         assert!(!log.contains(&panel_key));
     }

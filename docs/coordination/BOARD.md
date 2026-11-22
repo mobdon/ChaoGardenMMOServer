@@ -566,3 +566,18 @@ Limits: no moderation actions, voice listen-in or panel page yet; the staff
 command edits `accounts.json` and needs the server stopped; sessions end on
 restart; one shared `CHAO_ADMIN_KEY` scheme on another branch is not merged
 with this one; not run on a hosted server.
+
+## Staff limits: mute, kick, ban (2026-11-22)
+Builds on the staff panel groundwork above. Changed paths: `src/game.rs`,
+`src/service.rs`, `src/accounts.rs`. Limits are kept per memory card in
+`sanctions.json` (chat mute, voice mute, ban, each with an end time).
+`GET /api/panel/players` lists who is online with room, account, role and
+running limits; `POST /api/panel/sanction` sets or lifts one. A muted card's
+chat and voice are not relayed; a banned card's sockets close (code 4003)
+and new sockets get 403; a kick is a 60-second ban. A moderator's limit is
+at most 7 days; permanent limits and lifting a ban need an admin; staff
+cannot act on equal or higher staff or on the owner's Chao. A limit only
+takes effect once the file and the audit entry are written. Tests: `cargo
+test` 316 pass, clippy and fmt clean (tested offline). Limits: a ban is per
+card, a new account gets around it; no chat log, voice listen-in or panel
+page yet; not run on a hosted server.

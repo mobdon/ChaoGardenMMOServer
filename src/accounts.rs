@@ -191,6 +191,10 @@ impl Accounts {
             .get(&login)
             .or_else(|| self.list.values().find(|a| a.email.to_lowercase() == login))
     }
+    /// The account a memory card (by its hash) belongs to.
+    pub fn by_card(&self, card_hash: &str) -> Option<&Account> {
+        self.list.values().find(|a| a.card_hash == card_hash)
+    }
     /// Why a new account can't be made, if it can't.
     pub fn taken(&self, username: &str, email: &str, card_hash: &str) -> Option<&'static str> {
         if self.list.contains_key(&username.to_lowercase()) {
