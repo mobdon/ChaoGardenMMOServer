@@ -1149,19 +1149,32 @@ async fn account_reset(State(state): State<AppState>, headers: HeaderMap, body: 
     response
 }
 /// The PC stores its player's own Chao model for the phone (Bearer: the Chao's token).
-async fn tiny_chao_put(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn tiny_chao_put(
+    State(state): State<AppState>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     // The Chao that stores its model is the account's phone Chao: the other Chao on the same
-    // memory card give theirs up.
+    // memory card give theirs up. `?chao=<id>` stores it for another Chao of the signed-in
+    // Chao's own memory card (the PC's Chao Transporter pick).
     let id = bearer(&headers).and_then(|token| {
         let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-        let player = game.player_for_token(token)?;
+        let signed_in = game.player_for_token(token)?;
+        let picked = match query.get("chao") {
+            Some(chao) => game
+                .players
+                .get(chao)
+                .filter(|p| p.card() == signed_in.card())?,
+            None => signed_in,
+        };
         let others: Vec<String> = game
             .players
             .values()
-            .filter(|p| p.card() == player.card() && p.id != player.id)
+            .filter(|p| p.card() == picked.card() && p.id != picked.id)
             .map(|p| p.id.clone())
             .collect();
-        Some((player.id.clone(), others))
+        Some((picked.id.clone(), others))
     });
     let Some((id, others)) = id else {
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
@@ -2077,6 +2090,40 @@ mod account_tests {
             tiny_chao(&app, "GET", &first, vec![]).await.0,
             StatusCode::NOT_FOUND
         );
+        // The signed-in Chao can store the sheet for another Chao of its own card, not a stranger's.
+        let first_id = {
+            let game = state.game.lock().unwrap();
+            game.player_for_token(&first).unwrap().id.clone()
+        };
+        let put_for = |bearer: String, chao: String| {
+            let app = app.clone();
+            async move {
+                let mut again = b"\x89PNG\r\n\x1a\n".to_vec();
+                again.resize(64, 2);
+                let request = axum::http::Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/tiny-chao?chao={chao}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+                    .body(axum::body::Body::from(again))
+                    .unwrap();
+                app.oneshot(request).await.unwrap().status()
+            }
+        };
+        assert_eq!(
+            put_for(second.clone(), first_id.clone()).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            tiny_chao(&app, "GET", &first, vec![]).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            tiny_chao(&app, "GET", &second, vec![]).await.0,
+            StatusCode::NOT_FOUND
+        );
+        let (_, stranger) = post(&app, "/api/session", json!({"name": "Other"})).await;
+        let stranger = stranger["token"].as_str().unwrap().to_owned();
+        assert_eq!(put_for(stranger, first_id).await, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
