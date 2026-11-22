@@ -51,6 +51,9 @@ pub struct Config {
     pub tiny_garden_payload: Option<PathBuf>,
     pub tiny_a3ve_payload: Option<PathBuf>,
     pub tiny_asoe_payload: Option<PathBuf>,
+    /// Lowercase usernames of the test accounts that may use the test
+    /// override route. Empty (the default) turns the route off.
+    pub test_accounts: Vec<String>,
 }
 fn bounded_env(name: &str, default: usize, maximum: usize) -> Result<usize, String> {
     let value = env::var(name)
@@ -79,6 +82,18 @@ impl Config {
             env::var("CHAO_OWNER_BOOTSTRAP").is_ok_and(|value| value == "1" || value == "true");
         if owner_bootstrap && !host.is_loopback() {
             return Err("Owner bootstrap is permitted only on a loopback listener".into());
+        }
+        let test_accounts: Vec<String> = env::var("CHAO_TEST_ACCOUNTS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        // A hosted server listens beyond loopback or has a public address.
+        if !test_accounts.is_empty()
+            && (!host.is_loopback() || env::var_os("CHAO_PUBLIC_URL").is_some())
+        {
+            return Err("Test accounts are permitted only on a local test server".into());
         }
         let mut allowed_origins = vec![];
         for value in env::var("CHAO_ALLOWED_ORIGINS")
@@ -109,6 +124,7 @@ impl Config {
             tiny_asoe_payload: env::var_os("CHAO_TINY_ASOE_PAYLOAD").map(PathBuf::from),
             tiny_a3ve_payload: env::var_os("CHAO_TINY_A3VE_PAYLOAD").map(PathBuf::from),
             tiny_garden_payload: env::var_os("CHAO_TINY_GARDEN_PAYLOAD").map(PathBuf::from),
+            test_accounts,
         })
     }
     pub fn local(data_dir: PathBuf, owner_bootstrap: bool) -> Self {
@@ -125,6 +141,7 @@ impl Config {
             tiny_garden_payload: None,
             tiny_a3ve_payload: None,
             tiny_asoe_payload: None,
+            test_accounts: vec![],
         }
     }
 }
@@ -524,6 +541,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/game-save/status", get(game_save_status))
         .route("/api/story", get(story_get))
         .route("/api/story/clear", post(story_clear))
+        .route("/api/test/override", post(test_override))
         .route("/api/chao-record", put(chao_record_put))
         .route("/api/chao-record/{id}", get(chao_record_get))
         .route("/api/card", get(card))
@@ -1441,6 +1459,93 @@ async fn story_clear(
         Ok(()) => story_json(&cleared),
         Err(cause) => save_failed("story write", cause),
     }
+}
+/// Test servers only: a test account sets its own Chao's stats and its card's
+/// story progress. Body: `{"stats": {"run": {"level": 99, "grade": 5,
+/// "points": 9999}}, "story": "none" | "hero" | "dark" | "all"}`, each part
+/// optional; "all" is both sides and Cannon's Core (Super Chao). The route
+/// answers 404 unless the server names test accounts, and 403 for any caller
+/// that is not one of them or has an admin Chao on the card.
+async fn test_override(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    if state.config.test_accounts.is_empty() {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    }
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some((id, card)) = bearer(&headers)
+        .and_then(|token| game.player_for_token(token))
+        .map(|p| (p.id.clone(), p.card().to_owned()))
+    else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    let is_test = {
+        let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+        accounts
+            .username_for_card(&card)
+            .is_some_and(|name| state.config.test_accounts.contains(&name.to_lowercase()))
+    };
+    if !is_test || game.players.values().any(|p| p.card() == card && p.admin) {
+        return error(StatusCode::FORBIDDEN, "Only a test account can do this.");
+    }
+    let story = match body["story"].as_str() {
+        None => None,
+        Some("none") => Some(vec![]),
+        Some("hero") => Some(crate::story::HERO.to_vec()),
+        Some("dark") => Some(crate::story::DARK.to_vec()),
+        Some("all") => Some(
+            [
+                &crate::story::HERO[..],
+                &crate::story::DARK[..],
+                &[crate::story::CANNONS_CORE],
+            ]
+            .concat(),
+        ),
+        Some(_) => return error(StatusCode::BAD_REQUEST, "Unknown story value."),
+    };
+    // Checked whole before anything changes.
+    let mut stats = vec![];
+    for (name, wanted) in body["stats"].as_object().into_iter().flatten() {
+        let Some(mut stat) = game.players[&id].stats.get(name).cloned() else {
+            return error(StatusCode::BAD_REQUEST, "Unknown stat.");
+        };
+        let field = |key: &str, max: u64| match &wanted[key] {
+            Value::Null => Ok(None),
+            value => value.as_u64().filter(|n| *n <= max).map(Some).ok_or(()),
+        };
+        let grade_max = if crate::game::MAIN_STATS.contains(&name.as_str()) {
+            5
+        } else {
+            255
+        };
+        let (Ok(level), Ok(grade), Ok(points)) = (
+            field("level", 99),
+            field("grade", grade_max),
+            field("points", 9999),
+        ) else {
+            return error(StatusCode::BAD_REQUEST, "Stat value out of range.");
+        };
+        stat.level = level.map_or(stat.level, |n| n as u16);
+        stat.grade = grade.map_or(stat.grade, |n| n as u16);
+        stat.points = points.map_or(stat.points, |n| n as u32);
+        stats.push((name.clone(), stat));
+    }
+    if let Some(cleared) = &story {
+        let cleared = cleared.iter().copied().collect();
+        if let Err(cause) = crate::story::write(&state.config.data_dir, &card, &cleared) {
+            return save_failed("story write", cause);
+        }
+    }
+    if !stats.is_empty() {
+        game.players.get_mut(&id).unwrap().stats.extend(stats);
+        game.dirty = true;
+        if let Err(cause) = state.persist(&mut game) {
+            return save_failed("stat write", cause);
+        }
+    }
+    Json(json!({"ok": true})).into_response()
 }
 /// The game is still running with the card in: keep the lease without moving the save.
 async fn game_save_renew(State(state): State<AppState>, headers: HeaderMap) -> Response {
