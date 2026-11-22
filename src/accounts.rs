@@ -252,7 +252,7 @@ impl Accounts {
         self.failures.remove(&login.to_lowercase());
     }
     fn save(&self) -> io::Result<()> {
-        write_private_json(
+        write_private(
             &self.path,
             &serde_json::to_vec_pretty(&self.list.values().collect::<Vec<_>>())?,
         )
@@ -260,7 +260,7 @@ impl Accounts {
 }
 
 /// Writes `bytes` to `path` atomically, readable by the owner only (mode 0600).
-pub(crate) fn write_private_json(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }

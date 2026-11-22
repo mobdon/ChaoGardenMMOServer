@@ -28,19 +28,21 @@ evidence and exclusions are documented in `crates/tiny-garden-core/NATIVE_*.md`.
 Resume a selected browser save with `POST /api/session` and JSON
 `{ "token":"...", "resumeOnly":true }`. Unknown/missing credentials return
 404 without creating another Chao. Connect `/ws?token=...` as in the main game.
-A Tiny Garden socket (`/ws?tiny=1`) needs a one-time pairing with the PC:
+A Tiny Garden socket (`/ws?tiny=1`) works from the same login once the account
+has played on its PC:
 
-1. PC: `POST /api/pair/start` with `Authorization: Bearer <Chao token>` returns
-   `{ "code":"ABC234", "expiresInSeconds":600 }` (single use, one open code per Chao).
-2. Phone, signed in to the same memory card: `POST /api/pair/claim` with JSON
-   `{ "card":"...", "code":"ABC234" }` returns `{ "deviceKey":"...", "chao":{token, player} }`.
-3. Phone: connect `/ws?tiny=1&token=...&device=<deviceKey>`. Without a paired
-   key the handshake is refused with 403. One phone per Chao; pairing again
-   replaces it. `tiny-start`, `tiny-stop` and `tiny-input` on a socket without
-   `tiny=1` get a `tiny-needs-phone` notice.
+1. PC game page: `PUT /api/tiny-chao` with `Authorization: Bearer <Chao token>`
+   and the player's own Chao model as the body (PNG or GLB by magic bytes, at
+   most 4 MiB), made in the browser from the player's own game files.
+2. Phone, logged in to the same account: `GET /api/tiny-chao` with the same
+   bearer returns that model; 404 means the PC has not played yet.
+3. Phone: connect `/ws?tiny=1&token=...`. Until the model exists the handshake
+   is refused with 403. `tiny-start`, `tiny-stop` and `tiny-input` on a socket
+   without `tiny=1` get a `tiny-needs-phone` notice.
 
-Only key hashes are stored (`pairings.json`, mode 0600). An exclusive device
-lease is not implemented.
+The model is the only game-derived file the server stores (`tiny-chao/`, one
+file per Chao, mode 0600, removed with the Chao). An exclusive device lease is
+not implemented.
 Multiple sockets using one credential share one profile, one clock, one active
 minigame and one reward receipt. They can issue competing intents.
 

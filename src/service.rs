@@ -137,7 +137,6 @@ pub struct AppState {
     pub shutdown: watch::Sender<bool>,
     pub metrics: Arc<Metrics>,
     pub accounts: Arc<Mutex<crate::accounts::Accounts>>,
-    pub pairings: Arc<Mutex<crate::pairing::Pairings>>,
     mailer: Arc<Option<crate::mail::Mailer>>,
     connections: Arc<Semaphore>,
     seen_connections: Arc<Mutex<BTreeSet<String>>>,
@@ -284,9 +283,6 @@ impl AppState {
         let connections = Arc::new(Semaphore::new(config.max_connections));
         Ok(Self {
             accounts: Arc::new(Mutex::new(crate::accounts::Accounts::load(
-                config.data_dir.clone(),
-            )?)),
-            pairings: Arc::new(Mutex::new(crate::pairing::Pairings::load(
                 config.data_dir.clone(),
             )?)),
             mailer: Arc::new(crate::mail::Mailer::from_env()),
@@ -532,8 +528,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/account/login", post(account_login))
         .route("/api/account/forgot", post(account_forgot))
         .route("/api/account/reset", post(account_reset))
-        .route("/api/pair/start", post(pair_start))
-        .route("/api/pair/claim", post(pair_claim))
+        .route(
+            "/api/tiny-chao",
+            get(tiny_chao_get)
+                .put(tiny_chao_put)
+                .layer(DefaultBodyLimit::max(crate::tiny_chao::MODEL_MAX)),
+        )
         // Deployment probes and metrics: unauthenticated, cheap, excluded from
         // the request metrics themselves.
         .route("/livez", get(livez))
@@ -878,7 +878,10 @@ async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Respo
     }
     match game.delete_chao(token) {
         Ok(id) => match state.persist(&mut game) {
-            Ok(()) => Json(json!({"deleted": id})).into_response(),
+            Ok(()) => {
+                let _ = fs::remove_file(crate::tiny_chao::model_path(&state.config.data_dir, &id));
+                Json(json!({"deleted": id})).into_response()
+            }
             Err(cause) => save_failed("delete", cause),
         },
         Err(message) => error(StatusCode::CONFLICT, message),
@@ -1080,63 +1083,53 @@ async fn account_reset(State(state): State<AppState>, headers: HeaderMap, body: 
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     response
 }
-/// The PC asks for a one-time phone pairing code for its Chao (Bearer: the Chao's token).
-async fn pair_start(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let player = bearer(&headers).and_then(|token| {
+/// The PC stores its player's own Chao model for the phone (Bearer: the Chao's token).
+async fn tiny_chao_put(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let id = bearer(&headers).and_then(|token| {
         let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-        game.player_for_token(token)
-            .map(|p| (p.id.clone(), p.card().to_owned()))
+        game.player_for_token(token).map(|p| p.id.clone())
     });
-    let Some((id, card_hash)) = player else {
+    let Some(id) = id else {
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
-    let code = state
-        .pairings
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .start(&id, &card_hash, std::time::Instant::now());
-    Json(json!({"code": code, "expiresInSeconds": crate::pairing::CODE_LIFE.as_secs()}))
-        .into_response()
-}
-/// A phone signed in to the same card enters the PC's code: it gets a device key.
-async fn pair_claim(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    let input = match json_body(&headers, &body) {
-        Ok(input) => input,
-        Err(response) => return response,
-    };
-    let card = input["card"].as_str().unwrap_or_default();
-    let code = input["code"].as_str().unwrap_or_default();
-    if card.is_empty() || card.len() > 256 || code.len() > 16 {
-        return error(StatusCode::BAD_REQUEST, "Send your card and the code.");
+    if crate::tiny_chao::model_type(&body).is_none() {
+        return error(StatusCode::BAD_REQUEST, "Send a PNG or GLB file.");
     }
-    let card_hash = crate::game::hash_token(card);
-    let claimed = state
-        .pairings
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .claim(code, &card_hash, std::time::Instant::now());
-    match claimed {
-        Ok(Some((chao_id, device_key))) => {
-            let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-            let chao = game
-                .card_sessions(card)
-                .into_iter()
-                .find(|c| c["player"]["id"] == chao_id.as_str());
-            let mut response = Json(json!({"deviceKey": device_key, "chao": chao})).into_response();
-            response
-                .headers_mut()
-                .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-            response
-        }
-        Ok(None) => error(
-            StatusCode::NOT_FOUND,
-            "That code is wrong, used or too old. Get a new one on your PC.",
-        ),
+    let path = crate::tiny_chao::model_path(&state.config.data_dir, &id);
+    match crate::accounts::write_private(&path, &body) {
+        Ok(()) => Json(json!({"ok": true, "bytes": body.len()})).into_response(),
         Err(cause) => {
-            eprintln!("Pairing save failed: {cause}");
+            eprintln!("Chao model save failed: {cause}");
             error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Could not save the pairing.",
+                "Could not save the Chao model.",
+            )
+        }
+    }
+}
+/// The phone, logged in to the same account, fetches its player's Chao model (Bearer: the
+/// Chao's token). Nobody else can read it.
+async fn tiny_chao_get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let id = bearer(&headers).and_then(|token| {
+        let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+        game.player_for_token(token).map(|p| p.id.clone())
+    });
+    let Some(id) = id else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match tokio::fs::read(crate::tiny_chao::model_path(&state.config.data_dir, &id)).await {
+        Ok(bytes) => match crate::tiny_chao::model_type(&bytes) {
+            Some(mime) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
+            None => error(StatusCode::NOT_FOUND, "No Chao model stored yet."),
+        },
+        Err(cause) if cause.kind() == io::ErrorKind::NotFound => {
+            error(StatusCode::NOT_FOUND, "No Chao model stored yet.")
+        }
+        Err(cause) => {
+            eprintln!("Chao model read failed: {cause}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not read the Chao model.",
             )
         }
     }
@@ -1376,8 +1369,6 @@ struct TokenQuery {
     observe: Option<u8>,
     /// 1 when Tiny Chao Garden connects; any other control connection is the main game.
     tiny: Option<u8>,
-    /// A Tiny Garden socket's paired phone key (`/api/pair/claim`).
-    device: Option<String>,
 }
 fn connection_snapshot(game: &Game, id: &str, observer: bool) -> Value {
     let mut snapshot = game.snapshot(id);
@@ -1406,18 +1397,10 @@ async fn upgrade(
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
     let tiny = query.tiny == Some(1);
-    if tiny
-        && !query.device.as_deref().is_some_and(|key| {
-            state
-                .pairings
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .paired(&id, key)
-        })
-    {
+    if tiny && !crate::tiny_chao::played_once(&state.config.data_dir, &id) {
         return error(
             StatusCode::FORBIDDEN,
-            "Pair this phone with your PC first (Chao Transporter).",
+            "Play once on your PC first, then your Chao is here.",
         );
     }
     if !observer && !tiny {
@@ -1607,7 +1590,7 @@ async fn handle_socket(
                             let moving = value["type"] == "input" || (value["type"] == "action" && value["action"] == "save");
                             let tiny_play = value["type"] == "tiny-input" || (value["type"] == "action" && value["action"].as_str().is_some_and(|a| a.starts_with("tiny-")));
                             if tiny_play && !tiny {
-                                response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"tiny-needs-phone","text":"Tiny Chao Garden plays on your paired phone."}).to_string().into()), 0));
+                                response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"tiny-needs-phone","text":"Tiny Chao Garden plays on your phone."}).to_string().into()), 0));
                             } else if !moving && game.players.get(&id).is_some_and(|p| crate::game_save::leased(&game, p.card(), std::time::Instant::now())) {
                                 response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"in-game","text":"Your Chao is in the big garden right now. Leave the game to care for it here."}).to_string().into()), 0));
                             } else {
@@ -1846,28 +1829,6 @@ mod account_tests {
         assert!(!on_disk.contains(&card) && !on_disk.contains("long enough pw"));
     }
 
-    async fn post_auth(app: &Router, path: &str, bearer: &str) -> (StatusCode, Value) {
-        let response = app
-            .clone()
-            .oneshot(
-                axum::http::Request::post(path)
-                    .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let bytes = http_body_util::BodyExt::collect(response.into_body())
-            .await
-            .unwrap()
-            .to_bytes();
-        (
-            status,
-            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        )
-    }
-
     async fn new_account(app: &Router) -> (String, String, String) {
         let (_, made) = post(app, "/api/session", json!({"name": "Test"})).await;
         let card = made["card"].as_str().unwrap().to_owned();
@@ -1978,62 +1939,100 @@ mod account_tests {
         );
     }
 
+    async fn tiny_chao(
+        app: &Router,
+        method: &str,
+        bearer: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, Vec<u8>) {
+        let request = axum::http::Request::builder()
+            .method(method)
+            .uri("/api/tiny-chao")
+            .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+            .body(axum::body::Body::from(body))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        (status, bytes.to_vec())
+    }
+
     #[tokio::test]
-    async fn pairing_gates_tiny_garden_sockets() {
+    async fn phone_works_from_the_same_login_after_one_pc_play() {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
         let app = router(state.clone());
-        let (card, token, id) = new_account(&app).await;
+        let (_, token, id) = new_account(&app).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(axum::serve(listener, app.clone()).into_future());
+        let url = |extra: &str| format!("ws://{address}/ws?token={token}{extra}");
+
+        // Before the PC has played: no model, and the phone's Tiny Garden does not connect.
         assert_eq!(
-            post_auth(&app, "/api/pair/start", "bad").await.0,
-            StatusCode::UNAUTHORIZED
-        );
-        let (status, started) = post_auth(&app, "/api/pair/start", &token).await;
-        assert_eq!(status, StatusCode::OK);
-        let code = started["code"].as_str().unwrap().to_owned();
-        let wrong = json!({"card": "not the card", "code": code});
-        assert_eq!(
-            post(&app, "/api/pair/claim", wrong).await.0,
+            tiny_chao(&app, "GET", &token, vec![]).await.0,
             StatusCode::NOT_FOUND
         );
-        let (status, claimed) =
-            post(&app, "/api/pair/claim", json!({"card": card, "code": code})).await;
-        assert_eq!(status, StatusCode::OK, "{claimed}");
-        assert_eq!(claimed["chao"]["player"]["id"], id.as_str());
-        let device = claimed["deviceKey"].as_str().unwrap().to_owned();
-        let reused = json!({"card": card, "code": code});
+        assert!(connect_async(url("&tiny=1")).await.is_err());
+
+        // The PC plays once and stores the player's own Chao model.
+        // Synthetic test bytes with a GLB magic, larger than the default 2 KB body limit.
+        let mut model = b"glTF".to_vec();
+        model.resize(8192, 7);
         assert_eq!(
-            post(&app, "/api/pair/claim", reused).await.0,
+            tiny_chao(&app, "PUT", "bad", model.clone()).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        let junk = b"not a model".to_vec();
+        assert_eq!(
+            tiny_chao(&app, "PUT", &token, junk).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            tiny_chao(&app, "PUT", &token, model.clone()).await.0,
+            StatusCode::OK
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = crate::tiny_chao::model_path(dir.path(), &id);
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        // The same login on the phone (a fresh login returns the same Chao token) gets the model.
+        let (_, login) = post(
+            &app,
+            "/api/account/login",
+            json!({"login": "tester", "password": "long enough pw"}),
+        )
+        .await;
+        let phone_token = login["chao"][0]["token"].as_str().unwrap();
+        let (status, bytes) = tiny_chao(&app, "GET", phone_token, vec![]).await;
+        assert_eq!((status, bytes), (StatusCode::OK, model));
+        // Another player gets their own (missing) model, never this one.
+        let (_, other) = post(&app, "/api/session", json!({"name": "Other"})).await;
+        let other_token = other["token"].as_str().unwrap();
+        assert_eq!(
+            tiny_chao(&app, "GET", other_token, vec![]).await.0,
             StatusCode::NOT_FOUND
         );
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(axum::serve(listener, app).into_future());
-        let url = |extra: &str| format!("ws://{address}/ws?token={token}{extra}");
-        assert!(
-            connect_async(url("&tiny=1")).await.is_err(),
-            "no device key"
-        );
-        assert!(
-            connect_async(url("&tiny=1&device=guess")).await.is_err(),
-            "wrong key"
-        );
-        let (mut phone, _) = connect_async(url(&format!("&tiny=1&device={device}")))
-            .await
-            .expect("paired phone connects");
+        let (mut phone, _) = connect_async(url("&tiny=1")).await.expect("phone connects");
         let _ = phone.close(None).await;
         // A PC socket can't play Tiny Garden.
         let (mut pc, _) = connect_async(url("")).await.unwrap();
-        pc.send(WsMessage::Text(
-            json!({"type":"action","action":"tiny-start","gameId":"memory"})
-                .to_string()
-                .into(),
-        ))
-        .await
-        .unwrap();
+        let start = json!({"type":"action","action":"tiny-start","gameId":"memory"});
+        pc.send(WsMessage::Text(start.to_string().into()))
+            .await
+            .unwrap();
         let refused = tokio::time::timeout(Duration::from_secs(5), async {
             while let Some(Ok(message)) = pc.next().await {
                 if let WsMessage::Text(text) = message

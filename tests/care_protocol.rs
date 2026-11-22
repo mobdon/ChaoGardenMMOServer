@@ -62,26 +62,17 @@ impl TestServer {
         )
     }
 
-    /// A Tiny Garden socket from this Chao's paired phone.
+    /// A Tiny Garden socket from this Chao's phone, after its PC has played once.
     async fn phone(&self, session: &Value) -> Socket {
         let token = session["token"].as_str().unwrap();
         let id = session["player"]["id"].as_str().unwrap();
-        let card = self.state.game.lock().unwrap().players[id]
-            .card()
-            .to_owned();
-        let now = std::time::Instant::now();
-        let device = {
-            let mut pairings = self.state.pairings.lock().unwrap();
-            let code = pairings.start(id, &card, now);
-            pairings.claim(&code, &card, now).unwrap().unwrap().1
-        };
-        connect_async(format!(
-            "{}/ws?token={token}&tiny=1&device={device}",
-            self.url
-        ))
-        .await
-        .unwrap()
-        .0
+        let path = chao_game_server::tiny_chao::model_path(&self.state.config.data_dir, id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"glTF synthetic test model").unwrap();
+        connect_async(format!("{}/ws?token={token}&tiny=1", self.url))
+            .await
+            .unwrap()
+            .0
     }
     async fn socket(&self, session: &Value) -> Socket {
         connect_async(format!(
