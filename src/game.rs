@@ -2291,7 +2291,7 @@ impl Game {
             self.events.push(Event {
                 target: Some(p.id.clone()),
                 message: json!({"type":"event","kind":"chat","channel":channel,
-                    "fromId":"","fromName":"","text":"A moderator has muted your chat."}),
+                    "fromId":"","fromName":"Moderator","text":"Your chat is muted."}),
             });
             return;
         }
