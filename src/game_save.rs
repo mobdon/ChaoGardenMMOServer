@@ -1,4 +1,4 @@
-//! The player's native SA2 Chao garden save (the canonical Chao, mob's decision
+//! The player's native SA2 Chao garden save (the canonical Chao, decided
 //! 2026-11-21). The recompiled game borrows it through its server-backed memory
 //! card: a GET checks it out under a lease, PUTs hand back new bytes, and while
 //! the lease is held the server's other Chao mutations are refused so the two

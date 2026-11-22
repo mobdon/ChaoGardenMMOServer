@@ -7,15 +7,15 @@ items RPG-04, LIFE-01 and LIFE-02.
 ## Source
 
 Every game rule here is ported from the GameCube SA2B (GSNE8P) `ChaoMain.rel`,
-SHA-1 `e7e24b8b6f4305d95531c9d898d566ead79ddc8d`, read-only from mob's own disc
+SHA-1 `e7e24b8b6f4305d95531c9d898d566ead79ddc8d`, read-only from the owner's own disc
 on November 20, 2026. That REL is byte-identical to the one the roeming/SA2B
 decomp is built from, so its symbol names apply. `al_gene.c` in that decomp is
-marked Matching. The full report with addresses stays local on mob's PC
+marked Matching. The full report with addresses stays local on the owner's PC
 (`.local/research/chao-life-native-2026-11-20.md`). No game data, tables or
 assets are in this repository; only the scalar `ChaoGlobal` constants that the
 formulas need, each commented with its source in `life::native`.
 
-mob's standing rule is native porting only, with no assumed or made-up game
+The standing rule is native porting only, with no assumed or made-up game
 data. Anything without a native source is either an explicit MMO policy below
 or left out.
 
@@ -38,7 +38,7 @@ or left out.
 | New eggs | Grades from one of three schemes (shuffle of 0..4; all 1..3; 14 random increments), LifeTime 0..9, personality alleles 0..4, taste/TV/music 0..5. | `AL_GeneCreate` 0x1218C |
 | Happiness and knowledge | `like` −100..100. Petting, holding, a fruit handed over and an animal each give +1. A positive gain lowers fear by `f(10,+Aggr) + f(10,+Calm)` and counts a meeting (`distance = distance/3 × 2`). Distance +16 per knowledge tick, max 50000. | `AL_ParameterAddUserLike` 0x20D7C, `AL_KW_*` |
 
-### Native bugs (fixed, mob's decision of November 20, 2026)
+### Native bugs (fixed, decided November 20, 2026)
 
 These are fixed by default (`nativeBugs` off); the native behaviour is kept
 behind the policy flag and covered by a test. With the fix, hatch and rebirth
@@ -63,7 +63,7 @@ and stays on.
 - **Owner = the one character.** The native knowledge keeps one record per
   playable character (Sonic, Shadow and so on). Here the Chao's owner is its only
   character, so there is one owner record.
-- **Frozen while offline** (mob's decision, November 20, 2026). Needs, moods,
+- **Frozen while offline** (decided November 20, 2026). Needs, moods,
   illness and aging only run while the owner is connected; Watch residents and
   offline profiles are frozen. `residentNeeds` stays off.
 - **Death switch.** `CHAO_LIFE_DEATH` unset or `disabled` (default): a grey

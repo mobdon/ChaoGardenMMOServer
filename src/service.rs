@@ -653,7 +653,8 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     {
         return error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Use application/json.");
     }
-    let input: Value = match serde_json::from_slice(if body.is_empty() { b"{}" } else { &body }) {
+    let mut input: Value = match serde_json::from_slice(if body.is_empty() { b"{}" } else { &body })
+    {
         Ok(value) => value,
         Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid JSON."),
     };
@@ -664,6 +665,19 @@ async fn session(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         );
     }
     let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    if input["ownerLogin"] == true {
+        // Owner bootstrap only runs on loopback (checked at startup).
+        let Some(token) = state
+            .config
+            .owner_bootstrap
+            .then(|| game.owner_token())
+            .flatten()
+        else {
+            return error(StatusCode::FORBIDDEN, "Owner login is off.");
+        };
+        input["token"] = json!(token);
+        input["resumeOnly"] = json!(true);
+    }
     let resumes_existing = input["token"]
         .as_str()
         .and_then(|token| game.player_for_token(token))
@@ -875,6 +889,14 @@ async fn game_save_release(State(state): State<AppState>, headers: HeaderMap) ->
 }
 
 pub fn asset_filename(path: &str) -> Option<String> {
+    // Tiny Garden's own art routes (the client's phone preview names them this way).
+    match path {
+        "/__widget-art/tiny-garden-a2ne.png" => return Some("tiny-garden-a2ne.png".into()),
+        "/__widget-art/tiny-garden-a2ne-sidebar-1.png" => {
+            return Some("tiny-garden-sidebar-1-a2ne.png".into());
+        }
+        _ => {}
+    }
     let filename = path.strip_prefix("/api/assets/")?;
     let glbs = [
         "chao",
@@ -921,6 +943,10 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "tiny-neutral-chaos.png",
         "tiny-hero-chaos.png",
         "tiny-dark-chaos.png",
+        // Tiny Garden art the client's android/tools export makes from the player's A2NE ROM.
+        "tiny-garden-a2ne.png",
+        "tiny-garden-sidebar-0-a2ne.png",
+        "tiny-garden-sidebar-1-a2ne.png",
     ];
     let audio = [
         "music-hub",

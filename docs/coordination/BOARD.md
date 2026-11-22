@@ -11,7 +11,7 @@ No Vibe website board or external chat has been updated by creating these files.
 
 Branch `claude/project-thread-0d3fu6` from `4d31fbd`. The recompiled SA2 game's
 server memory card (signing in inserts the card) loads and saves the player's
-native Chao garden save, which mob chose on 2026-11-21 as the canonical Chao.
+native Chao garden save, chosen on 2026-11-21 as the canonical Chao.
 `src/game_save.rs` + routes in `src/service.rs`: `GET /api/game-save` (check
 out under a 10-minute lease; bytes + `x-save-revision` + `x-save-lease`),
 `PUT /api/game-save` (lease + expected revision, up to one Memory Card 59 of
@@ -181,7 +181,7 @@ from base `40a0ada`: `src/life.rs`, `LIFE.md`, `tests/life_protocol.rs`, plus
 small hooks in `src/game.rs` (profile key `life`, tick, snapshot) and
 `src/service.rs` (`life` envelope, two-profile rollback, `CHAO_LIFE_DEATH`).
 Rules are ported from GSNE8P `ChaoMain.rel` (SHA-1 e7e24b8b…dc8d, read-only
-trace of mob's disc); only listed MMO policies are non-native. Death is off
+trace of the owner's disc); only listed MMO policies are non-native. Death is off
 unless `CHAO_LIFE_DEATH=enabled`. Parallel body, animals and AI threads agreed the
 module split recorded in `LIFE.md`; their hook wiring follows whichever merges
 second. No live save migration or preview restart.

@@ -109,7 +109,7 @@ pub mod native {
 }
 use native::*;
 
-/// MMO policy switches. The defaults match mob's November 20, 2026 decisions.
+/// MMO policy switches. The defaults match the November 20, 2026 decisions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Policy {
     /// `CHAO_LIFE_DEATH=enabled`: a failed end-of-life check ends the Chao (native `KillChao`).
@@ -1506,7 +1506,7 @@ fn social_conflict(p: &Player) -> bool {
         || p.karate.is_some()
         || p.vehicle.is_some()
         || p.care.activity_lock.is_some()
-        || !["garden", "hero", "dark"].contains(&p.zone.as_str())
+        || !["hub", "garden", "hero", "dark"].contains(&p.zone.as_str())
 }
 /// MMO policy: partners are picked from the breeding menu, so any Chao in the same garden counts.
 fn in_range(a: &Player, b: &Player) -> bool {
