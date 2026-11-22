@@ -904,3 +904,24 @@ fn extras_settings_by_token_for_a_page_without_a_room() {
     assert_eq!(saved, json!({"fps":120}));
     assert_eq!(game.settings_for_token(&token, None).unwrap()["fps"], 120);
 }
+
+#[test]
+fn menu_areas_have_no_room_chat_but_world_chat_works() {
+    let (mut game, a) = fixture(false);
+    game.players.get_mut(&a).unwrap().zone = "stadium".into();
+    let said = |game: &mut Game, channel: &str| {
+        game.time += 1001.;
+        game.events.clear();
+        game.action(
+            &a,
+            &json!({"type":"action","action":"chat","channel":channel,"text":"hi"}),
+        );
+        game.events
+            .iter()
+            .filter(|e| e.message["kind"] == "chat")
+            .count()
+    };
+    assert_eq!(said(&mut game, "room"), 0);
+    assert!(game.events.iter().any(|e| e.message["type"] == "notice"));
+    assert_eq!(said(&mut game, "world"), 1);
+}
