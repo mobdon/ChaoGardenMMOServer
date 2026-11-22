@@ -477,6 +477,12 @@ pub struct Game {
     /// The last `CHAT_LOG` chat lines, for staff (memory only).
     pub chat_log: std::collections::VecDeque<Value>,
     chat_lines: u64,
+    /// Open player reports for staff, newest last.
+    // shortcut: memory only, a restart drops open reports (audit.log keeps each one); move to a file if reports must outlive restarts.
+    pub reports: std::collections::VecDeque<Value>,
+    pub reports_made: u64,
+    /// When each player (id) last reported, Unix seconds.
+    pub last_report: BTreeMap<String, u64>,
     /// Voice frames kept for staff listening in, only while `voice_tap_until`
     /// (Unix seconds) is ahead of now. Nothing is written to disk.
     pub voice_tap: std::collections::VecDeque<Value>,
@@ -568,6 +574,9 @@ impl Game {
             invisible: BTreeSet::new(),
             chat_log: Default::default(),
             chat_lines: 0,
+            reports: Default::default(),
+            reports_made: 0,
+            last_report: BTreeMap::new(),
             voice_tap: Default::default(),
             voice_tap_until: 0,
             voice_frames: 0,
@@ -974,6 +983,14 @@ impl Game {
             return None;
         }
         let card = self.player_for_token(token)?.card().to_owned();
+        self.give_gear(&card, item)?;
+        Some(self.player_for_token(token)?.profile_extra["foundGear"].clone())
+    }
+    /// Adds a found gear item to every Chao of a memory card, once.
+    pub fn give_gear(&mut self, card: &str, item: &str) -> Option<()> {
+        if !FOUND_GEAR.contains(&item) {
+            return None;
+        }
         for q in self.players.values_mut().filter(|q| q.card() == card) {
             if !q.profile_extra.is_object() {
                 q.profile_extra = json!({});
@@ -987,7 +1004,7 @@ impl Game {
                 self.dirty = true;
             }
         }
-        Some(self.player_for_token(token)?.profile_extra["foundGear"].clone())
+        Some(())
     }
     /// A care tap from the phone widget, which has no socket: the same watch-care the garden
     /// page sends, for a Chao that is out in a garden.

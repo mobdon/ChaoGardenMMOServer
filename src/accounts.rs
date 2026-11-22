@@ -44,6 +44,9 @@ pub struct Account {
     /// Absent for an ordinary player. Never set from a sign-up or login request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
+    /// Version (date) of the Terms of Service agreed to at sign-up. Absent on older accounts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<String>,
     /// Hash of this person's panel key. The key itself is shown once, when issued.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     key_hash: Option<String>,
@@ -125,6 +128,7 @@ impl Account {
             nonce,
             sealed_card,
             role: None,
+            terms: None,
             key_hash: None,
         })
     }
@@ -191,6 +195,13 @@ impl Accounts {
             .get(&login)
             .or_else(|| self.list.values().find(|a| a.email.to_lowercase() == login))
     }
+    /// Every account with a staff role, as (username, role).
+    pub fn staff(&self) -> Vec<(&str, Role)> {
+        self.list
+            .values()
+            .filter_map(|a| Some((a.username.as_str(), a.role?)))
+            .collect()
+    }
     /// The account a memory card (by its hash) belongs to.
     pub fn by_card(&self, card_hash: &str) -> Option<&Account> {
         self.list.values().find(|a| a.card_hash == card_hash)
@@ -255,6 +266,7 @@ impl Accounts {
         let key = account.username.to_lowercase();
         if let Some(old) = self.list.get(&key) {
             account.role = old.role;
+            account.terms = old.terms.clone();
             account.key_hash = old.key_hash.clone();
         }
         let old = self.list.insert(key.clone(), account);

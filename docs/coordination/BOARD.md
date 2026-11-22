@@ -651,3 +651,35 @@ Tests: `cargo test` 320 pass, clippy and fmt clean; headless page check as
 a throwaway admin (tested offline). Limits: own Chao only; the shared
 `CHAO_ADMIN_KEY` path on the test route still exists beside it; not run on
 a hosted server.
+
+## Admin tools in the staff panel: test buttons, roles, audit view (2026-11-22)
+Changed paths: `src/service.rs`, `src/game.rs`, `src/accounts.rs`. Admin
+role only (moderators get 403): `GET /api/panel/grants` lists the test
+buttons and `POST /api/panel/grant {id}` presses one on the admin's own
+Chao (rings, clear found gear, and one button per `FOUND_GEAR` item through
+the shared `Game::give_gear`); `GET/POST /api/panel/staff` lists staff and
+sets a role, returning the fresh key once, ending that person's panel
+sessions, and refusing a change to one's own role; `GET /api/panel/audit`
+returns the newest 200 audit entries. Tests: `cargo test` 320 pass, clippy
+and fmt clean; headless page check as a throwaway admin (tested offline).
+Limits: gear buttons cover only the two items the server knows; no egg or
+other grants; not run on a hosted server.
+
+## Sign-up needs agreement to the Terms of Service (2026-11-22)
+`POST /api/account/register` refuses (400) unless the body has `agree: true`,
+and stores the terms version (`TERMS_VERSION`, a date) on the account as
+`terms`; a password reset keeps it. The client sign-up form sends `agree` from
+a required tick box and serves the page at `/terms.html`. Tests: `cargo test`
+320 pass, clippy and fmt clean (tested offline). Limits: a client without the
+tick box can no longer sign up, so both sides ship together; accounts made
+earlier carry no `terms` and are not asked again.
+
+## Player reports (2026-11-22)
+`POST /api/report` (player Bearer token; `targetId`, optional chat `line`,
+`reason` up to 200 characters) files a report, one per 30 seconds per player;
+the reported words are taken from the server's chat log. Staff read open
+reports at `GET /api/panel/reports` and close one with
+`POST /api/panel/reports/done` (`id`). Reports and closures go to the audit
+log. Tests: `cargo test` 320 pass, clippy and fmt clean (tested offline).
+Limits: open reports are held in memory and a restart drops them; no page or
+game button calls these routes yet.
