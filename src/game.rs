@@ -488,6 +488,8 @@ pub struct Game {
     pub voice_tap: std::collections::VecDeque<Value>,
     pub voice_tap_until: u64,
     voice_frames: u64,
+    /// Groups waiting for or playing a shared race or Karate bout (memory only).
+    pub queues: crate::queue::Queues,
     pub tokens: BTreeMap<String, String>,
     pub events: Vec<Event>,
     pub dirty: bool,
@@ -580,6 +582,7 @@ impl Game {
             voice_tap: Default::default(),
             voice_tap_until: 0,
             voice_frames: 0,
+            queues: Default::default(),
             tokens: BTreeMap::new(),
             events: vec![],
             dirty: false,
@@ -1124,6 +1127,9 @@ impl Game {
     pub fn disconnect(&mut self, id: &str) {
         if let Some(mut player) = self.players.remove(id) {
             player.connections = player.connections.saturating_sub(1);
+            if player.connections == 0 {
+                crate::queue::leave(self, id);
+            }
             if let Some(run) = &mut player.tiny_game {
                 run.release_controls();
             }
@@ -1410,11 +1416,18 @@ impl Game {
                 self.notice(&id, "Your Chao isn't aligned to that garden.", "error");
                 return;
             }
+            if p.zone != zone {
+                crate::queue::leave(self, &id);
+            }
             p.zone = zone.into();
             p.chao_pose = Value::Null;
             p.input = Input::default();
             p.race = None;
             p.karate = None;
+            return;
+        }
+        if action.starts_with("queue-") {
+            crate::queue::action(self, p, message);
             return;
         }
         if action.starts_with("karate-") {

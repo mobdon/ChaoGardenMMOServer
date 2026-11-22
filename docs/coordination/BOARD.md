@@ -683,3 +683,15 @@ reports at `GET /api/panel/reports` and close one with
 log. Tests: `cargo test` 320 pass, clippy and fmt clean (tested offline).
 Limits: open reports are held in memory and a restart drops them; no page or
 game button calls these routes yet.
+
+## Queues for group Chao Race and PvP Chao Karate, step 1 (2026-11-22)
+Base 75253e6. Changed paths: `src/queue.rs` (new), `src/game.rs`, `src/lib.rs`.
+Actions `queue-join` (`event` `chao-karate` or `chao-race`, `ranked`, and
+`courseId` for a race), `queue-ready` (`ready`) and `queue-leave`; members get
+`{"kind":"queue"}` events listing the group, ready marks and `started`. A
+Karate group holds 2, a race group 8; a group starts when it has at least two
+members and all are ready. Ranked and unranked never mix. Changing area or
+disconnecting leaves the group. Tests: `cargo test` all pass (5 new), clippy
+and fmt clean (tested offline). Limits: groups are memory only; a started
+group runs no bout or race yet and saves no result or ranked record; no group
+chat or voice channel yet; no client sends these actions.
