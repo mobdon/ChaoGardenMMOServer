@@ -217,8 +217,9 @@ fn normalized_input_has_native_speed_and_stale_input_stops() {
         }
         let p = &g.players[&id];
         let traveled = p.x.hypot(p.z);
-        assert!(traveled > if owner { 1.98 } else { 1.39 });
-        assert!(traveled < if owner { 2.01 } else { 1.42 });
+        // Owner: Metal Sonic top speed; a new Chao (no Run points) at the base walk.
+        let (low, high) = if owner { (6.9, 7.0) } else { (1.39, 1.5) };
+        assert!(traveled > low && traveled < high, "{traveled}");
         advance(&mut g, 1000);
         let stopped = g.players[&id].x;
         advance(&mut g, 1000);
@@ -827,4 +828,15 @@ fn only_the_selected_chao_of_a_card_is_out() {
         g.benched.contains(&two) && !g.benched.contains(&one),
         "and swapping back works"
     );
+}
+
+#[test]
+fn deleting_a_chao_removes_it_and_its_token_but_keeps_the_admin() {
+    let (mut g, id, token) = fixture(false);
+    g.players.get_mut(&id).unwrap().connections = 0;
+    assert_eq!(g.delete_chao(&token), Ok(id.clone()));
+    assert!(!g.players.contains_key(&id) && g.player_for_token(&token).is_none());
+    let (mut g, id, token) = fixture(true);
+    g.players.get_mut(&id).unwrap().connections = 0;
+    assert!(g.players[&id].admin && g.delete_chao(&token).is_err());
 }
