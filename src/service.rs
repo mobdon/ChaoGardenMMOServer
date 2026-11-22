@@ -976,6 +976,7 @@ async fn account_login(State(state): State<AppState>, headers: HeaderMap, body: 
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     response
+}
 /// The login screen's delete: copies profiles.json aside first, then removes the Chao for good.
 async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(token) = bearer(&headers) else {
