@@ -167,6 +167,11 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     pub accounts: Arc<Mutex<crate::accounts::Accounts>>,
     mailer: Arc<Option<crate::mail::Mailer>>,
+    /// Open panel sessions: token hash -> (lowercase username, last use). Memory only.
+    panel_sessions: Arc<Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>>,
+    started: std::time::Instant,
+    /// Staff listening to a room's voice: username -> (room, last poll).
+    panel_listens: Arc<Mutex<BTreeMap<String, (String, std::time::Instant)>>>,
     connections: Arc<Semaphore>,
     seen_connections: Arc<Mutex<BTreeSet<String>>>,
 }
@@ -307,6 +312,10 @@ impl AppState {
                 game.activities.terrains.insert(world, terrain);
             }
         }
+        let sanctions = config.data_dir.join("sanctions.json");
+        if sanctions.exists() {
+            game.sanctions = serde_json::from_slice(&fs::read(sanctions)?)?;
+        }
         let (events, _) = broadcast::channel(config.event_capacity);
         let (shutdown, _) = watch::channel(false);
         let connections = Arc::new(Semaphore::new(config.max_connections));
@@ -315,6 +324,9 @@ impl AppState {
                 config.data_dir.clone(),
             )?)),
             mailer: Arc::new(crate::mail::Mailer::from_env()),
+            panel_sessions: Arc::default(),
+            started: std::time::Instant::now(),
+            panel_listens: Arc::default(),
             game: Arc::new(Mutex::new(game)),
             config: Arc::new(config),
             events,
@@ -562,6 +574,17 @@ pub fn router(state: AppState) -> Router {
         .route("/api/account/login", post(account_login))
         .route("/api/account/forgot", post(account_forgot))
         .route("/api/account/reset", post(account_reset))
+        .route("/api/panel/login", post(panel_login))
+        .route("/api/panel/me", get(panel_me))
+        .route("/api/panel/status", get(panel_status))
+        .route("/api/panel/players", get(panel_players))
+        .route("/api/panel/sanction", post(panel_sanction))
+        .route("/api/panel/leaderboard", get(panel_leaderboard))
+        .route("/api/panel/invisible", post(panel_invisible))
+        .route("/api/panel/goto", post(panel_goto))
+        .route("/api/panel/chat", get(panel_chat))
+        .route("/api/panel/chat/delete", post(panel_chat_delete))
+        .route("/api/panel/voice", get(panel_voice))
         .route("/api/tiny-care", post(tiny_care))
         .route(
             "/api/tiny-chao",
@@ -1358,6 +1381,487 @@ async fn account_login(State(state): State<AppState>, headers: HeaderMap, body: 
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     response
 }
+/// A panel session ends after this long without a request.
+const PANEL_IDLE: Duration = Duration::from_secs(15 * 60);
+
+fn no_store(body: Value) -> Response {
+    let mut response = Json(body).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
+}
+/// Panel sign-in: account password plus that person's own key (`x-admin-key` header).
+/// Every refusal looks the same, so it never tells a player whether an account is staff.
+async fn panel_login(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let login = input["login"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let password = input["password"].as_str().unwrap_or_default().to_owned();
+    let panel_key = headers
+        .get("x-admin-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let refused = || error(StatusCode::UNAUTHORIZED, "Wrong login.");
+    if login.is_empty() || login.len() > 254 || password.len() > 512 {
+        return refused();
+    }
+    let now = std::time::Instant::now();
+    let account = {
+        let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+        if accounts.locked(&login, now) {
+            return error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many tries. Wait a minute.",
+            );
+        }
+        accounts.find(&login).cloned()
+    };
+    let staff = account
+        .as_ref()
+        .filter(|a| a.key_ok(panel_key))
+        .and_then(|a| Some((a.username.clone(), a.role?)));
+    // The slow password check always runs, so timing does not show which part was wrong.
+    let password_ok = tokio::task::spawn_blocking(move || match account {
+        Some(account) => account.open(&password).is_some(),
+        None => {
+            crate::accounts::waste_a_check(&password);
+            false
+        }
+    })
+    .await
+    .unwrap_or(false);
+    let mut accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    let Some((username, role)) = staff.filter(|_| password_ok) else {
+        accounts.failed(&login, now);
+        drop(accounts);
+        let _ = crate::audit::record(&state.config.data_dir, &login, "panel-login-refused", "");
+        return refused();
+    };
+    accounts.succeeded(&login);
+    drop(accounts);
+    // No sign-in without its audit entry.
+    if let Err(cause) = crate::audit::record(&state.config.data_dir, &username, "panel-login", "") {
+        eprintln!("Audit log write failed: {cause}");
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Could not sign in.");
+    }
+    let token = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let mut sessions = state
+        .panel_sessions
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    sessions.retain(|_, (_, used)| now.duration_since(*used) < PANEL_IDLE);
+    sessions.insert(
+        crate::game::hash_token(&token),
+        (username.to_lowercase(), now),
+    );
+    drop(sessions);
+    no_store(json!({"token": token, "username": username, "role": role}))
+}
+/// The staff member a request's `x-panel-token` belongs to. The role is read from the
+/// account on every request, so removing a role ends that person's panel at once.
+fn panel_staff(state: &AppState, headers: &HeaderMap) -> Option<(String, crate::accounts::Role)> {
+    let token = headers.get("x-panel-token")?.to_str().ok()?;
+    if token.len() > 128 {
+        return None;
+    }
+    let now = std::time::Instant::now();
+    let name = {
+        let mut sessions = state
+            .panel_sessions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let hash = crate::game::hash_token(token);
+        let (name, used) = sessions.get_mut(&hash)?;
+        if now.duration_since(*used) >= PANEL_IDLE {
+            sessions.remove(&hash);
+            return None;
+        }
+        *used = now;
+        name.clone()
+    };
+    let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    let account = accounts.find(&name)?;
+    Some((account.username.clone(), account.role?))
+}
+/// Who the panel is signed in as. Not found for anyone without an open staff session.
+async fn panel_me(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    match panel_staff(&state, &headers) {
+        Some((username, role)) => no_store(json!({"username": username, "role": role})),
+        None => error(StatusCode::NOT_FOUND, "Not found."),
+    }
+}
+/// Server status for staff: players online and how long the server has been up.
+async fn panel_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let Some((_, role)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let online = state
+        .game
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .online_connections();
+    let now = std::time::Instant::now();
+    let listening: Vec<Value> = state
+        .panel_listens
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter(|(_, (_, at))| now.duration_since(*at) < LISTEN_GAP)
+        .map(|(name, (room, _))| json!({"staff": name, "room": room}))
+        .collect();
+    let mut body = json!({"online": online, "uptimeSeconds": state.started.elapsed().as_secs()});
+    // Only admins see who is listening in.
+    if role == crate::accounts::Role::Admin {
+        body["listening"] = json!(listening);
+    }
+    no_store(body)
+}
+/// Who is online, with room, account name, staff role and running limits.
+async fn panel_players(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if panel_staff(&state, &headers).is_none() {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    }
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    let players: Vec<Value> = game
+        .players
+        .values()
+        .filter(|p| p.connections > 0)
+        .map(|p| {
+            let account = accounts.by_card(p.card());
+            json!({"id": p.id, "name": p.name, "room": p.zone,
+                "invisible": game.invisible.contains(&p.id),
+                "account": account.map(|a| &a.username), "role": account.and_then(|a| a.role),
+                "limits": game.sanction(p)})
+        })
+        .collect();
+    no_store(json!({ "players": players }))
+}
+/// The longest limit a moderator may set; longer and permanent ones need an admin.
+const MODERATOR_MAX_MINUTES: u64 = 7 * 24 * 60;
+/// A kick is a ban this short: the sockets close and the player can come straight back.
+const KICK_SECONDS: u64 = 60;
+
+/// Mute chat, mute voice, kick or ban one player's memory card, or lift a limit
+/// (`minutes: 0`). `minutes: "forever"` lasts until lifted.
+async fn panel_sanction(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    use crate::accounts::Role;
+    let Some((staff, role)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let kind = input["kind"].as_str().unwrap_or_default();
+    let minutes = match &input["minutes"] {
+        Value::String(text) if text == "forever" => Some(u64::MAX),
+        value => value.as_u64().filter(|m| *m <= 10 * 365 * 24 * 60),
+    };
+    let (Some(minutes), true) = (
+        if kind == "kick" { Some(1) } else { minutes },
+        matches!(kind, "chat" | "voice" | "ban" | "kick"),
+    ) else {
+        return error(StatusCode::BAD_REQUEST, "Unknown limit or length.");
+    };
+    let admin_only = minutes > MODERATOR_MAX_MINUTES || (kind == "ban" && minutes == 0);
+    if admin_only && role < Role::Admin {
+        return error(StatusCode::FORBIDDEN, "Only an admin can do that.");
+    }
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(target) = input["playerId"]
+        .as_str()
+        .and_then(|id| game.players.get(id))
+    else {
+        return error(StatusCode::NOT_FOUND, "No such player.");
+    };
+    let target_role = state
+        .accounts
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .by_card(target.card())
+        .and_then(|a| a.role);
+    // Staff never act on their equals or betters, and nobody acts on the owner's Chao.
+    if target.admin || target_role.is_some_and(|other| other >= role) {
+        return error(StatusCode::FORBIDDEN, "You can't act on that player.");
+    }
+    let (card, name) = (target.card().to_owned(), target.name.clone());
+    let now = crate::game::unix_now();
+    let until = match (kind, minutes) {
+        ("kick", _) => now + KICK_SECONDS,
+        (_, 0) => 0,
+        (_, u64::MAX) => u64::MAX,
+        (_, minutes) => now + minutes * 60,
+    };
+    let before = game.sanctions.get(&card).copied();
+    let mut next = before.unwrap_or_default();
+    match kind {
+        "chat" => next.chat_until = until,
+        "voice" => next.voice_until = until,
+        // A kick never shortens a ban that is already running.
+        _ => {
+            next.ban_until = if kind == "kick" {
+                next.ban_until.max(until)
+            } else {
+                until
+            }
+        }
+    }
+    game.sanctions.insert(card.clone(), next);
+    game.sanctions
+        .retain(|_, s| s.chat_until.max(s.voice_until).max(s.ban_until) > now);
+    // Nothing takes effect unless both the limits file and the audit entry are written.
+    let saved = serde_json::to_vec_pretty(&game.sanctions)
+        .map_err(io::Error::other)
+        .and_then(|bytes| {
+            crate::accounts::write_private(&state.config.data_dir.join("sanctions.json"), &bytes)
+        })
+        .and_then(|()| {
+            crate::audit::record(
+                &state.config.data_dir,
+                &staff,
+                &format!("{kind}:{}", input["minutes"]),
+                &format!("{name} ({card})"),
+            )
+        });
+    if let Err(cause) = saved {
+        eprintln!("Limit could not be saved: {cause}");
+        match before {
+            Some(before) => game.sanctions.insert(card, before),
+            None => game.sanctions.remove(&card),
+        };
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Could not save that.");
+    }
+    no_store(json!({"ok": true, "limits": next}))
+}
+/// Every Chao's headline numbers, richest first, so unlikely ones stand out to staff.
+async fn panel_leaderboard(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if panel_staff(&state, &headers).is_none() {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    }
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    let mut players: Vec<&crate::game::Player> = game.players.values().collect();
+    players.sort_by(|a, b| b.rings.cmp(&a.rings).then_with(|| a.id.cmp(&b.id)));
+    let rows: Vec<Value> = players
+        .into_iter()
+        .take(100)
+        .map(|p| {
+            json!({"id": p.id, "name": p.name, "admin": p.admin,
+                "account": accounts.by_card(p.card()).map(|a| &a.username),
+                "online": p.connections > 0, "rings": p.rings,
+                "levels": p.stats.values().map(|s| u64::from(s.level)).sum::<u64>(),
+                "bestRaceMs": p.best_race_ms, "racesCompleted": p.races_completed,
+                "missionsCompleted": p.missions_completed})
+        })
+        .collect();
+    no_store(json!({ "players": rows }))
+}
+/// The staff member's own Chao that is out in the game right now, if any.
+fn staff_chao(state: &AppState, game: &Game, staff: &str) -> Option<String> {
+    let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    let card = &accounts.find(staff)?.card_hash;
+    game.players
+        .values()
+        .find(|p| p.connections > 0 && p.card() == card)
+        .map(|p| p.id.clone())
+}
+/// Hides or shows the staff member's own Chao to other players in its room.
+async fn panel_invisible(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some((staff, _)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let Some(on) = input["on"].as_bool() else {
+        return error(StatusCode::BAD_REQUEST, "Say on or off.");
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(own) = staff_chao(&state, &game, &staff) else {
+        return error(
+            StatusCode::CONFLICT,
+            "Your Chao is not in the game right now.",
+        );
+    };
+    if let Err(cause) = crate::audit::record(
+        &state.config.data_dir,
+        &staff,
+        if on { "invisible-on" } else { "invisible-off" },
+        &own,
+    ) {
+        eprintln!("Audit log write failed: {cause}");
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Could not save that.");
+    }
+    if on {
+        game.invisible.insert(own);
+    } else {
+        game.invisible.remove(&own);
+    }
+    no_store(json!({"ok": true, "invisible": on}))
+}
+/// Teleport to a player: tells the staff member's own game where that player is with a
+/// `staff-goto` event (room, and the player's last Chao pose when there is one). The game
+/// moves its own Chao; the server only relays where to. A follow is this call repeated.
+async fn panel_goto(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let Some((staff, _)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(target) = input["playerId"]
+        .as_str()
+        .and_then(|id| game.players.get(id))
+        .filter(|p| p.connections > 0)
+    else {
+        return error(StatusCode::NOT_FOUND, "That player is not online.");
+    };
+    let message = json!({"type": "event", "kind": "staff-goto", "room": target.zone,
+        "pose": target.chao_pose, "targetId": target.id, "targetName": target.name});
+    let Some(own) = staff_chao(&state, &game, &staff) else {
+        return error(
+            StatusCode::CONFLICT,
+            "Your Chao is not in the game right now.",
+        );
+    };
+    // A follow repeats this call; only the first of a run is worth an audit line.
+    if input["following"] != true
+        && let Err(cause) = crate::audit::record(
+            &state.config.data_dir,
+            &staff,
+            "goto",
+            &format!("{} ({})", message["targetName"], message["targetId"]),
+        )
+    {
+        eprintln!("Audit log write failed: {cause}");
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Could not save that.");
+    }
+    game.events.push(crate::game::Event {
+        target: Some(own),
+        message,
+    });
+    publish_events(&state, &mut game);
+    no_store(json!({"ok": true}))
+}
+/// The recent chat lines, oldest first.
+async fn panel_chat(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if panel_staff(&state, &headers).is_none() {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    }
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    no_store(json!({ "lines": game.chat_log }))
+}
+async fn panel_chat_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some((staff, _)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(line) = input["line"].as_u64().and_then(|l| game.delete_chat(l)) else {
+        return error(StatusCode::NOT_FOUND, "No such line.");
+    };
+    publish_events(&state, &mut game);
+    drop(game);
+    // The audit entry keeps the deleted words, so a delete can be reviewed.
+    if let Err(cause) = crate::audit::record(
+        &state.config.data_dir,
+        &staff,
+        "chat-delete",
+        &line.to_string(),
+    ) {
+        eprintln!("Audit log write failed: {cause}");
+    }
+    no_store(json!({"ok": true}))
+}
+/// A listen-in counts as one sitting while its polls are this close together.
+const LISTEN_GAP: Duration = Duration::from_secs(10);
+
+/// Listen in on one room's voice: the frames after `after`, polled a few times a second.
+/// Each new sitting (or change of room) is written to the audit log before any audio is given.
+async fn panel_voice(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some((staff, _)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let room = query.get("room").cloned().unwrap_or_default();
+    if room.is_empty()
+        || room.len() > 40
+        || !room
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return error(StatusCode::BAD_REQUEST, "Name a room.");
+    }
+    let after = query
+        .get("after")
+        .and_then(|a| a.parse::<u64>().ok())
+        .unwrap_or(0);
+    let now = std::time::Instant::now();
+    let fresh = {
+        let mut listens = state
+            .panel_listens
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let old = listens.insert(staff.clone(), (room.clone(), now));
+        !old.is_some_and(|(was, at)| was == room && now.duration_since(at) < LISTEN_GAP)
+    };
+    if fresh
+        && let Err(cause) =
+            crate::audit::record(&state.config.data_dir, &staff, "voice-listen", &room)
+    {
+        eprintln!("Audit log write failed: {cause}");
+        state
+            .panel_listens
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&staff);
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not start listening.",
+        );
+    }
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    game.voice_tap_until = crate::game::unix_now() + LISTEN_GAP.as_secs();
+    let frames: Vec<&Value> = game
+        .voice_tap
+        .iter()
+        .filter(|f| f["room"] == room.as_str() && f["frame"].as_u64().is_some_and(|n| n > after))
+        .collect();
+    no_store(json!({ "frames": frames }))
+}
 /// The login screen's delete: copies profiles.json aside first, then removes the Chao for good.
 async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(token) = bearer(&headers) else {
@@ -1772,6 +2276,14 @@ async fn upgrade(
     let Some(id) = id else {
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
+    if state
+        .game
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .banned(&id)
+    {
+        return error(StatusCode::FORBIDDEN, "This account is banned.");
+    }
     let tiny = query.tiny == Some(1);
     if tiny && !phone_agent(&headers) {
         return error(StatusCode::FORBIDDEN, "Tiny Chao Garden is on your phone.");
@@ -1923,6 +2435,10 @@ async fn handle_socket(
         let outgoing: Option<(Message, usize)> = tokio::select! {
             _ = shutdown.changed() => break,
             _ = snapshots.tick() => {
+                if state.game.lock().unwrap_or_else(|p| p.into_inner()).banned(&id) {
+                    let _ = send_bounded(&mut writer, Message::Close(Some(CloseFrame { code: 4003, reason: "Removed by a moderator.".into() })), &state).await;
+                    break;
+                }
                 if !observer && state.game.lock().unwrap_or_else(|p| p.into_inner()).benched.contains(&id) {
                     let _ = send_bounded(&mut writer, Message::Close(Some(CloseFrame { code: 4001, reason: "Another Chao from this memory card is out now.".into() })), &state).await;
                     break;
@@ -2171,6 +2687,412 @@ mod account_tests {
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
+    }
+
+    async fn panel(
+        app: &Router,
+        path: &str,
+        header_name: &str,
+        value: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let request = match &body {
+            Some(_) => axum::http::Request::post(path),
+            None => axum::http::Request::get(path),
+        }
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header_name, value)
+        .body(axum::body::Body::from(
+            body.map(|b| b.to_string()).unwrap_or_default(),
+        ))
+        .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_panel_opens_only_for_staff_with_password_and_their_own_key() {
+        use crate::accounts::Role;
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        let app = router(state.clone());
+        for name in ["Modder", "Player"] {
+            let (_, made) = post(&app, "/api/session", json!({"name": "Test"})).await;
+            let (status, _) = post(
+                &app,
+                "/api/account/register",
+                json!({"username": name, "email": format!("{name}@example.com"), "password": "correct horse", "card": made["card"]}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let set = |name: &str, role| state.accounts.lock().unwrap().set_role(name, role).unwrap();
+        let panel_key = set("modder", Some(Role::Moderator)).unwrap();
+        let sign_in = |login: &'static str, password: &'static str, sent: String| {
+            let app = app.clone();
+            async move {
+                panel(
+                    &app,
+                    "/api/panel/login",
+                    "x-admin-key",
+                    &sent,
+                    Some(json!({"login": login, "password": password})),
+                )
+                .await
+            }
+        };
+        // A player with a real staff key, a wrong password, a wrong key and no key all fail alike.
+        for (login, password, sent) in [
+            ("player", "correct horse", panel_key.clone()),
+            ("modder", "wrong horse", panel_key.clone()),
+            ("modder", "correct horse", "0".repeat(64)),
+            ("modder", "correct horse", String::new()),
+        ] {
+            let (status, body) = sign_in(login, password, sent).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert_eq!(body["error"], "Wrong login.");
+        }
+        let (status, body) = sign_in("modder", "correct horse", panel_key.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["role"], "moderator");
+        let token = body["token"].as_str().unwrap().to_owned();
+        let (status, me) = panel(&app, "/api/panel/me", "x-panel-token", &token, None).await;
+        assert_eq!(
+            (status, me["username"].as_str()),
+            (StatusCode::OK, Some("Modder"))
+        );
+        let (status, live) = panel(&app, "/api/panel/status", "x-panel-token", &token, None).await;
+        assert_eq!((status, live["online"].as_u64()), (StatusCode::OK, Some(0)));
+        // No token, a made-up token and the key itself open nothing.
+        for (name, value) in [
+            ("x-panel-token", "nope".to_owned()),
+            ("x-admin-key", panel_key.clone()),
+        ] {
+            for path in ["/api/panel/me", "/api/panel/status"] {
+                let (status, _) = panel(&app, path, name, &value, None).await;
+                assert_eq!(status, StatusCode::NOT_FOUND);
+            }
+        }
+        // Limits: a moderator mutes, kicks and bans a player, but not for good and not staff.
+        let (_, made) = post(&app, "/api/session", json!({"name": "Loud"})).await;
+        let loud = made["player"]["id"].as_str().unwrap().to_owned();
+        let act = |id: String, kind: &'static str, minutes: Value| {
+            let (app, token) = (app.clone(), token.clone());
+            async move {
+                panel(
+                    &app,
+                    "/api/panel/sanction",
+                    "x-panel-token",
+                    &token,
+                    Some(json!({"playerId": id, "kind": kind, "minutes": minutes})),
+                )
+                .await
+            }
+        };
+        assert_eq!(act(loud.clone(), "chat", json!(10)).await.0, StatusCode::OK);
+        {
+            let mut game = state.game.lock().unwrap();
+            assert!(game.connect(&loud));
+            game.drain_events();
+            game.action(
+                &loud,
+                &json!({"type":"action","action":"chat","channel":"world","text":"hi"}),
+            );
+            let events = game.drain_events();
+            assert!(events.iter().all(|e| e.message["text"] != "hi"));
+            // Lifted, the same line goes out.
+            game.sanctions.clear();
+            game.time += 2000.;
+            game.action(
+                &loud,
+                &json!({"type":"action","action":"chat","channel":"world","text":"hi"}),
+            );
+            assert!(
+                game.drain_events()
+                    .iter()
+                    .any(|e| e.message["text"] == "hi")
+            );
+            game.sanctions =
+                serde_json::from_slice(&fs::read(dir.path().join("sanctions.json")).unwrap())
+                    .unwrap();
+            assert!(!game.banned(&loud));
+        }
+        assert_eq!(
+            act(loud.clone(), "ban", json!("forever")).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            act(loud.clone(), "ban", json!(0)).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            act(loud.clone(), "fly", json!(1)).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            act("nobody".into(), "chat", json!(1)).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            act(loud.clone(), "kick", Value::Null).await.0,
+            StatusCode::OK
+        );
+        assert!(state.game.lock().unwrap().banned(&loud));
+        let (status, list) = panel(&app, "/api/panel/players", "x-panel-token", &token, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(list["players"][0]["limits"]["chatUntil"].as_u64().unwrap() > 0);
+        // The limits survive a restart; the moderator's own card can't be limited by a moderator.
+        let again = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        assert!(again.game.lock().unwrap().banned(&loud));
+        let own = {
+            let accounts = state.accounts.lock().unwrap();
+            let card = accounts.find("modder").unwrap().card_hash.clone();
+            let game = state.game.lock().unwrap();
+            game.players
+                .values()
+                .find(|p| p.card() == card)
+                .unwrap()
+                .id
+                .clone()
+        };
+        assert_eq!(act(own, "chat", json!(1)).await.0, StatusCode::FORBIDDEN);
+        // Chat log and delete: a line is listed, deleted once, and everyone is told to drop it.
+        {
+            let mut game = state.game.lock().unwrap();
+            game.sanctions.clear();
+            game.time += 2000.;
+            game.action(
+                &loud,
+                &json!({"type":"action","action":"chat","channel":"world","text":"rude words"}),
+            );
+            game.drain_events();
+        }
+        let (_, chat) = panel(&app, "/api/panel/chat", "x-panel-token", &token, None).await;
+        let last = chat["lines"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(
+            (last["text"].as_str(), last["fromId"].as_str()),
+            (Some("rude words"), Some(loud.as_str()))
+        );
+        let mut watching = state.events.subscribe();
+        let delete = Some(json!({"line": last["line"]}));
+        let (status, _) = panel(
+            &app,
+            "/api/panel/chat/delete",
+            "x-panel-token",
+            &token,
+            delete.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let told = watching.try_recv().unwrap();
+        assert_eq!(
+            (told.message["kind"].as_str(), told.target.as_deref()),
+            (Some("chat-delete"), Some(loud.as_str()))
+        );
+        let (status, _) = panel(
+            &app,
+            "/api/panel/chat/delete",
+            "x-panel-token",
+            &token,
+            delete,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (_, chat) = panel(&app, "/api/panel/chat", "x-panel-token", &token, None).await;
+        assert!(
+            chat["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| l["text"] != "rude words")
+        );
+        // Staff powers need the staff member's own Chao in the game.
+        let goto = Some(json!({"playerId": loud}));
+        let (status, _) = panel(
+            &app,
+            "/api/panel/goto",
+            "x-panel-token",
+            &token,
+            goto.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let own = {
+            let accounts = state.accounts.lock().unwrap();
+            let card = accounts.find("modder").unwrap().card_hash.clone();
+            let mut game = state.game.lock().unwrap();
+            game.sanctions.clear();
+            let own = game
+                .players
+                .values()
+                .find(|p| p.card() == card)
+                .unwrap()
+                .id
+                .clone();
+            assert!(game.connect(&own));
+            game.drain_events();
+            own
+        };
+        let seen = |viewer: &str, who: &str| {
+            let game = state.game.lock().unwrap();
+            game.snapshot(viewer)["players"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["id"] == who)
+        };
+        assert!(seen(&loud, &own));
+        let (status, _) = panel(
+            &app,
+            "/api/panel/invisible",
+            "x-panel-token",
+            &token,
+            Some(json!({"on": true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!seen(&loud, &own) && seen(&own, &own) && seen(&own, &loud));
+        let (_, list) = panel(&app, "/api/panel/players", "x-panel-token", &token, None).await;
+        assert!(
+            list["players"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["id"] == own.as_str() && p["invisible"] == true)
+        );
+        let mut watching = state.events.subscribe();
+        let (status, _) = panel(&app, "/api/panel/goto", "x-panel-token", &token, goto).await;
+        assert_eq!(status, StatusCode::OK);
+        let told = watching.try_recv().unwrap();
+        assert_eq!(told.target.as_deref(), Some(own.as_str()));
+        assert_eq!(
+            (
+                told.message["kind"].as_str(),
+                told.message["targetId"].as_str()
+            ),
+            (Some("staff-goto"), Some(loud.as_str()))
+        );
+        assert_eq!(
+            told.message["room"],
+            state.game.lock().unwrap().players[&loud].zone.as_str()
+        );
+        let (status, _) = panel(
+            &app,
+            "/api/panel/invisible",
+            "x-panel-token",
+            &token,
+            Some(json!({"on": false})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(seen(&loud, &own));
+        // Leaderboard: richest first, with the account name.
+        state
+            .game
+            .lock()
+            .unwrap()
+            .players
+            .get_mut(&loud)
+            .unwrap()
+            .rings = 999_999;
+        let (status, board) = panel(
+            &app,
+            "/api/panel/leaderboard",
+            "x-panel-token",
+            &token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(board["players"][0]["id"], loud.as_str());
+        assert_eq!(board["players"][0]["rings"], 999_999);
+        assert!(
+            board["players"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["account"] == "Modder")
+        );
+        // Voice listen-in: nothing is kept until staff listen; then a room's frames come back
+        // even with no Chao position, only for that room, and the sitting is logged once.
+        let speak = |state: &AppState| {
+            let mut game = state.game.lock().unwrap();
+            game.time += 100.;
+            game.action(
+                &loud,
+                &json!({"type":"action","action":"voice","data":"AAAA"}),
+            );
+        };
+        speak(&state);
+        assert!(state.game.lock().unwrap().voice_tap.is_empty());
+        let room = state.game.lock().unwrap().players[&loud].zone.clone();
+        let listen = format!("/api/panel/voice?room={room}");
+        let (status, heard) = panel(&app, &listen, "x-panel-token", &token, None).await;
+        assert_eq!(
+            (status, heard["frames"].as_array().unwrap().len()),
+            (StatusCode::OK, 0)
+        );
+        speak(&state);
+        let (_, heard) = panel(&app, &listen, "x-panel-token", &token, None).await;
+        assert_eq!(heard["frames"][0]["data"], "AAAA");
+        let after = format!("{listen}&after={}", heard["frames"][0]["frame"]);
+        let (_, heard) = panel(&app, &after, "x-panel-token", &token, None).await;
+        assert_eq!(heard["frames"].as_array().unwrap().len(), 0);
+        let (_, heard) = panel(
+            &app,
+            "/api/panel/voice?room=elsewhere",
+            "x-panel-token",
+            &token,
+            None,
+        )
+        .await;
+        assert_eq!(heard["frames"].as_array().unwrap().len(), 0);
+        let (_, live) = panel(&app, "/api/panel/status", "x-panel-token", &token, None).await;
+        assert!(live.get("listening").is_none());
+        for (path, body) in [
+            ("/api/panel/players", None),
+            ("/api/panel/sanction", Some(json!({}))),
+            ("/api/panel/invisible", Some(json!({"on": true}))),
+            ("/api/panel/goto", Some(json!({"playerId": "x"}))),
+            ("/api/panel/chat", None),
+            ("/api/panel/leaderboard", None),
+            ("/api/panel/chat/delete", Some(json!({"line": 1}))),
+            ("/api/panel/voice?room=x", None),
+        ] {
+            let (status, _) = panel(&app, path, "x-panel-token", "nope", body).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
+        // An idle session ends.
+        for (_, used) in state.panel_sessions.lock().unwrap().values_mut() {
+            *used -= PANEL_IDLE;
+        }
+        let (status, _) = panel(&app, "/api/panel/me", "x-panel-token", &token, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // Removing the role ends an open session at once.
+        let (_, body) = sign_in("modder", "correct horse", panel_key.clone()).await;
+        let token = body["token"].as_str().unwrap().to_owned();
+        set("modder", None);
+        let (status, _) = panel(&app, "/api/panel/me", "x-panel-token", &token, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let log = fs::read_to_string(dir.path().join("audit.log")).unwrap();
+        assert_eq!(log.matches("\"panel-login\"").count(), 2);
+        assert_eq!(log.matches("\"chat:10\"").count(), 1);
+        assert_eq!(log.matches("\"kick:null\"").count(), 1);
+        assert_eq!(log.matches("chat-delete").count(), 1);
+        assert!(log.contains("rude words"));
+        assert_eq!(log.matches("voice-listen").count(), 2);
+        assert_eq!(log.matches("invisible-o").count(), 2);
+        assert_eq!(log.matches("\"goto\"").count(), 1);
+        assert_eq!(log.matches("panel-login-refused").count(), 4);
+        assert!(!log.contains(&panel_key));
     }
 
     #[tokio::test]

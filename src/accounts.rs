@@ -22,6 +22,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Staff rank on an account. Ordered: an admin outranks a moderator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Moderator,
+    Admin,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Account {
     pub username: String,
@@ -33,6 +41,12 @@ pub struct Account {
     key_salt: Vec<u8>,
     nonce: Vec<u8>,
     sealed_card: Vec<u8>,
+    /// Absent for an ordinary player. Never set from a sign-up or login request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
+    /// Hash of this person's panel key. The key itself is shown once, when issued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key_hash: Option<String>,
 }
 
 pub struct Accounts {
@@ -110,7 +124,17 @@ impl Account {
             key_salt,
             nonce,
             sealed_card,
+            role: None,
+            key_hash: None,
         })
+    }
+    /// True when `key` is this account's own panel key.
+    pub fn key_ok(&self, key: &str) -> bool {
+        key.len() <= 128
+            && self
+                .key_hash
+                .as_deref()
+                .is_some_and(|hash| hash == crate::game::hash_token(key))
     }
     /// The card code, when `password` is right. Slow on purpose.
     pub fn open(&self, password: &str) -> Option<String> {
@@ -167,6 +191,10 @@ impl Accounts {
             .get(&login)
             .or_else(|| self.list.values().find(|a| a.email.to_lowercase() == login))
     }
+    /// The account a memory card (by its hash) belongs to.
+    pub fn by_card(&self, card_hash: &str) -> Option<&Account> {
+        self.list.values().find(|a| a.card_hash == card_hash)
+    }
     /// Why a new account can't be made, if it can't.
     /// The username of the account a memory card belongs to.
     pub fn username_for_card(&self, card_hash: &str) -> Option<&str> {
@@ -222,8 +250,13 @@ impl Accounts {
             .flatten()
     }
     /// Swaps in a rebuilt account (same username), putting the old one back if saving fails.
-    pub fn replace(&mut self, account: Account) -> io::Result<()> {
+    /// A staff role stays with the account (a password reset rebuilds the account).
+    pub fn replace(&mut self, mut account: Account) -> io::Result<()> {
         let key = account.username.to_lowercase();
+        if let Some(old) = self.list.get(&key) {
+            account.role = old.role;
+            account.key_hash = old.key_hash.clone();
+        }
         let old = self.list.insert(key.clone(), account);
         self.save().inspect_err(|_| match &old {
             Some(old) => {
@@ -233,6 +266,29 @@ impl Accounts {
                 self.list.remove(&key);
             }
         })
+    }
+    /// Gives a staff role with a fresh panel key (returned once, any older key stops
+    /// working), or with `None` removes the role and the key. `Ok(None)` when no such
+    /// account exists or the role was removed.
+    pub fn set_role(&mut self, login: &str, role: Option<Role>) -> io::Result<Option<String>> {
+        let Some(name) = self.find(login).map(|a| a.username.to_lowercase()) else {
+            return Ok(None);
+        };
+        let panel_key = role.map(|_| {
+            let mut bytes = [0u8; 32];
+            OsRng.fill_bytes(&mut bytes);
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        });
+        let Some(account) = self.list.get_mut(&name) else {
+            return Ok(None);
+        };
+        let old = account.clone();
+        account.role = role;
+        account.key_hash = panel_key.as_deref().map(crate::game::hash_token);
+        self.save().inspect_err(|_| {
+            self.list.insert(name, old);
+        })?;
+        Ok(panel_key)
     }
     pub fn insert(&mut self, account: Account) -> io::Result<()> {
         let key = account.username.to_lowercase();
@@ -314,6 +370,46 @@ mod tests {
         assert!(list.taken("new", "r@example.com", "other").is_some());
         assert!(list.taken("new", "x@y.z", &hash).is_some());
         assert!(list.taken("new", "x@y.z", "other").is_none());
+    }
+
+    #[test]
+    fn roles_are_absent_by_default_and_survive_reload_and_replace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut list = Accounts::load(dir.path().into()).unwrap();
+        list.insert(Account::new("Rider", "r@example.com", "correct horse", "card").unwrap())
+            .unwrap();
+        assert_eq!(list.find("rider").unwrap().role, None);
+        let plain = fs::read_to_string(dir.path().join("accounts.json")).unwrap();
+        assert!(!plain.contains("role"));
+        assert!(
+            list.set_role("nobody", Some(Role::Admin))
+                .unwrap()
+                .is_none()
+        );
+        let first = list
+            .set_role("R@Example.com", Some(Role::Moderator))
+            .unwrap()
+            .unwrap();
+        let panel_key = list
+            .set_role("rider", Some(Role::Moderator))
+            .unwrap()
+            .unwrap();
+        assert_eq!(panel_key.len(), 64);
+        // A new key cancels the one before it; the file holds neither.
+        assert!(!list.find("rider").unwrap().key_ok(&first));
+        assert!(list.find("rider").unwrap().key_ok(&panel_key));
+        assert!(!list.find("rider").unwrap().key_ok(""));
+        let stored = fs::read_to_string(dir.path().join("accounts.json")).unwrap();
+        assert!(!stored.contains(&panel_key) && !stored.contains(&first));
+        list.replace(Account::new("Rider", "r@example.com", "new password", "card2").unwrap())
+            .unwrap();
+        let mut list = Accounts::load(dir.path().into()).unwrap();
+        assert_eq!(list.find("rider").unwrap().role, Some(Role::Moderator));
+        assert!(list.find("rider").unwrap().key_ok(&panel_key));
+        assert!(Role::Admin > Role::Moderator);
+        assert!(list.set_role("rider", None).unwrap().is_none());
+        assert_eq!(list.find("rider").unwrap().role, None);
+        assert!(!list.find("rider").unwrap().key_ok(&panel_key));
     }
 
     #[test]

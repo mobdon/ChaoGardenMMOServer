@@ -407,11 +407,29 @@ pub struct Mission {
     pub enemies: Vec<Enemy>,
     pub rings: Vec<Ring>,
 }
+/// Staff limits on one memory card, each as the Unix second it ends
+/// (`u64::MAX` = until lifted, 0 = none).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Sanction {
+    pub chat_until: u64,
+    pub voice_until: u64,
+    pub ban_until: u64,
+}
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
 fn mutes(listener: &Player, speaker: &str) -> bool {
     listener.profile_extra["muted"]
         .as_array()
         .is_some_and(|l| l.iter().any(|v| v == speaker))
 }
+/// Chat lines kept for staff.
+const CHAT_LOG: usize = 200;
+/// Voice frames kept while staff listen in (60 ms each).
+const VOICE_TAP: usize = 400;
 /// Game units around a Chao within which others hear its voice.
 const VOICE_RADIUS: f64 = 150.;
 #[derive(Clone, Debug)]
@@ -452,6 +470,18 @@ pub struct Game {
     pub players: BTreeMap<String, Player>,
     /// Chao swapped back to their memory card while still connected; their sockets close.
     pub benched: BTreeSet<String>,
+    /// Staff limits by memory card (`Player::card`). Kept in `sanctions.json` by the service.
+    pub sanctions: BTreeMap<String, Sanction>,
+    /// Staff Chao that other players are not sent (memory only; off again after a restart).
+    pub invisible: BTreeSet<String>,
+    /// The last `CHAT_LOG` chat lines, for staff (memory only).
+    pub chat_log: std::collections::VecDeque<Value>,
+    chat_lines: u64,
+    /// Voice frames kept for staff listening in, only while `voice_tap_until`
+    /// (Unix seconds) is ahead of now. Nothing is written to disk.
+    pub voice_tap: std::collections::VecDeque<Value>,
+    pub voice_tap_until: u64,
+    voice_frames: u64,
     pub tokens: BTreeMap<String, String>,
     pub events: Vec<Event>,
     pub dirty: bool,
@@ -534,6 +564,13 @@ impl Game {
             terrains,
             players: BTreeMap::new(),
             benched: BTreeSet::new(),
+            sanctions: BTreeMap::new(),
+            invisible: BTreeSet::new(),
+            chat_log: Default::default(),
+            chat_lines: 0,
+            voice_tap: Default::default(),
+            voice_tap_until: 0,
+            voice_frames: 0,
             tokens: BTreeMap::new(),
             events: vec![],
             dirty: false,
@@ -976,6 +1013,41 @@ impl Game {
         };
         self.players.insert(id, player);
         result
+    }
+    /// Staff delete of one chat line: gone from the log, and every connected
+    /// player is told to drop it. False when the line is not in the log.
+    pub fn delete_chat(&mut self, line: u64) -> Option<Value> {
+        let at = self.chat_log.iter().position(|l| l["line"] == line)?;
+        let removed = self.chat_log.remove(at)?;
+        let targets: Vec<String> = self
+            .players
+            .values()
+            .filter(|o| o.connections > 0)
+            .map(|o| o.id.clone())
+            .collect();
+        for target in targets {
+            self.events.push(Event {
+                target: Some(target),
+                message: json!({"type":"event","kind":"chat-delete","line":line}),
+            });
+        }
+        Some(removed)
+    }
+    /// The limits on a player's memory card that are still running.
+    pub fn sanction(&self, p: &Player) -> Sanction {
+        let now = unix_now();
+        let live = |until: u64| if until > now { until } else { 0 };
+        let s = self.sanctions.get(p.card()).copied().unwrap_or_default();
+        Sanction {
+            chat_until: live(s.chat_until),
+            voice_until: live(s.voice_until),
+            ban_until: live(s.ban_until),
+        }
+    }
+    pub fn banned(&self, id: &str) -> bool {
+        self.players
+            .get(id)
+            .is_some_and(|p| self.sanction(p).ban_until > 0)
     }
     pub fn player_for_token(&self, token: &str) -> Option<&Player> {
         if token.len() > 256 {
@@ -2218,8 +2290,24 @@ impl Game {
         if text.is_empty() || !p.cooldown("chat", self.time, 1000.) {
             return;
         }
-        let msg = json!({"type":"event","kind":"chat","channel":channel,
+        if self.sanction(p).chat_until > 0 {
+            self.events.push(Event {
+                target: Some(p.id.clone()),
+                message: json!({"type":"event","kind":"chat","channel":channel,
+                    "fromId":"","fromName":"Moderator","text":"Your chat is muted."}),
+            });
+            return;
+        }
+        self.chat_lines += 1;
+        let msg = json!({"type":"event","kind":"chat","channel":channel,"line":self.chat_lines,
             "fromId":p.id,"fromName":p.name,"text":text});
+        if self.chat_log.len() == CHAT_LOG {
+            self.chat_log.pop_front();
+        }
+        self.chat_log.push_back(
+            json!({"line":self.chat_lines,"at":unix_now(),"channel":channel,
+            "room":p.zone,"fromId":p.id,"fromName":p.name,"text":text}),
+        );
         let world = channel == "world";
         let mut targets: Vec<String> = self
             .players
@@ -2283,11 +2371,22 @@ impl Game {
         let Some(data) = message["data"].as_str() else {
             return;
         };
-        let pos = |q: &Player| Some((q.chao_pose["x"].as_f64()?, q.chao_pose["z"].as_f64()?));
-        let Some((x, z)) = pos(p) else { return };
-        if data.is_empty() || data.len() > 1400 {
+        if data.is_empty() || data.len() > 1400 || self.sanction(p).voice_until > 0 {
             return;
         }
+        if self.voice_tap_until > unix_now() {
+            self.voice_frames += 1;
+            if self.voice_tap.len() == VOICE_TAP {
+                self.voice_tap.pop_front();
+            }
+            self.voice_tap
+                .push_back(json!({"frame":self.voice_frames,"room":p.zone,
+                "fromId":p.id,"fromName":p.name,"data":data}));
+        } else {
+            self.voice_tap.clear();
+        }
+        let pos = |q: &Player| Some((q.chao_pose["x"].as_f64()?, q.chao_pose["z"].as_f64()?));
+        let Some((x, z)) = pos(p) else { return };
         let near: Vec<(String, f64)> = self
             .players
             .values()
@@ -2397,7 +2496,7 @@ impl Game {
             .players
             .get(self_id)
             .and_then(|p| activities::public_race(self, p));
-        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || ((p.connections > 0 || p.watch.is_some() || competition::reserved(p)) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
+        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || (!self.invisible.contains(&p.id) && (p.connections > 0 || p.watch.is_some() || competition::reserved(p)) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
             "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().filter(|_|mission_visible).map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
             "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
             "settings": viewer.map_or(Value::Null, |v| v.profile_extra["settings"].clone()),

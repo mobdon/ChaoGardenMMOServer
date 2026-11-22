@@ -551,6 +551,73 @@ face rule, head ball, body families with morphs, colour table, the full
 motion set and eggs are not converted yet; Steam folder only, no disc image;
 not run on a hosted server.
 
+## Staff panel groundwork (2026-11-22)
+Base commit: f80efa8. Changed paths: `src/accounts.rs`, `src/audit.rs`,
+`src/lib.rs`, `src/main.rs`, `src/service.rs`. Accounts carry an optional
+staff role (moderator, admin) and the hash of that person's own panel key;
+both survive a password reset. `chao-game-server staff <login>
+<admin|moderator|none>` sets a role on the machine and prints a fresh key
+once. `POST /api/panel/login` (password in the body, key in `x-admin-key`)
+gives a 15-minute idle panel token; `GET /api/panel/me` and
+`GET /api/panel/status` take it in `x-panel-token` and answer 404 without
+one. Sign-ins and refusals go to an append-only `audit.log` in the data
+folder. Tests: `cargo test` 316 pass, clippy and fmt clean (tested offline).
+Limits: no moderation actions, voice listen-in or panel page yet; the staff
+command edits `accounts.json` and needs the server stopped; sessions end on
+restart; one shared `CHAO_ADMIN_KEY` scheme on another branch is not merged
+with this one; not run on a hosted server.
+
+## Staff limits: mute, kick, ban (2026-11-22)
+Builds on the staff panel groundwork above. Changed paths: `src/game.rs`,
+`src/service.rs`, `src/accounts.rs`. Limits are kept per memory card in
+`sanctions.json` (chat mute, voice mute, ban, each with an end time).
+`GET /api/panel/players` lists who is online with room, account, role and
+running limits; `POST /api/panel/sanction` sets or lifts one. A muted card's
+chat and voice are not relayed; a banned card's sockets close (code 4003)
+and new sockets get 403; a kick is a 60-second ban. A moderator's limit is
+at most 7 days; permanent limits and lifting a ban need an admin; staff
+cannot act on equal or higher staff or on the owner's Chao. A limit only
+takes effect once the file and the audit entry are written. Tests: `cargo
+test` 316 pass, clippy and fmt clean (tested offline). Limits: a ban is per
+card, a new account gets around it; no chat log, voice listen-in or panel
+page yet; not run on a hosted server.
+
+## Staff chat log and voice listen-in (2026-11-22)
+Builds on the two staff entries above. Changed paths: `src/game.rs`,
+`src/service.rs`. The game keeps the last 200 chat lines in memory, each
+with a line number that chat events now carry. `GET /api/panel/chat` lists
+them; `POST /api/panel/chat/delete` removes one, sends every connected
+player a `chat-delete` event and records the deleted line in the audit log.
+`GET /api/panel/voice?room=&after=` returns a room's recent voice frames
+for polling; frames are kept (memory only, 400 at most) only while a staff
+member is polling, and each new sitting is audited. `GET /api/panel/status`
+shows admins who is listening. Tests: `cargo test` 316 pass, clippy and fmt
+clean (tested offline). Limits: the game page does not yet act on
+`chat-delete`; a room is the zone name, so race courses and karate bouts
+are not told apart; polling adds a fraction of a second of delay; no panel
+page yet; not run on a hosted server.
+
+## Staff leaderboard (2026-11-22)
+Changed path: `src/service.rs`. `GET /api/panel/leaderboard` lists up to 100
+Chao by rings with account, total stat levels, best race time, races and
+missions, for staff only. Client `www/panel/index.html` shows it with
+status, players, chat and voice. Tests: `cargo test` 316 pass, clippy and
+fmt clean; the panel page was driven headless against a local server with
+two throwaway accounts (sign-in, wrong key, chat delete, mute, kick with
+close code 4003, voice heard, leaderboard). Limits: ranks by rings only;
+not run on a hosted server.
+
+## Staff invisible mode and go-to relay (2026-11-22)
+Changed paths: `src/game.rs`, `src/service.rs`. `POST /api/panel/invisible
+{on}` hides the staff member's own connected Chao from every other
+player's snapshot (memory only, off after a restart). `POST /api/panel/goto
+{playerId, following?}` sends the staff member's own socket a `staff-goto`
+event `{room, pose, targetId, targetName}` with the target's room and last
+Chao pose (null when none); the game moves its own Chao, the server does
+not. Both are audited (a follow's repeats are not). Tests: `cargo test` 316
+pass, clippy and fmt clean; headless page check with throwaway accounts.
+Limits: no game build handles `staff-goto` yet; an invisible Chao that
+chats or talks is still named to the room.
 ## Test-only stats and story override (2026-11-22, branch `claude/project-thread-h0midt`)
 
 Base `f80efa8` (main). Changed paths: `src/service.rs`, `src/accounts.rs`,

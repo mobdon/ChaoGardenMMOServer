@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod activities;
+pub mod audit;
 pub mod behaviour;
 pub mod black_market;
 pub mod body;
