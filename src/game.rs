@@ -585,10 +585,11 @@ impl Game {
             boosting: false,
             boost_energy: 100.,
             gear: Gear {
-                footwear: if admin && data["gear"]["footwear"] == "shadow-air-shoes" {
-                    Some("shadow-air-shoes".into())
-                } else {
-                    None
+                footwear: match data["gear"]["footwear"].as_str() {
+                    Some(shoes @ ("shadow-air-shoes" | "sonic-light-shoes")) if admin => {
+                        Some(shoes.into())
+                    }
+                    _ => None,
                 },
                 hands: if admin && data["gear"]["hands"] == "knuckles-hammer-gloves" {
                     Some("knuckles-hammer-gloves".into())
@@ -1255,8 +1256,8 @@ impl Game {
                 }
                 if action == "equip-owner-gear" {
                     match message["item"].as_str() {
-                        Some("shadow-air-shoes") => {
-                            p.gear.footwear = Some("shadow-air-shoes".into())
+                        Some(shoes @ ("shadow-air-shoes" | "sonic-light-shoes")) => {
+                            p.gear.footwear = Some(shoes.into())
                         }
                         Some("knuckles-hammer-gloves") => {
                             p.gear.hands = Some("knuckles-hammer-gloves".into())

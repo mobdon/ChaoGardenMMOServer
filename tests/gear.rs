@@ -44,6 +44,22 @@ fn owner_gear_slots_persist_without_changing_chao_stats_or_active_mech_state() {
         after["gear"],
         json!({"footwear":"shadow-air-shoes","hands":"knuckles-hammer-gloves"})
     );
+    action(
+        &mut game,
+        &id,
+        "equip-owner-gear",
+        json!({"item":"sonic-light-shoes"}),
+    );
+    assert_eq!(
+        game.players[&id].public()["gear"]["footwear"],
+        "sonic-light-shoes"
+    );
+    action(
+        &mut game,
+        &id,
+        "equip-owner-gear",
+        json!({"item":"shadow-air-shoes"}),
+    );
     for key in [
         "stats",
         "rings",
