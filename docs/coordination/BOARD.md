@@ -596,3 +596,13 @@ clean (tested offline). Limits: the game page does not yet act on
 `chat-delete`; a room is the zone name, so race courses and karate bouts
 are not told apart; polling adds a fraction of a second of delay; no panel
 page yet; not run on a hosted server.
+
+## Staff leaderboard (2026-11-22)
+Changed path: `src/service.rs`. `GET /api/panel/leaderboard` lists up to 100
+Chao by rings with account, total stat levels, best race time, races and
+missions, for staff only. Client `www/panel/index.html` shows it with
+status, players, chat and voice. Tests: `cargo test` 316 pass, clippy and
+fmt clean; the panel page was driven headless against a local server with
+two throwaway accounts (sign-in, wrong key, chat delete, mute, kick with
+close code 4003, voice heard, leaderboard). Limits: ranks by rings only;
+not run on a hosted server.

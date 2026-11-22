@@ -549,6 +549,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/panel/status", get(panel_status))
         .route("/api/panel/players", get(panel_players))
         .route("/api/panel/sanction", post(panel_sanction))
+        .route("/api/panel/leaderboard", get(panel_leaderboard))
         .route("/api/panel/chat", get(panel_chat))
         .route("/api/panel/chat/delete", post(panel_chat_delete))
         .route("/api/panel/voice", get(panel_voice))
@@ -1615,6 +1616,29 @@ async fn panel_sanction(
     }
     no_store(json!({"ok": true, "limits": next}))
 }
+/// Every Chao's headline numbers, richest first, so unlikely ones stand out to staff.
+async fn panel_leaderboard(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if panel_staff(&state, &headers).is_none() {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    }
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    let mut players: Vec<&crate::game::Player> = game.players.values().collect();
+    players.sort_by(|a, b| b.rings.cmp(&a.rings).then_with(|| a.id.cmp(&b.id)));
+    let rows: Vec<Value> = players
+        .into_iter()
+        .take(100)
+        .map(|p| {
+            json!({"id": p.id, "name": p.name, "admin": p.admin,
+                "account": accounts.by_card(p.card()).map(|a| &a.username),
+                "online": p.connections > 0, "rings": p.rings,
+                "levels": p.stats.values().map(|s| u64::from(s.level)).sum::<u64>(),
+                "bestRaceMs": p.best_race_ms, "racesCompleted": p.races_completed,
+                "missionsCompleted": p.missions_completed})
+        })
+        .collect();
+    no_store(json!({ "players": rows }))
+}
 /// The recent chat lines, oldest first.
 async fn panel_chat(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if panel_staff(&state, &headers).is_none() {
@@ -2659,6 +2683,33 @@ mod account_tests {
                 .iter()
                 .all(|l| l["text"] != "rude words")
         );
+        // Leaderboard: richest first, with the account name.
+        state
+            .game
+            .lock()
+            .unwrap()
+            .players
+            .get_mut(&loud)
+            .unwrap()
+            .rings = 999_999;
+        let (status, board) = panel(
+            &app,
+            "/api/panel/leaderboard",
+            "x-panel-token",
+            &token,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(board["players"][0]["id"], loud.as_str());
+        assert_eq!(board["players"][0]["rings"], 999_999);
+        assert!(
+            board["players"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["account"] == "Modder")
+        );
         // Voice listen-in: nothing is kept until staff listen; then a room's frames come back
         // even with no Chao position, only for that room, and the sitting is logged once.
         let speak = |state: &AppState| {
@@ -2699,6 +2750,7 @@ mod account_tests {
             ("/api/panel/players", None),
             ("/api/panel/sanction", Some(json!({}))),
             ("/api/panel/chat", None),
+            ("/api/panel/leaderboard", None),
             ("/api/panel/chat/delete", Some(json!({"line": 1}))),
             ("/api/panel/voice?room=x", None),
         ] {
