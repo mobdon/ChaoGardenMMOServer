@@ -20,6 +20,20 @@ pub const ALL_STATS: [&str; 7] = [
     "luck",
     "intelligence",
 ];
+/// Rooms for the game's own Chao World areas (ChaoMain area numbers 0 lobby,
+/// 1 Neutral, 2 Hero, 3 Dark, 4 race, 5 race entrance, 6 Kindergarten,
+/// 9 Stadium, 10 Karate). The lobby is the MMO hub.
+pub const CHAO_WORLD_ZONES: [&str; 9] = [
+    "hub",
+    "garden",
+    "hero",
+    "dark",
+    "chao-race",
+    "race-entrance",
+    "kindergarten",
+    "stadium",
+    "chao-karate",
+];
 pub const TERRAIN_ZONES: [&str; 4] = ["hub", "garden", "hero", "dark"];
 pub const RACE_CHECKPOINTS: [(f64, f64); 5] =
     [(0., 12.), (-12., 0.), (0., -12.), (12., 0.), (0., 12.)];
@@ -95,6 +109,9 @@ pub struct Player {
     pub activity_result: Option<Value>,
     pub tiny_records: BTreeMap<String, TinyRecord>,
     pub tiny_game: Option<TinyRun>,
+    /// The player's Chao as its game draws it in a Chao World area (draw-only
+    /// for others; not saved).
+    pub chao_pose: Value,
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
     pub care: crate::care::CareState,
@@ -204,6 +221,7 @@ impl Player {
             "bestRaceMs": self.best_race_ms, "evolution": self.evolution(), "body": self.body.public(),
             "life": crate::life::public_summary(self),
             "animalParts": self.care.animal_parts, "hat": self.care.hat,
+            "chaoPose": if self.connections > 0 { self.chao_pose.clone() } else { Value::Null },
         })
     }
     pub fn profile(&self) -> Value {
@@ -586,6 +604,7 @@ impl Game {
             activity_result: None,
             tiny_records: phone::restore_records(&data["tinyRecords"]),
             tiny_game: None,
+            chao_pose: Value::Null,
             tiny_result: None,
             watch: None,
             care: crate::care::CareState::restore(data.get("care"))?,
@@ -1024,7 +1043,13 @@ impl Game {
         };
         if player.connections > 0
             && message["action"].as_str().is_some()
-            && player.cooldown("message", self.time, 80.)
+            // Pose updates (about 10 a second) have their own limit, so they
+            // never crowd out the player's other actions.
+            && if message["action"] == "chao-pose" {
+                player.cooldown("pose", self.time, 80.)
+            } else {
+                player.cooldown("message", self.time, 80.)
+            }
         {
             self.action_inner(&mut player, message);
         }
@@ -1091,6 +1116,49 @@ impl Game {
                 "Stop your Tiny Garden game before returning to other activities.",
                 "error",
             );
+            return;
+        }
+        if action == "chao-pose" {
+            // Relayed as is to the same area room; other games only draw it.
+            let pose = &message["pose"];
+            let ok = CHAO_WORLD_ZONES.contains(&p.zone.as_str())
+                && pose.as_object().is_some_and(|o| {
+                    o.len() <= 8 && o.values().all(|v| v.as_f64().is_some_and(f64::is_finite))
+                });
+            // Updates may carry only the changed keys: merged into the stored pose.
+            if ok {
+                let mut merged = p.chao_pose.as_object().cloned().unwrap_or_default();
+                merged.extend(pose.as_object().unwrap().clone());
+                if merged.len() <= 8 {
+                    p.chao_pose = Value::Object(merged);
+                }
+            }
+            return;
+        }
+        if action == "chao-world" {
+            // The game's own Chao World area the player's game is in (client
+            // sa2_boot::start_stage): one shared room per area. The game owns
+            // position and gating, so this only moves the player's room.
+            let Some(zone) = message["area"]
+                .as_str()
+                .filter(|a| CHAO_WORLD_ZONES.contains(a))
+            else {
+                self.notice(&id, "Unknown Chao World area.", "error");
+                return;
+            };
+            // Hero/Dark rooms only for a Chao aligned to them (mob 2026-11-21), the
+            // same line as the hub's Hero/Dark portals. Admins go anywhere.
+            if !p.admin
+                && ((zone == "hero" && p.alignment < 60.) || (zone == "dark" && p.alignment > -60.))
+            {
+                self.notice(&id, "Your Chao isn't aligned to that garden.", "error");
+                return;
+            }
+            p.zone = zone.into();
+            p.chao_pose = Value::Null;
+            p.input = Input::default();
+            p.race = None;
+            p.karate = None;
             return;
         }
         if action.starts_with("karate-") {
