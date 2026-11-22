@@ -1623,8 +1623,13 @@ fn apply(game: &mut Game, id: &str, request: &Request) -> Result<(String, Value)
             mother.life.emotion.state[3] = 0;
             mother.life.revision = mother.life.revision.saturating_add(1);
             game.players.insert(mother_id.to_owned(), mother);
+            // MMO policy: the Chao that keeps the egg loses its mood, and so does a partner
+            // on the same card; another player's Chao keeps it and can breed again
+            // (natively both lose it).
             let other = game.players.get_mut(father_id).expect("checked");
-            other.life.emotion.state[3] = 0;
+            if own {
+                other.life.emotion.state[3] = 0;
+            }
             other.life.breed_offer = None;
             game.events.push(crate::game::Event {
                 message: json!({"type":"event","kind":"life-egg-laid","eggId":egg_id,

@@ -483,3 +483,6 @@ is sent. The caller still needs breed 10000, both must be adults (not Chaos),
 the card must hold fewer than 8 Chao, and a full caller nest fails
 `nest-full`. Other players' Chao keep the offer and answer. Tests:
 `cargo test` 295 passed, fmt and Clippy `-D warnings` clean (offline).
+After breeding, the egg's keeper loses its breed need, and so does a partner on
+the same memory card; another player's Chao keeps its own and can breed again
+(`src/life.rs`, `src/life/tests.rs`, `LIFE.md`). 295 tests pass offline.

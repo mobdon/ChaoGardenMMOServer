@@ -397,9 +397,12 @@ fn breeding_needs_native_desire_and_lays_one_egg_with_parent_alleles() {
     assert_eq!(egg.gene.abl[0], [5, 0]);
     assert_eq!(egg.gene.father_name.as_deref(), Some("Father"));
     assert!([0, 5].contains(&egg.expressed.abl[0]));
-    for id in &ids {
-        assert_eq!(game.players[id].life.emotion.state[3], 0);
-    }
+    // Another player's Chao keeps its mood; the egg's keeper loses hers.
+    assert_eq!(game.players[&mother].life.emotion.state[3], 0);
+    assert_eq!(
+        game.players[&father].life.emotion.state[3],
+        BREED_ANSWER + 1
+    );
     assert_eq!(action(&mut game, &father, &accept)["replayed"], true);
     assert_eq!(game.players[&mother].life.nest.len(), 1);
     let reused = request(1, 0, json!({"kind":"release-egg","eggId":"x"}));

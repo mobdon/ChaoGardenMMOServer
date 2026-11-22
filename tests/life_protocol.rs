@@ -204,7 +204,7 @@ async fn an_own_chao_on_the_same_card_is_a_partner_without_playing_or_answering(
         let card = game.players[mother_id].card().to_owned();
         let mut chao = game.players.remove(own_id).unwrap();
         chao.card_hash = Some(card);
-        chao.life.emotion.state[3] = 0;
+        chao.life.emotion.state[3] = 3000;
         game.teleport(&mut chao, "hub", 0., 6.).unwrap();
         game.players.insert(own_id.to_owned(), chao);
     }
@@ -220,4 +220,6 @@ async fn an_own_chao_on_the_same_card_is_a_partner_without_playing_or_answering(
     assert!(game.players[mother_id].life.breed_offer.is_none());
     assert_eq!(game.players[mother_id].life.emotion.state[3], 0);
     assert!(game.players[own_id].life.nest.is_empty());
+    // A partner on the same card loses its mood too.
+    assert_eq!(game.players[own_id].life.emotion.state[3], 0);
 }
