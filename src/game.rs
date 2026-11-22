@@ -2215,10 +2215,6 @@ impl Game {
         let Some(viewer) = self.players.get(self_id) else {
             return false;
         };
-        // World chat goes to everyone online; it carries no zone or playerId.
-        if event.message["kind"] == "chat" && event.message["channel"] == "world" {
-            return true;
-        }
         let Some(actor) = event.message["playerId"]
             .as_str()
             .and_then(|id| self.players.get(id))
