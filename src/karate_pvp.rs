@@ -5,8 +5,9 @@
 //! fields of the fighter's work area as that module uses them. Only the rules
 //! below are ported so far: fighter values, the strong-move gate, the hit
 //! roll, damage, the time-up judge, the attack gauge and each attack's frame
-//! schedule. Hurt and dodge reactions, movement and ring-out are not ported
-//! yet, so nothing here runs a bout on its own.
+//! schedule, and how long a hit or a dodge keeps a fighter busy. Knock-back,
+//! movement, reach and ring-out are not ported yet, so nothing here runs a
+//! bout on its own.
 //!
 //! Rolls are passed in as numbers in 0..1 (the game uses rand() / 32768), so
 //! the caller owns the dice.
@@ -223,6 +224,56 @@ impl Attack {
     }
 }
 
+/// How a fighter reels from a landed hit (fn_72_1010C): action 9 below 300
+/// damage (lbl_72_data_16854), 0xA below 700 (lbl_72_data_16858), else 0xB.
+/// Not ported: the 0x1D..0x1F variants the game uses for a fighter at the
+/// ring's edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reel {
+    Light,
+    Medium,
+    Heavy,
+}
+
+impl Reel {
+    pub fn of(damage: f32) -> Self {
+        if damage < 300.0 {
+            Self::Light
+        } else if damage < 700.0 {
+            Self::Medium
+        } else {
+            Self::Heavy
+        }
+    }
+
+    /// Frames from the frame the damage is taken until the fighter fills its
+    /// gauge or attacks again (fn_72_C7A8). It plays the hit motion to its
+    /// end (motions 585, 586, 587: 7, 10, 10 frames at 0.2), never less than
+    /// the 8 frames of knock-back, then blends over 20 frames into getting
+    /// up: motion 577 (4 frames at 0.12) after a light hit, 603 (17 at 0.2) or
+    /// 604 (10 at 0.14) after the others, each followed by one frame of
+    /// motion 616. A knocked-out fighter stays down. Its gauge keeps filling
+    /// (`gauge_step_hurt`) through all of it. Same one-frame doubt as
+    /// `Timeline`.
+    pub fn frames(self) -> u32 {
+        let (hit, up) = match self {
+            Self::Light => (frames_to(0.2, 7.0), frames_to(0.12, 4.0)),
+            Self::Medium => (frames_to(0.2, 10.0), frames_to(0.2, 17.0) + 1),
+            Self::Heavy => (frames_to(0.2, 10.0), frames_to(0.14, 10.0) + 1),
+        };
+        hit.max(8) + link_frames(20) + up + 1
+    }
+}
+
+/// Frames a missed defender spends dodging before it fills its gauge again
+/// (fn_72_10AD4 with fn_72_DBE8): a 2-frame blend into motion 601 or 602
+/// (7 frames at 0.16), which must pass its last mark at frame 6 and then
+/// stop. A fighter that is reeling or dodging cannot be hit: fn_72_EC10 drops
+/// an attack aimed at any phase but 2, 3, 4 and 7.
+pub fn dodge_frames() -> u32 {
+    link_frames(2) + frames_to(0.16, 7.0).max(frames_to(0.16, 6.0) + 1) + 1
+}
+
 /// Chance that an attack in reach lands (fn_72_EA20): certain against a
 /// defender who is attacking or has given up (its phases 4 and 7), otherwise
 /// 0.1 + 1.5 * accuracy / (accuracy + evade), at most 1. The attack lands when
@@ -347,6 +398,17 @@ mod tests {
         assert_eq!(at(Attack::BeatingUp), (16, 19, 25));
         assert_eq!(at(Attack::Punch), (16, 33, 70));
         assert_eq!(at(Attack::WindupPunch), (17, 72, 101));
+    }
+
+    #[test]
+    fn a_hit_or_a_dodge_keeps_a_fighter_busy_for_its_motions() {
+        assert_eq!(Reel::of(299.0), Reel::Light);
+        assert_eq!(Reel::of(300.0), Reel::Medium);
+        assert_eq!(Reel::of(700.0), Reel::Heavy);
+        assert_eq!(Reel::Light.frames(), 91);
+        assert_eq!(Reel::Medium.frames(), 159);
+        assert_eq!(Reel::Heavy.frames(), 145);
+        assert_eq!(dodge_frames(), 47);
     }
 
     #[test]

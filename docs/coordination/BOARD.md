@@ -495,6 +495,14 @@ one-frame offset). Still not ported: hurt and dodge reactions, knock-back,
 movement, ring-out; still nothing calls the module. Tests: `cargo test --lib
 karate_pvp` 8 passed, fmt and Clippy clean for the file (tested offline).
 
+### 2026-11-22 PvP Chao Karate rules, step 2b (branch `claude/project-thread-z381c9`)
+
+Base `52e0c32` (main) plus step 2a. Changed paths: `src/karate_pvp.rs`, this
+board. Adds how long a landed hit (three strengths by damage) and a dodge keep
+a fighter busy, from fn_72_C7A8, fn_72_DBE8 and the ChaoMain motion rows. Not
+ported: the ring-edge variants, knock-back, movement, reach, ring-out; nothing
+calls the module. Tests: `cargo test --lib karate_pvp` 9 passed (offline).
+
 ## Own Chao as breeding partners (2026-11-22)
 
 Base `4372b18` (main). Changed paths: `src/life.rs`, `tests/life_protocol.rs`,
