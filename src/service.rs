@@ -517,6 +517,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/game-save/status", get(game_save_status))
         .route("/api/card", get(card))
+        .route("/api/settings", get(settings_get).post(settings_post))
         // Deployment probes and metrics: unauthenticated, cheap, excluded from
         // the request metrics themselves.
         .route("/livez", get(livez))
@@ -834,6 +835,24 @@ async fn card(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return error(StatusCode::NOT_FOUND, "Memory card was not found.");
     }
     Json(json!({"chao": chao})).into_response()
+}
+/// The pause menu's Extras settings, for the game page outside a room.
+async fn settings_get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    settings_reply(&state, &headers, None)
+}
+async fn settings_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(changes): Json<Value>,
+) -> Response {
+    settings_reply(&state, &headers, Some(&changes))
+}
+fn settings_reply(state: &AppState, headers: &HeaderMap, changes: Option<&Value>) -> Response {
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    match bearer(headers).and_then(|token| game.settings_for_token(token, changes)) {
+        Some(settings) => Json(json!({ "settings": settings })).into_response(),
+        None => error(StatusCode::UNAUTHORIZED, "Invalid session token."),
+    }
 }
 /// The title screen's look at the card: never checks the save out.
 async fn game_save_status(State(state): State<AppState>, headers: HeaderMap) -> Response {

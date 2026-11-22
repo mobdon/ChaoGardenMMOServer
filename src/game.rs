@@ -2109,6 +2109,18 @@ impl Game {
         }
         self.dirty = true;
     }
+    /// The Extras settings for a Chao's token, read or changed outside a room
+    /// (the game page in a level has no room socket).
+    pub fn settings_for_token(&mut self, token: &str, changes: Option<&Value>) -> Option<Value> {
+        let id = self.player_for_token(token)?.id.clone();
+        let mut player = self.players.remove(&id)?;
+        if let Some(changes) = changes {
+            self.settings(&mut player, &json!({ "settings": changes }));
+        }
+        let saved = player.profile_extra["settings"].clone();
+        self.players.insert(id, player);
+        Some(saved)
+    }
     /// Push-to-talk audio: relayed only to players in the same room whose Chao
     /// is within VOICE_RADIUS, so no player ever learns another's address.
     fn voice(&mut self, p: &mut Player, message: &Value) {

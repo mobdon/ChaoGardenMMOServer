@@ -850,3 +850,18 @@ fn extras_settings_keep_only_allowed_values_and_save_with_the_profile() {
     let me = exported.iter().find(|p| p["id"] == a.as_str()).unwrap();
     assert_eq!(me["settings"]["sound"], "stereo");
 }
+
+#[test]
+fn extras_settings_by_token_for_a_page_without_a_room() {
+    let mut game = Game::new(vec![], BTreeMap::new(), false, 1000.).unwrap();
+    let session = game
+        .create_session(&json!({"name":"Synthetic level"}))
+        .unwrap();
+    let token = session["token"].as_str().unwrap().to_owned();
+    assert_eq!(game.settings_for_token("nope", None), None);
+    let saved = game
+        .settings_for_token(&token, Some(&json!({"fps":120,"chat":"yes"})))
+        .unwrap();
+    assert_eq!(saved, json!({"fps":120}));
+    assert_eq!(game.settings_for_token(&token, None).unwrap()["fps"], 120);
+}
