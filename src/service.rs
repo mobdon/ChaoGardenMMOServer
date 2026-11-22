@@ -517,6 +517,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/game-save/status", get(game_save_status))
         .route("/api/card", get(card))
+        .route("/api/gear-pickup", post(gear_pickup))
         .route("/api/chao", delete(delete_chao))
         // Deployment probes and metrics: unauthenticated, cheap, excluded from
         // the request metrics themselves.
@@ -823,6 +824,24 @@ async fn game_save_put(State(state): State<AppState>, headers: HeaderMap, body: 
             "Your save changed elsewhere. Load it again.",
         ),
         Err(io_error) => save_failed("write", io_error),
+    }
+}
+/// The game page reports the game's own shoe pickup in a level.
+async fn gear_pickup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(token) = bearer(&headers) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    if game.player_for_token(token).is_none() {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    }
+    match game.gear_pickup_for_token(token, body["item"].as_str().unwrap_or_default()) {
+        Some(found) => Json(json!({ "foundGear": found })).into_response(),
+        None => error(StatusCode::BAD_REQUEST, "Unknown gear item."),
     }
 }
 /// Insert a memory card: every Chao on it, with the token that opens each.
