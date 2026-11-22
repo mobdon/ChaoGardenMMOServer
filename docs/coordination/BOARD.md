@@ -484,6 +484,17 @@ calls it yet: no room matching, no protocol message, no bout loop. Not ported:
 move timing, movement, knock-back and ring-out. Tests: `cargo test --lib
 karate_pvp` 5 passed, Clippy clean for the new file (tested offline).
 
+### 2026-11-22 PvP Chao Karate rules, step 2a (branch `claude/project-thread-z381c9`)
+
+Base `52e0c32` (main). Changed paths: `src/karate_pvp.rs`, this board. Adds the
+attack gauge (how fast it fills, how much a fighter needs) and each attack's
+frame schedule (hit roll, contact, back to waiting), computed from the Karate
+action rows and the ChaoMain motion rows with the engine's own motion stepping.
+Unverified: the order of motion step and fighter step inside one frame (a
+one-frame offset). Still not ported: hurt and dodge reactions, knock-back,
+movement, ring-out; still nothing calls the module. Tests: `cargo test --lib
+karate_pvp` 8 passed, fmt and Clippy clean for the file (tested offline).
+
 ## Own Chao as breeding partners (2026-11-22)
 
 Base `4372b18` (main). Changed paths: `src/life.rs`, `tests/life_protocol.rs`,

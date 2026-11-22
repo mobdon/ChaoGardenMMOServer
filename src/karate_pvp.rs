@@ -4,8 +4,9 @@
 //! its disassembly; each item names the function it comes from. Offsets are
 //! fields of the fighter's work area as that module uses them. Only the rules
 //! below are ported so far: fighter values, the strong-move gate, the hit
-//! roll, damage and the time-up judge. Move timing, movement and ring-out are
-//! not ported yet, so nothing here runs a bout on its own.
+//! roll, damage, the time-up judge, the attack gauge and each attack's frame
+//! schedule. Hurt and dodge reactions, movement and ring-out are not ported
+//! yet, so nothing here runs a bout on its own.
 //!
 //! Rolls are passed in as numbers in 0..1 (the game uses rand() / 32768), so
 //! the caller owns the dice.
@@ -29,6 +30,8 @@ pub struct Fighter {
     pub defence: f32,
     /// +0x24 = 1000 + Fly.
     pub evade: f32,
+    /// +0x28 = (1000 + 1.5 * Run) / 1000: how fast the attack gauge fills.
+    pub speed: f32,
     /// +0x2C = 1200 + Power.
     pub attack: f32,
     /// +0x30 = 1000 + Run / 2 - Power / 3.
@@ -45,6 +48,7 @@ impl Fighter {
         Self {
             defence: 1000.0 + f32::from(s.swim),
             evade: 1000.0 + f32::from(s.fly),
+            speed: (1000.0 + 1.5 * f32::from(s.run)) / 1000.0,
             attack: 1200.0 + f32::from(s.power),
             accuracy: 1000.0 + f32::from(s.run) / 2.0 - f32::from(s.power) / 3.0,
             health: max_health,
@@ -120,6 +124,101 @@ impl Chosen {
     pub fn finish(&mut self) {
         if *self == Self::Attacking {
             *self = Self::Nothing;
+        }
+    }
+}
+
+/// Gauge a fighter needs before it attacks (+0x48, fn_72_FAB8): 400
+/// (lbl_72_data_1681C), or 0.87 of that (lbl_72_data_16860) once its attack
+/// is 1600 or more. The gauge is set to 0 when an attack connects or ends.
+pub fn gauge_needed(fighter: &Fighter) -> f32 {
+    if fighter.attack < 1600.0 {
+        400.0
+    } else {
+        400.0 * 0.87
+    }
+}
+
+/// Gauge gained in one frame while waiting to attack (fn_72_FAB8), with one
+/// roll: speed * (1 + 0.15 * roll - 0.3).
+pub fn gauge_step(fighter: &Fighter, roll: f32) -> f32 {
+    fighter.speed * (1.0 + 0.15 * roll - 0.3)
+}
+
+/// Gauge gained in one frame while reeling from a hit (fn_72_1010C), with one
+/// roll: speed * (1 + 0.1 * roll - 0.2) * 0.5 (lbl_72_data_16870).
+pub fn gauge_step_hurt(fighter: &Fighter, roll: f32) -> f32 {
+    fighter.speed * (1.0 + 0.1 * roll - 0.2) * 0.5
+}
+
+/// When an attack's steps fall, in frames after the frame it was picked
+/// (fn_72_FCC8). `roll` is the frame the attacker takes the hit roll
+/// (fn_72_FE9C step 1), `contact` the frame a landed hit is handed to the
+/// defender and the attacker's gauge is cleared (step 2), `done` the frame the
+/// attacker goes back to filling its gauge (step 3).
+/// Unverified: whether the Chao's motion advances before or after the Karate
+/// fighter's own step within a frame; this takes after, so every frame here
+/// may be one too late.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timeline {
+    pub roll: u32,
+    pub contact: u32,
+    pub done: u32,
+}
+
+/// Frames the engine takes to blend into a motion over `step` link frames
+/// (main.dol 0x8002D224): it adds 1 / step each frame until the sum is 1.
+fn link_frames(step: u16) -> u32 {
+    let (rate, mut sum, mut frames) = (1.0 / f32::from(step), 0.0_f32, 0);
+    while sum < 1.0 {
+        sum += rate;
+        frames += 1;
+    }
+    frames
+}
+
+/// Frames a motion playing from frame 0 at `speed` takes to reach `mark`
+/// (same function: the frame grows by the motion's speed each game frame).
+fn frames_to(speed: f32, mark: f32) -> u32 {
+    let (mut at, mut frames) = (0.0_f32, 0);
+    while at < mark {
+        at += speed;
+        frames += 1;
+    }
+    frames
+}
+
+impl Attack {
+    /// The attack's schedule, from its action row (ChaoStgKarate .data
+    /// 0x168A0 + id * 0x2C: link step 15 for all five, frame marks at +0x18)
+    /// and its motion row (ChaoMain motion table, row 0x1C, speed at +0x18,
+    /// last frame at +0x14, all five start at frame 0; GameCube ChaoMain
+    /// .data 0x3F870, the Steam ChaoMain.rel holds the same rows).
+    pub fn timeline(self) -> Timeline {
+        let link = link_frames(15);
+        // (motion speed, last frame, frame the hit roll opens, contact frame)
+        let (speed, last, opens, contact) = match self {
+            // fn_72_BDBC runs on its own 15-frame counter, not on the motion.
+            Self::BeatingUp => {
+                return Timeline {
+                    roll: link + 1,
+                    contact: link + 4,
+                    done: link + 10,
+                };
+            }
+            // fn_72_C0C4: the roll opens when the blend ends. Motions 579, 582.
+            Self::HardKick => (0.18, 9.0, None, 4.0),
+            Self::Punch => (0.15, 8.0, None, 2.5),
+            // fn_72_C3B4: the roll opens at a mark of its own. Motions 580, 583.
+            Self::Roundhouse => (0.14, 12.0, Some(0.0), 6.3),
+            Self::WindupPunch => (0.19, 16.0, Some(0.0), 10.5),
+        };
+        // A strong attack spends one more handler step before each mark.
+        let late = u32::from(opens.is_some());
+        Timeline {
+            roll: link + 1 + late,
+            contact: link + frames_to(speed, contact).max(1 + late) + 1,
+            done: link + frames_to(speed, last) + 1,
         }
     }
 }
@@ -223,6 +322,31 @@ mod tests {
         assert_eq!(c.start(), None);
         c.finish();
         assert!(c.press(Attack::HardKick, &weak));
+    }
+
+    #[test]
+    fn the_gauge_fills_by_speed_and_strong_fighters_need_less() {
+        let mut s = skills(0);
+        s.run = 1000;
+        let quick = Fighter::new(s);
+        assert_eq!(quick.speed, 2.5);
+        assert_eq!(gauge_step(&quick, 0.0), 2.5 * 0.7);
+        assert_eq!(gauge_step_hurt(&quick, 0.0), 2.5 * 0.8 * 0.5);
+        assert_eq!(gauge_needed(&Fighter::new(skills(399))), 400.0);
+        assert_eq!(gauge_needed(&Fighter::new(skills(400))), 400.0 * 0.87);
+    }
+
+    #[test]
+    fn attack_schedules_follow_the_action_and_motion_rows() {
+        let at = |a: Attack| {
+            let t = a.timeline();
+            (t.roll, t.contact, t.done)
+        };
+        assert_eq!(at(Attack::HardKick), (16, 39, 67));
+        assert_eq!(at(Attack::Roundhouse), (17, 62, 102));
+        assert_eq!(at(Attack::BeatingUp), (16, 19, 25));
+        assert_eq!(at(Attack::Punch), (16, 33, 70));
+        assert_eq!(at(Attack::WindupPunch), (17, 72, 101));
     }
 
     #[test]
