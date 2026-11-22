@@ -212,10 +212,17 @@ fn every_chao_runs_at_metal_sonic_chao_top_speed() {
 }
 
 #[test]
-fn owner_chao_jumps_like_metal_sonic() {
-    // A normal player's Chao against the owner's Chao (Metal Sonic movement).
-    let peak = |owner: bool| {
-        let (mut game, id, _) = fixture(owner);
+fn metal_sonic_chao_look_jumps_like_metal_sonic() {
+    let peak = |metal: bool| {
+        let (mut game, id, _) = fixture(true);
+        if metal {
+            action(
+                &mut game,
+                &id,
+                "equip-owner-gear",
+                json!({"item":"metal-sonic-chao"}),
+            );
+        }
         game.set_input(&id, &json!({"dx":0,"dz":0,"jump":true}));
         let mut top: f64 = 0.;
         for _ in 0..40 {
