@@ -1081,6 +1081,8 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "chao-icon-heart.png",
         "discord-icon.png",
         "login-chao.png",
+        // The Chao Garden save's own card icon: 8 frames of 32x32 in a row (ALF 0x0E40, CI8 + RGB5A3 palette).
+        "card-icon-sheet.png",
         "tiny-neutral-chaos.png",
         "tiny-hero-chaos.png",
         "tiny-dark-chaos.png",
