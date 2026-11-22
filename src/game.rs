@@ -1196,6 +1196,10 @@ impl Game {
             return;
         }
         match action {
+            "chat" => {
+                self.chat(p, message);
+                return;
+            }
             "attack" => {
                 if p.vehicle.as_deref() == Some("dark-chao-walker") {
                     self.mech_fire(p);
@@ -2031,6 +2035,46 @@ impl Game {
             format!("Race finished in {:.1}s! +25 rings.", elapsed / 1000.),
             "success",
         );
+    }
+    /// World chat goes to everyone online; room chat to players in the same room.
+    fn chat(&mut self, p: &mut Player, message: &Value) {
+        let channel = message["channel"].as_str().unwrap_or_default();
+        if channel != "world" && channel != "room" {
+            return;
+        }
+        let text: String = message["text"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(200)
+            .collect();
+        let text = text.trim();
+        if text.is_empty() || !p.cooldown("chat", self.time, 1000.) {
+            return;
+        }
+        let msg = json!({"type":"event","kind":"chat","channel":channel,
+            "fromId":p.id,"fromName":p.name,"text":text});
+        if channel == "world" {
+            self.events.push(Event {
+                target: None,
+                message: msg,
+            });
+            return;
+        }
+        let mut targets: Vec<String> = self
+            .players
+            .values()
+            .filter(|o| o.connections > 0 && self.same_room(p, o))
+            .map(|o| o.id.clone())
+            .collect();
+        targets.push(p.id.clone());
+        for target in targets {
+            self.events.push(Event {
+                target: Some(target),
+                message: msg.clone(),
+            });
+        }
     }
     fn same_room(&self, viewer: &Player, other: &Player) -> bool {
         if viewer.zone != other.zone {
