@@ -217,8 +217,8 @@ fn normalized_input_has_native_speed_and_stale_input_stops() {
         }
         let p = &g.players[&id];
         let traveled = p.x.hypot(p.z);
-        // Owner: Metal Sonic top speed; a new Chao (Run Lv.1) near the base walk.
-        let (low, high) = if owner { (6.9, 7.0) } else { (1.4, 1.5) };
+        // Owner: Metal Sonic top speed; a new Chao (no Run points) at the base walk.
+        let (low, high) = if owner { (6.9, 7.0) } else { (1.39, 1.5) };
         assert!(traveled > low && traveled < high, "{traveled}");
         advance(&mut g, 1000);
         let stopped = g.players[&id].x;
