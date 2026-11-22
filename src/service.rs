@@ -763,9 +763,14 @@ async fn game_save_get(State(state): State<AppState>, headers: HeaderMap) -> Res
     let Some((id, held)) = save_caller(&game, &headers) else {
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
-    let Some(lease) =
-        crate::game_save::check_out(&mut game, &id, held.as_deref(), std::time::Instant::now())
-    else {
+    // A fresh load with the card's own key takes the card over: a crashed or
+    // reloaded page no longer locks the player out until the lease expires.
+    // The earlier page's next write or renewal then gets 409 and stops.
+    let now = std::time::Instant::now();
+    if held.is_none() {
+        game.game_save_leases.remove(&id);
+    }
+    let Some(lease) = crate::game_save::check_out(&mut game, &id, held.as_deref(), now) else {
         return error(
             StatusCode::CONFLICT,
             "Your Chao is already open in another game.",

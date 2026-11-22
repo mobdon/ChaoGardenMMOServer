@@ -98,7 +98,9 @@ async fn checkout_write_conflicts_and_restart_keep_exact_bytes() {
     let lease = header(&first, "x-save-lease");
     assert!(bytes(first).await.is_empty());
 
-    // A second game can't take it; the holder can renew.
+    // A fresh load with the same key takes the card over (a reloaded or
+    // crashed page); the earlier game's lease stops working. The holder can renew.
+    let old_lease = lease;
     let other = call(
         app(),
         "GET",
@@ -107,7 +109,18 @@ async fn checkout_write_conflicts_and_restart_keep_exact_bytes() {
         vec![],
     )
     .await;
-    assert_eq!(other.status(), StatusCode::CONFLICT);
+    assert_eq!(other.status(), StatusCode::OK);
+    let lease = header(&other, "x-save-lease");
+    assert_ne!(lease, old_lease);
+    let stale = call(
+        app(),
+        "POST",
+        "/api/game-save/lease",
+        &[("authorization", &auth), ("x-save-lease", &old_lease)],
+        vec![],
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
     let renew = call(
         app(),
         "POST",
