@@ -112,6 +112,10 @@ pub struct Player {
     /// The player's Chao as its game draws it in a Chao World area (draw-only
     /// for others; not saved).
     pub chao_pose: Value,
+    /// The player's own Chao save record (0x800 raw bytes) as its game holds
+    /// it, relayed so other games draw that Chao (live only; not saved).
+    pub chao_record: Vec<u8>,
+    pub chao_record_version: u64,
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
     pub care: crate::care::CareState,
@@ -222,6 +226,8 @@ impl Player {
             "life": crate::life::public_summary(self),
             "animalParts": self.care.animal_parts, "hat": self.care.hat,
             "chaoPose": if self.connections > 0 { self.chao_pose.clone() } else { Value::Null },
+            "foundGear": self.profile_extra["foundGear"].as_array().cloned().unwrap_or_default(),
+            "chaoRecordVersion": if self.connections > 0 && !self.chao_record.is_empty() { json!(self.chao_record_version) } else { Value::Null },
         })
     }
     pub fn profile(&self) -> Value {
@@ -239,6 +245,31 @@ impl Player {
         merge_profile(&mut preserved, profile);
         preserved
     }
+}
+
+/// The pause menu's Extras rows and their allowed values.
+fn settings_value_ok(key: &str, value: &Value) -> bool {
+    let one_of = |allowed: &[&str]| value.as_str().is_some_and(|v| allowed.contains(&v));
+    match key {
+        "voiceLanguage" => one_of(&["japanese", "english"]),
+        "sound" => one_of(&["stereo", "mono"]),
+        "menuTheme" => one_of(&[
+            "def", "sn", "sd", "tl", "kn", "rg", "am", "eg", "ma", "ch", "se",
+        ]),
+        "voiceMode" => one_of(&["hold", "open"]),
+        "vibration" | "chat" | "music" => value.is_boolean(),
+        "volume" => value.as_u64().is_some_and(|v| v <= 10),
+        "fps" => value.as_u64().is_some_and(|v| [60, 120, 165].contains(&v)),
+        _ => false,
+    }
+}
+
+/// Shoes the game's own level pickup has given this memory card.
+pub const FOUND_GEAR: [&str; 2] = ["sonic-light-shoes", "shadow-air-shoes"];
+fn found(profile: &Value, item: &str) -> bool {
+    profile["foundGear"]
+        .as_array()
+        .is_some_and(|list| list.iter().any(|v| v == item))
 }
 
 // Canonical known values win; unmodeled object fields survive a round trip.
@@ -593,7 +624,9 @@ impl Game {
             boost_energy: 100.,
             gear: Gear {
                 footwear: match data["gear"]["footwear"].as_str() {
-                    Some(shoes @ ("shadow-air-shoes" | "sonic-light-shoes")) if admin => {
+                    Some(shoes @ ("shadow-air-shoes" | "sonic-light-shoes"))
+                        if admin || found(data, shoes) =>
+                    {
                         Some(shoes.into())
                     }
                     _ => None,
@@ -613,6 +646,8 @@ impl Game {
             tiny_records: phone::restore_records(&data["tinyRecords"]),
             tiny_game: None,
             chao_pose: Value::Null,
+            chao_record: Vec::new(),
+            chao_record_version: 0,
             tiny_result: None,
             watch: None,
             care: crate::care::CareState::restore(data.get("care"))?,
@@ -873,6 +908,30 @@ impl Game {
         self.tokens.insert(player.token_hash.clone(), id);
         self.dirty = true;
         Some(token)
+    }
+    /// The game's own upgrade pickup in a level (the page has no room socket
+    /// there): the shoes join every Chao of the token's memory card, once.
+    /// shortcut: the server trusts the page's report; check it against the
+    /// card's game save once that save's upgrade bytes are mapped.
+    pub fn gear_pickup_for_token(&mut self, token: &str, item: &str) -> Option<Value> {
+        if !FOUND_GEAR.contains(&item) {
+            return None;
+        }
+        let card = self.player_for_token(token)?.card().to_owned();
+        for q in self.players.values_mut().filter(|q| q.card() == card) {
+            if !q.profile_extra.is_object() {
+                q.profile_extra = json!({});
+            }
+            if !found(&q.profile_extra, item) {
+                let list = &mut q.profile_extra["foundGear"];
+                if !list.is_array() {
+                    *list = json!([]);
+                }
+                list.as_array_mut()?.push(json!(item));
+                self.dirty = true;
+            }
+        }
+        Some(self.player_for_token(token)?.profile_extra["foundGear"].clone())
     }
     pub fn player_for_token(&self, token: &str) -> Option<&Player> {
         if token.len() > 256 {
@@ -1254,6 +1313,10 @@ impl Game {
                 self.chat(p, message);
                 return;
             }
+            "settings" => {
+                self.settings(p, message);
+                return;
+            }
             "attack" => {
                 if p.vehicle.as_deref() == Some("dark-chao-walker") {
                     self.mech_fire(p);
@@ -1321,7 +1384,11 @@ impl Game {
                 return;
             }
             "equip-owner-gear" | "unequip-owner-gear" => {
-                if !p.admin {
+                let own_shoes = match message["item"].as_str() {
+                    Some(item) if action == "equip-owner-gear" => found(&p.profile_extra, item),
+                    _ => message["slot"] == "footwear",
+                };
+                if !p.admin && !own_shoes {
                     self.notice(&id, "Only the owner admin can equip these extras.", "error");
                     return;
                 }
@@ -2124,6 +2191,48 @@ impl Game {
             });
         }
     }
+    /// Pause-menu Extras settings: only known keys with allowed values are kept,
+    /// saved on every Chao of the player's memory card (the server is the only save).
+    fn settings(&mut self, p: &mut Player, message: &Value) {
+        let Some(changes) = message["settings"].as_object() else {
+            return;
+        };
+        let mut kept = serde_json::Map::new();
+        for (key, value) in changes {
+            if settings_value_ok(key, value) {
+                kept.insert(key.clone(), value.clone());
+            }
+        }
+        if kept.is_empty() {
+            return;
+        }
+        let card = p.card().to_owned();
+        for q in std::iter::once(p).chain(self.players.values_mut().filter(|q| q.card() == card)) {
+            if !q.profile_extra.is_object() {
+                q.profile_extra = json!({});
+            }
+            let saved = &mut q.profile_extra["settings"];
+            if !saved.is_object() {
+                *saved = json!({});
+            }
+            for (key, value) in &kept {
+                saved[key] = value.clone();
+            }
+        }
+        self.dirty = true;
+    }
+    /// The Extras settings for a Chao's token, read or changed outside a room
+    /// (the game page in a level has no room socket).
+    pub fn settings_for_token(&mut self, token: &str, changes: Option<&Value>) -> Option<Value> {
+        let id = self.player_for_token(token)?.id.clone();
+        let mut player = self.players.remove(&id)?;
+        if let Some(changes) = changes {
+            self.settings(&mut player, &json!({ "settings": changes }));
+        }
+        let saved = player.profile_extra["settings"].clone();
+        self.players.insert(id, player);
+        Some(saved)
+    }
     /// Push-to-talk audio: relayed only to players in the same room whose Chao
     /// is within VOICE_RADIUS, so no player ever learns another's address.
     fn voice(&mut self, p: &mut Player, message: &Value) {
@@ -2178,7 +2287,7 @@ impl Game {
             message: reply,
         });
     }
-    fn same_room(&self, viewer: &Player, other: &Player) -> bool {
+    pub fn same_room(&self, viewer: &Player, other: &Player) -> bool {
         if viewer.zone != other.zone {
             return false;
         }
@@ -2247,6 +2356,7 @@ impl Game {
         json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || ((p.connections > 0 || p.watch.is_some() || competition::reserved(p)) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
             "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().filter(|_|mission_visible).map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
             "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
+            "settings": viewer.map_or(Value::Null, |v| v.profile_extra["settings"].clone()),
             "care":crate::care::public(self,self_id),
             "life":crate::life::public(self,self_id),
             "competitionCatalog":self.competition_catalog.public(),

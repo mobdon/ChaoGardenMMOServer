@@ -4,13 +4,13 @@ use axum::{
     Json, Router,
     body::{Body, Bytes},
     extract::{
-        DefaultBodyLimit, OriginalUri, Query, Request, State, WebSocketUpgrade,
+        DefaultBodyLimit, OriginalUri, Path, Query, Request, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket},
     },
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -522,6 +522,8 @@ pub fn router(state: AppState) -> Router {
             post(game_save_renew).delete(game_save_release),
         )
         .route("/api/game-save/status", get(game_save_status))
+        .route("/api/chao-record", put(chao_record_put))
+        .route("/api/chao-record/{id}", get(chao_record_get))
         .route("/api/card", get(card))
         .route("/api/chao", delete(delete_chao))
         .route("/api/account/register", post(account_register))
@@ -534,6 +536,8 @@ pub fn router(state: AppState) -> Router {
                 .put(tiny_chao_put)
                 .layer(DefaultBodyLimit::max(crate::tiny_chao::MODEL_MAX)),
         )
+        .route("/api/settings", get(settings_get).post(settings_post))
+        .route("/api/gear-pickup", post(gear_pickup))
         // Deployment probes and metrics: unauthenticated, cheap, excluded from
         // the request metrics themselves.
         .route("/livez", get(livez))
@@ -841,6 +845,83 @@ async fn game_save_put(State(state): State<AppState>, headers: HeaderMap, body: 
         Err(io_error) => save_failed("write", io_error),
     }
 }
+/// The game page reports the game's own shoe pickup in a level.
+async fn gear_pickup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(token) = bearer(&headers) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    if game.player_for_token(token).is_none() {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    }
+    match game.gear_pickup_for_token(token, body["item"].as_str().unwrap_or_default()) {
+        Some(found) => Json(json!({ "foundGear": found })).into_response(),
+        None => error(StatusCode::BAD_REQUEST, "Unknown gear item."),
+    }
+}
+/// Size of one native Chao save record.
+pub const CHAO_RECORD_BYTES: usize = 0x800;
+/// The caller's own Chao record, raw, from its game (client chao_player
+/// export_record). A changed record bumps the version others see in the
+/// snapshot as players[].chaoRecordVersion.
+async fn chao_record_put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if body.len() != CHAO_RECORD_BYTES {
+        return error(StatusCode::BAD_REQUEST, "A Chao record is 2048 bytes.");
+    }
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(id) = bearer(&headers)
+        .and_then(|t| game.player_for_token(t))
+        .map(|p| p.id.clone())
+    else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    let Some(p) = game.players.get_mut(&id) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    if p.chao_record != body {
+        p.chao_record = body.to_vec();
+        p.chao_record_version += 1;
+    }
+    Json(json!({"ok": true, "version": p.chao_record_version})).into_response()
+}
+/// Another connected player's Chao record in the caller's room (the same
+/// players its snapshot lists), for the caller's game to draw that Chao.
+async fn chao_record_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(viewer) = bearer(&headers).and_then(|t| game.player_for_token(t)) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match game
+        .players
+        .get(&id)
+        .filter(|p| p.connections > 0 && !p.chao_record.is_empty() && game.same_room(viewer, p))
+    {
+        Some(p) => (
+            [
+                (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+                (
+                    header::HeaderName::from_static("x-chao-record-version"),
+                    p.chao_record_version.to_string(),
+                ),
+            ],
+            p.chao_record.clone(),
+        )
+            .into_response(),
+        None => error(StatusCode::NOT_FOUND, "That Chao isn't here."),
+    }
+}
 /// Insert a memory card: every Chao on it, with the token that opens each.
 async fn card(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
@@ -852,39 +933,22 @@ async fn card(State(state): State<AppState>, headers: HeaderMap) -> Response {
     }
     Json(json!({"chao": chao})).into_response()
 }
-/// The login screen's delete: copies profiles.json aside first, then removes the Chao for good.
-async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Some(token) = bearer(&headers) else {
-        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
-    };
+/// The pause menu's Extras settings, for the game page outside a room.
+async fn settings_get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    settings_reply(&state, &headers, None)
+}
+async fn settings_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(changes): Json<Value>,
+) -> Response {
+    settings_reply(&state, &headers, Some(&changes))
+}
+fn settings_reply(state: &AppState, headers: &HeaderMap, changes: Option<&Value>) -> Response {
     let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
-    if game.player_for_token(token).is_none() {
-        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
-    }
-    let profiles = state.config.data_dir.join("profiles.json");
-    if profiles.exists() {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        if let Err(cause) = fs::copy(
-            &profiles,
-            state
-                .config
-                .data_dir
-                .join(format!("profiles.before-delete-{stamp}.json")),
-        ) {
-            return save_failed("backup", cause);
-        }
-    }
-    match game.delete_chao(token) {
-        Ok(id) => match state.persist(&mut game) {
-            Ok(()) => {
-                let _ = fs::remove_file(crate::tiny_chao::model_path(&state.config.data_dir, &id));
-                Json(json!({"deleted": id})).into_response()
-            }
-            Err(cause) => save_failed("delete", cause),
-        },
-        Err(message) => error(StatusCode::CONFLICT, message),
+    match bearer(headers).and_then(|token| game.settings_for_token(token, changes)) {
+        Some(settings) => Json(json!({ "settings": settings })).into_response(),
+        None => error(StatusCode::UNAUTHORIZED, "Invalid session token."),
     }
 }
 #[allow(clippy::result_large_err)]
@@ -1186,6 +1250,41 @@ async fn account_login(State(state): State<AppState>, headers: HeaderMap, body: 
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     response
+}
+/// The login screen's delete: copies profiles.json aside first, then removes the Chao for good.
+async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(token) = bearer(&headers) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    if game.player_for_token(token).is_none() {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    }
+    let profiles = state.config.data_dir.join("profiles.json");
+    if profiles.exists() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if let Err(cause) = fs::copy(
+            &profiles,
+            state
+                .config
+                .data_dir
+                .join(format!("profiles.before-delete-{stamp}.json")),
+        ) {
+            return save_failed("backup", cause);
+        }
+    }
+    match game.delete_chao(token) {
+        Ok(id) => match state.persist(&mut game) {
+            Ok(()) => {
+                let _ = fs::remove_file(crate::tiny_chao::model_path(&state.config.data_dir, &id));
+                Json(json!({"deleted": id})).into_response()
+            }
+            Err(cause) => save_failed("delete", cause),
+        },
+        Err(message) => error(StatusCode::CONFLICT, message),
+    }
 }
 /// The title screen's look at the card: never checks the save out.
 async fn game_save_status(State(state): State<AppState>, headers: HeaderMap) -> Response {

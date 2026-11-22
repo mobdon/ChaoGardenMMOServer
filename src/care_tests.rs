@@ -786,6 +786,15 @@ fn chat_room_reaches_only_the_room_and_world_reaches_everyone() {
         .collect();
     assert_eq!(chats.len(), 2, "world reaches the other room too");
     assert_eq!(chats[0].message["text"].as_str().unwrap().len(), 200);
+    // What each socket is sent goes through event_visible.
+    let seen = |game: &Game, id: &str| {
+        game.events
+            .iter()
+            .filter(|e| e.message["kind"] == "chat" && game.event_visible(id, e))
+            .count()
+    };
+    assert_eq!(seen(&game, &a), 1);
+    assert_eq!(seen(&game, &b), 1);
     // b mutes a: saved in b's profile, and a's chat no longer reaches b.
     game.action(&b, &json!({"type":"action","action":"mute","playerId":a}));
     assert_eq!(game.players[&b].profile()["muted"], json!([a]));
@@ -802,6 +811,19 @@ fn chat_room_reaches_only_the_room_and_world_reaches_everyone() {
         .collect();
     assert_eq!(chats.len(), 1);
     assert_eq!(chats[0].target.as_deref(), Some(a.as_str()));
+    // Unmuting takes a off b's saved list, and a's chat reaches b again.
+    game.action(
+        &b,
+        &json!({"type":"action","action":"mute","playerId":a,"muted":false}),
+    );
+    assert_eq!(game.players[&b].profile()["muted"], json!([]));
+    game.time += 1001.;
+    game.events.clear();
+    game.action(
+        &a,
+        &json!({"type":"action","action":"chat","channel":"world","text":"back"}),
+    );
+    assert_eq!(seen(&game, &b), 1);
 }
 
 #[test]
@@ -836,4 +858,49 @@ fn voice_reaches_only_near_chao_in_the_same_room() {
         &json!({"type":"action","action":"voice","data":"A".repeat(1401)}),
     );
     assert!(game.events.iter().all(|e| e.message["kind"] != "voice"));
+}
+
+#[test]
+fn extras_settings_keep_only_allowed_values_and_save_with_the_profile() {
+    let (mut game, a) = fixture(false);
+    game.dirty = false;
+    game.action(
+        &a,
+        &json!({"type":"action","action":"settings","settings":{
+            "sound":"mono","fps":165,"music":false,"volume":7,"voiceMode":"open",
+            "fps2":1,"menuTheme":"zz","volume2":3}}),
+    );
+    assert!(game.dirty);
+    let saved = game.snapshot(&a)["settings"].clone();
+    assert_eq!(
+        saved,
+        json!({"sound":"mono","fps":165,"music":false,"volume":7,"voiceMode":"open"})
+    );
+    game.time += 1001.;
+    game.action(
+        &a,
+        &json!({"type":"action","action":"settings","settings":{"fps":144,"volume":11,"sound":"stereo"}}),
+    );
+    let saved = game.snapshot(&a)["settings"].clone();
+    assert_eq!(saved["fps"], 165, "144 is not a frame cap choice");
+    assert_eq!(saved["volume"], 7, "volume is 0..=10");
+    assert_eq!(saved["sound"], "stereo");
+    let exported = game.export_profiles();
+    let me = exported.iter().find(|p| p["id"] == a.as_str()).unwrap();
+    assert_eq!(me["settings"]["sound"], "stereo");
+}
+
+#[test]
+fn extras_settings_by_token_for_a_page_without_a_room() {
+    let mut game = Game::new(vec![], BTreeMap::new(), false, 1000.).unwrap();
+    let session = game
+        .create_session(&json!({"name":"Synthetic level"}))
+        .unwrap();
+    let token = session["token"].as_str().unwrap().to_owned();
+    assert_eq!(game.settings_for_token("nope", None), None);
+    let saved = game
+        .settings_for_token(&token, Some(&json!({"fps":120,"chat":"yes"})))
+        .unwrap();
+    assert_eq!(saved, json!({"fps":120}));
+    assert_eq!(game.settings_for_token(&token, None).unwrap()["fps"], 120);
 }

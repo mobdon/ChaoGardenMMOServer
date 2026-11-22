@@ -243,3 +243,86 @@ fn owner_chao_jumps_like_metal_sonic() {
     let (chao, metal) = (peak(false), peak(true));
     assert!(chao > 0. && metal > chao * 3., "chao {chao} metal {metal}");
 }
+
+#[test]
+fn a_level_shoe_pickup_lets_any_player_wear_them_and_survives_a_restart() {
+    let mut game = Game::new(vec![], BTreeMap::new(), false, 1000.).unwrap();
+    let session = game
+        .create_session(&json!({"name":"Synthetic player"}))
+        .unwrap();
+    let id = session["player"]["id"].as_str().unwrap().to_owned();
+    let token = session["token"].as_str().unwrap().to_owned();
+    game.connect(&id);
+    action(
+        &mut game,
+        &id,
+        "equip-owner-gear",
+        json!({"item":"sonic-light-shoes"}),
+    );
+    assert!(
+        game.players[&id].gear.footwear.is_none(),
+        "not picked up yet"
+    );
+    assert_eq!(
+        game.gear_pickup_for_token("nope", "sonic-light-shoes"),
+        None
+    );
+    assert_eq!(
+        game.gear_pickup_for_token(&token, "knuckles-hammer-gloves"),
+        None
+    );
+    assert_eq!(
+        game.gear_pickup_for_token(&token, "sonic-light-shoes"),
+        Some(json!(["sonic-light-shoes"]))
+    );
+    assert_eq!(
+        game.gear_pickup_for_token(&token, "sonic-light-shoes"),
+        Some(json!(["sonic-light-shoes"])),
+        "a second report adds nothing"
+    );
+    assert_eq!(
+        game.players[&id].public()["foundGear"],
+        json!(["sonic-light-shoes"])
+    );
+    action(
+        &mut game,
+        &id,
+        "equip-owner-gear",
+        json!({"item":"shadow-air-shoes"}),
+    );
+    assert!(
+        game.players[&id].gear.footwear.is_none(),
+        "Air Shoes not picked up"
+    );
+    action(
+        &mut game,
+        &id,
+        "equip-owner-gear",
+        json!({"item":"knuckles-hammer-gloves"}),
+    );
+    assert!(
+        game.players[&id].gear.hands.is_none(),
+        "gloves stay owner-only"
+    );
+    action(
+        &mut game,
+        &id,
+        "equip-owner-gear",
+        json!({"item":"sonic-light-shoes"}),
+    );
+    assert_eq!(
+        game.players[&id].gear.footwear.as_deref(),
+        Some("sonic-light-shoes")
+    );
+    let restored = Game::new(game.export_profiles(), BTreeMap::new(), false, 1000.).unwrap();
+    let me = restored.player_for_token(&token).unwrap();
+    assert_eq!(me.gear.footwear.as_deref(), Some("sonic-light-shoes"));
+    assert_eq!(me.public()["foundGear"], json!(["sonic-light-shoes"]));
+    action(
+        &mut game,
+        &id,
+        "unequip-owner-gear",
+        json!({"slot":"footwear"}),
+    );
+    assert!(game.players[&id].gear.footwear.is_none());
+}

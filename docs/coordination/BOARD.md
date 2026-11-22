@@ -411,6 +411,20 @@ four route/test files above plus this coordination record. Source publication
 does not merge, deploy or restart the Rust authority, copy native assets, or
 modify a canonical save. The server PR records its exact immutable head.
 
+## Live Chao record relay (2026-11-22)
+
+Base `8aacf5f` (main). Changed paths: `src/game.rs`, `src/service.rs`,
+`tests/chao_record.rs`, this board. `PUT /api/chao-record` (Bearer Chao token)
+takes the caller's own raw 2048-byte Chao save record from its game and keeps
+it in memory only (not saved; the memory card stays the save). A changed record
+bumps `players[].chaoRecordVersion` in the room snapshot (null when offline or
+none sent). `GET /api/chao-record/{id}` returns that player's record with
+`x-chao-record-version`, only to a signed-in player in the same room while the
+owner is connected. Tests: `cargo test` 279 passed, fmt and Clippy
+`-D warnings` clean (tested offline). The client side (sa2-boot `export_record`
+/ `import_record`, f7854ea, not in client main) and the page's fetch bridge are
+not wired to this yet; no live test. No content check of the record bytes yet.
+
 ## 2026-11-22 hosting code: reset mail, phone Chao model, Tiny-only assets
 
 Base `8aacf5f` (main) plus the player accounts branch `6108a2a` merged in.
