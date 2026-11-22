@@ -1032,7 +1032,13 @@ impl Game {
         };
         if player.connections > 0
             && message["action"].as_str().is_some()
-            && player.cooldown("message", self.time, 80.)
+            // Pose updates (about 10 a second) have their own limit, so they
+            // never crowd out the player's other actions.
+            && if message["action"] == "chao-pose" {
+                player.cooldown("pose", self.time, 80.)
+            } else {
+                player.cooldown("message", self.time, 80.)
+            }
         {
             self.action_inner(&mut player, message);
         }
