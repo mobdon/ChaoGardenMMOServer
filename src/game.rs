@@ -367,6 +367,8 @@ pub struct Mission {
     pub enemies: Vec<Enemy>,
     pub rings: Vec<Ring>,
 }
+/// Game units around a Chao within which others hear its voice.
+const VOICE_RADIUS: f64 = 150.;
 #[derive(Clone, Debug)]
 pub struct Event {
     pub target: Option<String>,
@@ -1065,6 +1067,8 @@ impl Game {
             // never crowd out the player's other actions.
             && if message["action"] == "chao-pose" {
                 player.cooldown("pose", self.time, 80.)
+            } else if message["action"] == "voice" {
+                player.cooldown("voice", self.time, 40.)
             } else {
                 player.cooldown("message", self.time, 80.)
             }
@@ -1196,6 +1200,10 @@ impl Game {
             return;
         }
         match action {
+            "voice" => {
+                self.voice(p, message);
+                return;
+            }
             "chat" => {
                 self.chat(p, message);
                 return;
@@ -2073,6 +2081,35 @@ impl Game {
             self.events.push(Event {
                 target: Some(target),
                 message: msg.clone(),
+            });
+        }
+    }
+    /// Push-to-talk audio: relayed only to players in the same room whose Chao
+    /// is within VOICE_RADIUS, so no player ever learns another's address.
+    fn voice(&mut self, p: &mut Player, message: &Value) {
+        let Some(data) = message["data"].as_str() else {
+            return;
+        };
+        let pos = |q: &Player| Some((q.chao_pose["x"].as_f64()?, q.chao_pose["z"].as_f64()?));
+        let Some((x, z)) = pos(p) else { return };
+        if data.is_empty() || data.len() > 1400 {
+            return;
+        }
+        let near: Vec<(String, f64)> = self
+            .players
+            .values()
+            .filter(|o| o.connections > 0 && self.same_room(p, o))
+            .filter_map(|o| {
+                let (ox, oz) = pos(o)?;
+                let d = (ox - x).hypot(oz - z);
+                (d < VOICE_RADIUS).then(|| (o.id.clone(), 1. - d / VOICE_RADIUS))
+            })
+            .collect();
+        for (target, volume) in near {
+            self.events.push(Event {
+                target: Some(target),
+                message: json!({"type":"event","kind":"voice",
+                "fromId":p.id,"volume":volume,"data":data}),
             });
         }
     }
