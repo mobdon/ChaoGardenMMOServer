@@ -47,3 +47,4 @@ jobs:
           node-version: 24
       - run: node --test tools/capacity-gates.test.mjs
       - run: python3 -m unittest discover -s deploy -p 'test_*.py' -v
+      - run: bash deploy/test_update.sh

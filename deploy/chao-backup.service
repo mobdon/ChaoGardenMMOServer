@@ -1,0 +1,6 @@
+[Unit]
+Description=Chao Garden: nightly save backup
+
+[Service]
+Type=oneshot
+ExecStart=/opt/chao/current/deploy/nightly.sh

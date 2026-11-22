@@ -1,0 +1,26 @@
+# Public site. setup.sh copies this to /etc/caddy/Caddyfile with the real
+# domain in place of example.invalid; Caddy gets and renews the certificate.
+# No access log: the WebSocket URL carries a session token.
+example.invalid {
+    encode zstd gzip
+
+    @server path /api/* /ws
+    handle @server {
+        reverse_proxy 127.0.0.1:3001
+    }
+
+    # The game page needs cross-origin isolation for threads.
+    handle /sa2/* {
+        header Cross-Origin-Opener-Policy same-origin
+        header Cross-Origin-Embedder-Policy require-corp
+        root * /opt/chao/current
+        file_server
+    }
+
+    # Everything else is the built web client. /metrics, /livez and /readyz
+    # are never proxied.
+    handle {
+        root * /opt/chao/current/web
+        file_server
+    }
+}
