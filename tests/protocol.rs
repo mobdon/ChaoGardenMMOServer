@@ -408,10 +408,15 @@ impl LiveServer {
         let path = chao_game_server::tiny_chao::model_path(&self.state.config.data_dir, id);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"glTF synthetic test model").unwrap();
-        connect_async(format!("{}/ws?token={token}&tiny=1", self.url))
-            .await
-            .unwrap()
-            .0
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("{}/ws?token={token}&tiny=1", self.url)
+            .into_client_request()
+            .unwrap();
+        let agent = "Mozilla/5.0 (Linux; Android 14) Mobile Safari/537.36";
+        request
+            .headers_mut()
+            .insert("user-agent", agent.parse().unwrap());
+        connect_async(request).await.unwrap().0
     }
     async fn socket(&self, session: &Value) -> Socket {
         let request = format!(

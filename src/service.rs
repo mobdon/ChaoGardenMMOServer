@@ -1474,9 +1474,21 @@ fn connection_snapshot(game: &Game, id: &str, observer: bool) -> Value {
     snapshot["connectionMode"] = json!(if observer { "observe" } else { "control" });
     snapshot
 }
+/// Tiny Chao Garden is for phones only: the browser or app must say it is a mobile one.
+fn phone_agent(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|agent| {
+            ["Mobi", "Android", "iPhone", "iPad"]
+                .iter()
+                .any(|m| agent.contains(m))
+        })
+}
 async fn upgrade(
     State(state): State<AppState>,
     Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
     let observer = match query.observe {
@@ -1496,6 +1508,9 @@ async fn upgrade(
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
     let tiny = query.tiny == Some(1);
+    if tiny && !phone_agent(&headers) {
+        return error(StatusCode::FORBIDDEN, "Tiny Chao Garden is on your phone.");
+    }
     if tiny && !crate::tiny_chao::played_once(&state.config.data_dir, &id) {
         return error(
             StatusCode::FORBIDDEN,
@@ -2062,7 +2077,10 @@ mod account_tests {
     #[tokio::test]
     async fn phone_works_from_the_same_login_after_one_pc_play() {
         use futures_util::{SinkExt, StreamExt};
-        use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+        use tokio_tungstenite::{
+            connect_async,
+            tungstenite::{Message as WsMessage, client::IntoClientRequest},
+        };
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
         let app = router(state.clone());
@@ -2124,7 +2142,17 @@ mod account_tests {
             StatusCode::NOT_FOUND
         );
 
-        let (mut phone, _) = connect_async(url("&tiny=1")).await.expect("phone connects");
+        // Phone only: a desktop browser is refused even after the PC has played.
+        assert!(
+            connect_async(url("&tiny=1")).await.is_err(),
+            "desktop agent"
+        );
+        let mut request = url("&tiny=1").into_client_request().unwrap();
+        let agent = "Mozilla/5.0 (Linux; Android 14) Mobile Safari/537.36";
+        request
+            .headers_mut()
+            .insert(header::USER_AGENT, agent.parse().unwrap());
+        let (mut phone, _) = connect_async(request).await.expect("phone connects");
         let _ = phone.close(None).await;
         // A PC socket can't play Tiny Garden.
         let (mut pc, _) = connect_async(url("")).await.unwrap();
