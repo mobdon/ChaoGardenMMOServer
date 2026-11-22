@@ -1114,8 +1114,13 @@ impl Game {
                 && pose.as_object().is_some_and(|o| {
                     o.len() <= 8 && o.values().all(|v| v.as_f64().is_some_and(f64::is_finite))
                 });
+            // Updates may carry only the changed keys: merged into the stored pose.
             if ok {
-                p.chao_pose = pose.clone();
+                let mut merged = p.chao_pose.as_object().cloned().unwrap_or_default();
+                merged.extend(pose.as_object().unwrap().clone());
+                if merged.len() <= 8 {
+                    p.chao_pose = Value::Object(merged);
+                }
             }
             return;
         }

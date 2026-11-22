@@ -1651,6 +1651,18 @@ async fn chao_pose_is_relayed_to_the_same_area_room() {
     pause().await;
     one.send(send(json!({"type":"action","action":"chao-pose","pose":{"x":1.5,"y":0,"z":-2,"angle":16384,"motion":3,"frame":12.5}}))).await.unwrap();
     snapshot_until(&mut two, |s| player(s, &ida)["chaoPose"]["angle"] == 16384).await;
+    // A delta update keeps the other keys.
+    pause().await;
+    one.send(send(
+        json!({"type":"action","action":"chao-pose","pose":{"frame":13}}),
+    ))
+    .await
+    .unwrap();
+    snapshot_until(&mut two, |s| {
+        let p = &player(s, &ida)["chaoPose"];
+        p["frame"] == 13 && p["angle"] == 16384
+    })
+    .await;
     // A new area clears the pose until the game sends one from there; it is
     // not held up by the pose just sent (poses have their own limit).
     one.send(send(
