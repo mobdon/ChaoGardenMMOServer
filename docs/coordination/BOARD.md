@@ -424,3 +424,14 @@ owner is connected. Tests: `cargo test` 279 passed, fmt and Clippy
 `-D warnings` clean (tested offline). The client side (sa2-boot `export_record`
 / `import_record`, f7854ea, not in client main) and the page's fetch bridge are
 not wired to this yet; no live test. No content check of the record bytes yet.
+
+### 2026-11-22 PvP Chao Karate rules, step 1 (branch `claude/project-thread-z381c9`)
+
+Base `90610cf` (main). Changed paths: `src/karate_pvp.rs`, `src/lib.rs`, this
+board. Pure rules for a server-decided player-versus-player Karate bout, ported
+from the GameCube ChaoStgKarate module with the source function named beside
+each: fighter values from skill points, the strong-move gate, hit chance,
+damage with its floor, the 90 second length and the time-up judge. Nothing
+calls it yet: no room matching, no protocol message, no bout loop. Not ported:
+move timing, movement, knock-back and ring-out. Tests: `cargo test --lib
+karate_pvp` 5 passed, Clippy clean for the new file (tested offline).
