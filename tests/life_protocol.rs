@@ -192,3 +192,34 @@ async fn breeding_over_sockets_lays_one_durable_egg_and_rolls_back_both_parents_
     assert_eq!(again["replayed"], true);
     assert_eq!(game.players[mother_id].life.nest.len(), 1);
 }
+
+#[tokio::test]
+async fn an_own_chao_on_the_same_card_is_a_partner_without_playing_or_answering() {
+    let (server, mother, own) = TestServer::start().await;
+    let mother_id = mother["player"]["id"].as_str().unwrap();
+    let own_id = own["player"]["id"].as_str().unwrap();
+    {
+        // The second Chao sits on the first one's card, elsewhere, not in the mood.
+        let mut game = server.state.game.lock().unwrap();
+        let card = game.players[mother_id].card().to_owned();
+        let mut chao = game.players.remove(own_id).unwrap();
+        chao.card_hash = Some(card);
+        chao.life.emotion.state[3] = 3000;
+        game.teleport(&mut chao, "hub", 0., 6.).unwrap();
+        game.players.insert(own_id.to_owned(), chao);
+    }
+    let mut socket = server.socket(&mother).await;
+    let breed = request(0, json!({"kind":"breed","partnerId":own_id}));
+    send(&mut socket, &breed).await;
+    let laid = life_result(&mut socket, &breed).await;
+    assert_eq!(laid["code"], "egg-laid", "{laid}");
+    let disk = saved_profile(&server, mother_id);
+    assert_eq!(disk["life"]["nest"].as_array().unwrap().len(), 1);
+    assert_eq!(disk["life"]["nest"][0]["gene"]["fatherName"], "Father");
+    let game = server.state.game.lock().unwrap();
+    assert!(game.players[mother_id].life.breed_offer.is_none());
+    assert_eq!(game.players[mother_id].life.emotion.state[3], 0);
+    assert!(game.players[own_id].life.nest.is_empty());
+    // A partner on the same card loses its mood too.
+    assert_eq!(game.players[own_id].life.emotion.state[3], 0);
+}

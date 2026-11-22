@@ -483,3 +483,17 @@ damage with its floor, the 90 second length and the time-up judge. Nothing
 calls it yet: no room matching, no protocol message, no bout loop. Not ported:
 move timing, movement, knock-back and ring-out. Tests: `cargo test --lib
 karate_pvp` 5 passed, Clippy clean for the new file (tested offline).
+
+## Own Chao as breeding partners (2026-11-22)
+
+Base `4372b18` (main). Changed paths: `src/life.rs`, `tests/life_protocol.rs`,
+`LIFE.md`, this board. `breed` with a `partnerId` on the caller's own
+memory card (same `card()`) lays the egg at once in the caller's nest: the
+partner need not be connected, in the same garden or in the mood, and no offer
+is sent. The caller still needs breed 10000, both must be adults (not Chaos),
+the card must hold fewer than 8 Chao, and a full caller nest fails
+`nest-full`. Other players' Chao keep the offer and answer. Tests:
+`cargo test` 295 passed, fmt and Clippy `-D warnings` clean (offline).
+After breeding, the egg's keeper loses its breed need, and so does a partner on
+the same memory card; another player's Chao keeps its own and can breed again
+(`src/life.rs`, `src/life/tests.rs`, `LIFE.md`). 295 tests pass offline.
