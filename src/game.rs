@@ -1687,10 +1687,12 @@ impl Game {
             // The owner's own Chao moves like Metal Sonic, as does the Metal Sonic Chao look.
             let metal = p.admin || p.gear.look.as_deref() == Some("metal-sonic-chao");
             let gravity = if metal { METAL_CHAO_GRAVITY } else { 12. };
-            // Outside races every player Chao runs at Sonic/Shadow top speed (rows 0/1 SpeedMaxH = row 12);
-            // races keep the stat-based speed.
-            let land_speed = if metal || p.race.is_none() {
+            let land_speed = if metal {
                 METAL_CHAO_TOP_SPEED
+            } else if p.race.is_none() {
+                // Hub/gardens: Run level scales from the base walk up to full Sonic/Shadow
+                // top speed (same value as row 12) at level 99.
+                1.4 + (METAL_CHAO_TOP_SPEED - 1.4) * f64::from(p.stats["run"].level.min(99)) / 99.
             } else {
                 1.4 + f64::from(p.stats["run"].level) * 0.006
             };
