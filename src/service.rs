@@ -864,7 +864,7 @@ async fn gear_pickup(
     }
 }
 /// Size of one native Chao save record.
-pub const CHAO_RECORD_BYTES: usize = 0x800;
+pub const CHAO_RECORD_BYTES: usize = crate::game_save::CHAO_RECORD;
 /// The caller's own Chao record, raw, from its game (client chao_player
 /// export_record). A changed record bumps the version others see in the
 /// snapshot as players[].chaoRecordVersion.
@@ -886,11 +886,19 @@ async fn chao_record_put(
     let Some(p) = game.players.get_mut(&id) else {
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
+    let mut save = false;
     if p.chao_record != body {
         p.chao_record = body.to_vec();
         p.chao_record_version += 1;
+        // An empty record (type 0) keeps the stats already saved.
+        if let Some(stats) = crate::game_save::native_stats(&body) {
+            save = p.native_stats != Some(stats);
+            p.native_stats = Some(stats);
+        }
     }
-    Json(json!({"ok": true, "version": p.chao_record_version})).into_response()
+    let version = p.chao_record_version;
+    game.dirty |= save;
+    Json(json!({"ok": true, "version": version})).into_response()
 }
 /// Another connected player's Chao record in the caller's room (the same
 /// players its snapshot lists), for the caller's game to draw that Chao.

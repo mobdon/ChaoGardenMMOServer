@@ -458,3 +458,16 @@ WebSocket URL. Observer sockets (`observe=1`) are not gated on the model. The
 stored model's content is not checked beyond its magic bytes. The Node
 reference (`index.js`, `tests/reference/assets.test.js`) still lists the old
 asset names. Nothing merged, deployed or restarted.
+
+## Saved native Chao stats (2026-11-22)
+
+Base `eaa2646` (main). Changed paths: `src/game.rs`, `src/game_save.rs`,
+`src/service.rs`, `tests/chao_record.rs`, this board. Each changed record on
+`PUT /api/chao-record` now also has its type byte and seven skills (points,
+level, grade, progress; Swim, Fly, Run, Power, Stamina, Luck, Intelligence)
+read by `game_save::native_stats` and saved on the player as `nativeStats`
+in `profiles.json` and in the profile JSON, so they are there while the game
+is closed (phone, race rules). An empty record (type 0) keeps the saved stats.
+Tests: `cargo test` 292 passed, fmt and Clippy `-D warnings` clean (tested
+offline, synthetic bytes). The stats are whatever the player's game sends: no
+growth check yet. Nothing reads `nativeStats` yet (phone app, race check).
