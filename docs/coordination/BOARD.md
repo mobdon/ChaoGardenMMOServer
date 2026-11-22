@@ -472,3 +472,14 @@ is closed (phone, race rules). An empty record (type 0) keeps the saved stats.
 Tests: `cargo test` 292 passed, fmt and Clippy `-D warnings` clean (tested
 offline, synthetic bytes). The stats are whatever the player's game sends: no
 growth check yet. Nothing reads `nativeStats` yet (phone app, race check).
+
+### 2026-11-22 PvP Chao Karate rules, step 1 (branch `claude/project-thread-z381c9`)
+
+Base `90610cf` (main). Changed paths: `src/karate_pvp.rs`, `src/lib.rs`, this
+board. Pure rules for a server-decided player-versus-player Karate bout, ported
+from the GameCube ChaoStgKarate module with the source function named beside
+each: fighter values from skill points, the strong-move gate, hit chance,
+damage with its floor, the 90 second length and the time-up judge. Nothing
+calls it yet: no room matching, no protocol message, no bout loop. Not ported:
+move timing, movement, knock-back and ring-out. Tests: `cargo test --lib
+karate_pvp` 5 passed, Clippy clean for the new file (tested offline).
