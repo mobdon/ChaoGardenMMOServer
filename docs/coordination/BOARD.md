@@ -701,3 +701,12 @@ disconnecting leaves the group. Tests: `cargo test` all pass (5 new), clippy
 and fmt clean (tested offline). Limits: groups are memory only; a started
 group runs no bout or race yet and saves no result or ranked record; no group
 chat or voice channel yet; no client sends these actions.
+
+## Queue group chat and voice (2026-11-22)
+Changed paths: `src/game.rs`, `src/queue.rs`. Chat takes a third channel,
+`group`, delivered only to the sender's queue group. In the menu areas voice
+from a queue member is relayed to the rest of its group at full volume (no
+distance), and still reaches the staff voice tap under the speaker's room
+(`chao-race` or `chao-karate`). Outside a group both stay off there. Tests:
+`cargo test --lib` 134 pass (1 new), clippy and fmt clean (tested offline).
+Limits: no client sends the `group` channel yet.

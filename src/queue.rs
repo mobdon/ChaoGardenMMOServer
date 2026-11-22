@@ -43,6 +43,11 @@ impl Queues {
     pub fn group_of(&self, id: &str) -> Option<&Group> {
         self.groups.iter().find(|g| g.has(id))
     }
+    /// The other members of the player's group: who its group chat and voice reach.
+    pub fn mates(&self, id: &str) -> Option<Vec<String>> {
+        let others = self.group_of(id)?.members.iter();
+        Some(others.filter(|m| m.0 != id).map(|m| m.0.clone()).collect())
+    }
 }
 
 /// Tells every member who is in the group, who is ready and whether it started.
@@ -245,6 +250,44 @@ mod tests {
         // A bout holds two: the third player gets a group of their own.
         join_karate(&mut game, &ids[2], false);
         assert_eq!(game.queues.groups.len(), 2);
+    }
+
+    #[test]
+    fn group_chat_and_voice_reach_only_the_group_and_the_staff_tap() {
+        let (mut game, ids) = game_with(3);
+        for id in &ids {
+            join_karate(&mut game, id, false);
+        }
+        // ids[0] and ids[1] share a group; ids[2] waits alone in the same area.
+        let heard = |game: &mut Game, kind: &str, message: Value| {
+            game.time += 1100.;
+            game.events.clear();
+            game.action(&ids[0], &message);
+            let mut to: Vec<_> = game
+                .events
+                .iter()
+                .filter(|e| e.message["kind"] == kind)
+                .filter_map(|e| e.target.clone())
+                .collect();
+            to.sort();
+            to
+        };
+        let mut pair = ids[..2].to_vec();
+        pair.sort();
+        let chat = json!({"type":"action","action":"chat","channel":"group","text":"hi"});
+        assert_eq!(heard(&mut game, "chat", chat.clone()), pair);
+        game.voice_tap_until = u64::MAX;
+        let voice = json!({"type":"action","action":"voice","data":"AA"});
+        assert_eq!(heard(&mut game, "voice", voice.clone()), ids[1..2]);
+        assert_eq!(game.voice_tap.back().unwrap()["room"], "chao-karate");
+        // Out of the group there is nobody to talk to.
+        send(
+            &mut game,
+            &ids[0],
+            json!({"type":"action","action":"queue-leave"}),
+        );
+        assert!(heard(&mut game, "chat", chat).is_empty());
+        assert!(heard(&mut game, "voice", voice).is_empty());
     }
 
     #[test]

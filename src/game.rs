@@ -2309,7 +2309,12 @@ impl Game {
     /// World chat goes to everyone online; room chat to players in the same room.
     fn chat(&mut self, p: &mut Player, message: &Value) {
         let channel = message["channel"].as_str().unwrap_or_default();
-        if channel != "world" && channel != "room" {
+        if !["world", "room", "group"].contains(&channel) {
+            return;
+        }
+        // Group chat reaches only the sender's queue group.
+        let mates = self.queues.mates(&p.id);
+        if channel == "group" && mates.is_none() {
             return;
         }
         let text: String = message["text"]
@@ -2353,7 +2358,14 @@ impl Game {
         let mut targets: Vec<String> = self
             .players
             .values()
-            .filter(|o| o.connections > 0 && (world || self.same_room(p, o)) && !mutes(o, &p.id))
+            .filter(|o| {
+                o.connections > 0
+                    && !mutes(o, &p.id)
+                    && match (&mates, channel) {
+                        (Some(mates), "group") => mates.contains(&o.id),
+                        _ => world || self.same_room(p, o),
+                    }
+            })
             .map(|o| o.id.clone())
             .collect();
         targets.push(p.id.clone());
@@ -2408,8 +2420,11 @@ impl Game {
     }
     /// Push-to-talk audio: relayed only to players in the same room whose Chao
     /// is within VOICE_RADIUS, so no player ever learns another's address.
+    /// In a menu area there is no room voice: a queue group hears only itself.
     fn voice(&mut self, p: &mut Player, message: &Value) {
-        if MENU_ZONES.contains(&p.zone.as_str()) {
+        let menu = MENU_ZONES.contains(&p.zone.as_str());
+        let mates = self.queues.mates(&p.id).filter(|_| menu);
+        if menu && mates.is_none() {
             return;
         }
         let Some(data) = message["data"].as_str() else {
@@ -2428,6 +2443,18 @@ impl Game {
                 "fromId":p.id,"fromName":p.name,"data":data}));
         } else {
             self.voice_tap.clear();
+        }
+        if let Some(mates) = mates {
+            for o in mates.iter().filter_map(|id| self.players.get(id)) {
+                if o.connections > 0 && !mutes(o, &p.id) {
+                    self.events.push(Event {
+                        target: Some(o.id.clone()),
+                        message: json!({"type":"event","kind":"voice",
+                        "fromId":p.id,"fromName":p.name,"volume":1.,"data":data}),
+                    });
+                }
+            }
+            return;
         }
         let pos = |q: &Player| Some((q.chao_pose["x"].as_f64()?, q.chao_pose["z"].as_f64()?));
         let Some((x, z)) = pos(p) else { return };
