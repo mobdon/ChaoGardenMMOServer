@@ -1,4 +1,4 @@
-//! The test-only override: off by default, and only for named test accounts.
+//! The override: for named test accounts on a test server, and the admin anywhere.
 use axum::{
     Router,
     body::Body,
@@ -134,10 +134,54 @@ async fn only_a_named_test_account_can_override_and_it_sticks() {
 }
 
 #[tokio::test]
-async fn an_admin_chao_on_the_card_is_refused_even_when_named() {
+async fn an_admin_card_needs_the_admin_key() {
+    const KEY: &str = "synthetic-admin-key-0123456789abcdef";
+    let keyed = |app: Router, auth: &str, key: Option<&str>| {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/test/override")
+            .header("authorization", auth)
+            .header("content-type", "application/json");
+        if let Some(key) = key {
+            request = request.header("x-admin-key", key);
+        }
+        let request = request
+            .body(Body::from(json!({"story": "all"}).to_string()))
+            .unwrap();
+        async move { app.oneshot(request).await.unwrap().status() }
+    };
+    let dir = tempfile::tempdir().unwrap();
+    // No test accounts named: what a hosted server runs with.
+    let mut config = Config::local(dir.path().to_owned(), false);
+    config.admin_key_hash = Some(chao_game_server::game::hash_token(KEY));
+    let state = AppState::load(config).unwrap();
+    let app = || router(state.clone());
+    let admin = account(&state, "owner").await;
+    for p in state.game.lock().unwrap().players.values_mut() {
+        p.admin = true;
+    }
+    let player = account(&state, "player").await;
+
+    // The key alone is not enough, and neither is the admin card alone.
+    for (auth, key) in [
+        (&player, Some(KEY)),
+        (&admin, None),
+        (&admin, Some("wrong")),
+    ] {
+        assert_eq!(keyed(app(), auth, key).await, StatusCode::NOT_FOUND);
+        let (_, story) = call(app(), "GET", "/api/story", auth, json!({})).await;
+        assert_eq!(story["superChao"], false);
+    }
+    assert_eq!(keyed(app(), &admin, Some(KEY)).await, StatusCode::OK);
+    let (_, story) = call(app(), "GET", "/api/story", &admin, json!({})).await;
+    assert_eq!(story["superChao"], true);
+}
+
+#[tokio::test]
+async fn an_admin_card_is_refused_on_a_server_with_no_admin_key() {
     let dir = tempfile::tempdir().unwrap();
     let state = state(dir.path(), &["tester"]);
-    let auth = account(&state, "tester").await;
+    let auth = account(&state, "owner").await;
     for p in state.game.lock().unwrap().players.values_mut() {
         p.admin = true;
     }

@@ -54,6 +54,9 @@ pub struct Config {
     /// Lowercase usernames of the test accounts that may use the test
     /// override route. Empty (the default) turns the route off.
     pub test_accounts: Vec<String>,
+    /// Hash of the admin key (`CHAO_ADMIN_KEY`). None (the default) turns the
+    /// admin's use of the override route off. The key itself is never kept.
+    pub admin_key_hash: Option<String>,
 }
 fn bounded_env(name: &str, default: usize, maximum: usize) -> Result<usize, String> {
     let value = env::var(name)
@@ -95,6 +98,13 @@ impl Config {
         {
             return Err("Test accounts are permitted only on a local test server".into());
         }
+        let admin_key_hash = match env::var("CHAO_ADMIN_KEY") {
+            Ok(key) if key.len() < 32 => {
+                return Err("CHAO_ADMIN_KEY must be at least 32 characters".into());
+            }
+            Ok(key) => Some(crate::game::hash_token(&key)),
+            Err(_) => None,
+        };
         let mut allowed_origins = vec![];
         for value in env::var("CHAO_ALLOWED_ORIGINS")
             .unwrap_or_default()
@@ -125,6 +135,7 @@ impl Config {
             tiny_a3ve_payload: env::var_os("CHAO_TINY_A3VE_PAYLOAD").map(PathBuf::from),
             tiny_garden_payload: env::var_os("CHAO_TINY_GARDEN_PAYLOAD").map(PathBuf::from),
             test_accounts,
+            admin_key_hash,
         })
     }
     pub fn local(data_dir: PathBuf, owner_bootstrap: bool) -> Self {
@@ -142,6 +153,7 @@ impl Config {
             tiny_a3ve_payload: None,
             tiny_asoe_payload: None,
             test_accounts: vec![],
+            admin_key_hash: None,
         }
     }
 }
@@ -1460,26 +1472,32 @@ async fn story_clear(
         Err(cause) => save_failed("story write", cause),
     }
 }
-/// Test servers only: a test account sets its own Chao's stats and its card's
+/// A test account or the admin sets their own Chao's stats and their card's
 /// story progress. Body: `{"stats": {"run": {"level": 99, "grade": 5,
 /// "points": 9999}}, "story": "none" | "hero" | "dark" | "all"}`, each part
-/// optional; "all" is both sides and Cannon's Core (Super Chao). The route
-/// answers 404 unless the server names test accounts, and 403 for any caller
-/// that is not one of them or has an admin Chao on the card.
+/// optional; "all" is both sides and Cannon's Core (Super Chao). A card with
+/// an admin Chao may call it on any server that has an admin key, with that
+/// key in the `x-admin-key` header. Named test accounts may too, and only a
+/// local test server can name them. Everyone else gets 403, or 404 where no
+/// test account is named, so the route looks absent to players.
 async fn test_override(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    if state.config.test_accounts.is_empty() {
-        return error(StatusCode::NOT_FOUND, "Not found.");
-    }
+    let refuse = |status, message| {
+        if state.config.test_accounts.is_empty() {
+            error(StatusCode::NOT_FOUND, "Not found.")
+        } else {
+            error(status, message)
+        }
+    };
     let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
     let Some((id, card)) = bearer(&headers)
         .and_then(|token| game.player_for_token(token))
         .map(|p| (p.id.clone(), p.card().to_owned()))
     else {
-        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+        return refuse(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
     let is_test = {
         let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
@@ -1487,8 +1505,19 @@ async fn test_override(
             .username_for_card(&card)
             .is_some_and(|name| state.config.test_accounts.contains(&name.to_lowercase()))
     };
-    if !is_test || game.players.values().any(|p| p.card() == card && p.admin) {
-        return error(StatusCode::FORBIDDEN, "Only a test account can do this.");
+    // Hashes are compared, so the time taken tells nothing about the key.
+    let keyed = state.config.admin_key_hash.is_some()
+        && headers
+            .get("x-admin-key")
+            .and_then(|key| key.to_str().ok())
+            .map(crate::game::hash_token)
+            == state.config.admin_key_hash;
+    let is_admin = keyed && game.players.values().any(|p| p.card() == card && p.admin);
+    if !is_test && !is_admin {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "Only a test account or the admin can do this.",
+        );
     }
     let story = match body["story"].as_str() {
         None => None,
