@@ -683,3 +683,9 @@ reports at `GET /api/panel/reports` and close one with
 log. Tests: `cargo test` 320 pass, clippy and fmt clean (tested offline).
 Limits: open reports are held in memory and a restart drops them; no page or
 game button calls these routes yet.
+
+## No room chat or voice in menu areas (2026-11-22)
+`MENU_ZONES` (`stadium`, `chao-race`, `chao-karate`) are menus or events, not
+walk-in rooms: room chat there answers with a notice and voice is dropped;
+world chat is unchanged. Tests: `cargo test` 321 pass, clippy and fmt clean
+(tested offline). Limits: no group chat for a shared race or bout yet.
