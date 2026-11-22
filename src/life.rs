@@ -1537,13 +1537,16 @@ fn apply(game: &mut Game, id: &str, request: &Request) -> Result<(String, Value)
             if social_conflict(me) {
                 return Err("activity-conflict");
             }
-            if social_conflict(partner) {
+            // MMO policy: every Chao on the caller's own memory card is a partner wherever
+            // it is, playing or not; nobody answers for it, so the egg is laid at once.
+            let own = partner.card() == me.card();
+            if !own && social_conflict(partner) {
                 return Err("partner-busy");
             }
             if !can_breed(me) || !can_breed(partner) {
                 return Err("stage-conflict");
             }
-            if !in_range(me, partner) {
+            if !own && !in_range(me, partner) {
                 return Err("out-of-range");
             }
             let (my_name, partner_name) = (me.name.clone(), partner.name.clone());
@@ -1566,36 +1569,46 @@ fn apply(game: &mut Game, id: &str, request: &Request) -> Result<(String, Value)
                         .state[3] = 0;
                     return Ok(("garden-full".into(), json!({"breed":0})));
                 }
-                let me = game.players.get_mut(id).expect("checked");
-                me.life.breed_offer = Some(BreedOffer {
-                    partner_id: partner_id.clone(),
-                    expires_at: now + BREED_OFFER_MS,
-                });
-                game.events.push(crate::game::Event {
-                    message: json!({"type":"event","kind":"life-breed-offer","fromId":id,
-                        "fromName":my_name,"expiresAt":now + BREED_OFFER_MS}),
-                    target: Some(partner_id.clone()),
-                });
-                return Ok((
-                    "offer-sent".into(),
-                    json!({"offerExpiresAt":now + BREED_OFFER_MS}),
-                ));
-            }
-            // fn_60_150FC: the answer needs breed above 5000.
-            if me.life.emotion.state[3] <= BREED_ANSWER {
+                if !own {
+                    let me = game.players.get_mut(id).expect("checked");
+                    me.life.breed_offer = Some(BreedOffer {
+                        partner_id: partner_id.clone(),
+                        expires_at: now + BREED_OFFER_MS,
+                    });
+                    game.events.push(crate::game::Event {
+                        message: json!({"type":"event","kind":"life-breed-offer","fromId":id,
+                            "fromName":my_name,"expiresAt":now + BREED_OFFER_MS}),
+                        target: Some(partner_id.clone()),
+                    });
+                    return Ok((
+                        "offer-sent".into(),
+                        json!({"offerExpiresAt":now + BREED_OFFER_MS}),
+                    ));
+                }
+            } else if me.life.emotion.state[3] <= BREED_ANSWER {
+                // fn_60_150FC: the answer needs breed above 5000.
                 return Err("not-ready");
             }
-            if partner.life.nest.len() >= NEST_CAPACITY {
-                return Err("partner-nest-full");
-            }
             // fn_60_40130: the inviter is the mother; MMO policy: the egg goes to her nest.
-            let father = me.life.gene.clone();
-            let mut mother = game.players.remove(partner_id).expect("checked");
+            let (mother_id, mother_name, father_id, father_name) = if answering {
+                (partner_id.as_str(), partner_name, id, my_name)
+            } else {
+                (id, my_name, partner_id.as_str(), partner_name)
+            };
+            if game.players[mother_id].life.nest.len() >= NEST_CAPACITY {
+                return Err(if answering {
+                    "partner-nest-full"
+                } else {
+                    "nest-full"
+                });
+            }
+            let father = game.players[father_id].life.gene.clone();
+            let mut mother = game.players.remove(mother_id).expect("checked");
             let gene = blend(
                 &mut mother.life,
                 &father,
-                [&partner_name, &my_name],
-                [partner_id, id],
+                [&mother_name, &father_name],
+                [mother_id, father_id],
             );
             let expressed = mother.life.analyze(&gene);
             let egg_id = Uuid::new_v4().hyphenated().to_string();
@@ -1609,18 +1622,18 @@ fn apply(game: &mut Game, id: &str, request: &Request) -> Result<(String, Value)
             mother.life.breed_offer = None;
             mother.life.emotion.state[3] = 0;
             mother.life.revision = mother.life.revision.saturating_add(1);
-            game.players.insert(partner_id.clone(), mother);
-            let me = game.players.get_mut(id).expect("checked");
-            me.life.emotion.state[3] = 0;
-            me.life.breed_offer = None;
+            game.players.insert(mother_id.to_owned(), mother);
+            let other = game.players.get_mut(father_id).expect("checked");
+            other.life.emotion.state[3] = 0;
+            other.life.breed_offer = None;
             game.events.push(crate::game::Event {
                 message: json!({"type":"event","kind":"life-egg-laid","eggId":egg_id,
-                    "partnerId":id,"partnerName":my_name}),
-                target: Some(partner_id.clone()),
+                    "partnerId":father_id,"partnerName":father_name}),
+                target: Some(mother_id.to_owned()),
             });
             Ok((
                 "egg-laid".into(),
-                json!({"eggId":egg_id,"keeperId":partner_id}),
+                json!({"eggId":egg_id,"keeperId":mother_id}),
             ))
         }
         Intent::Hatch { egg_id } => {

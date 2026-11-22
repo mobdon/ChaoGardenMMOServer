@@ -472,3 +472,14 @@ is closed (phone, race rules). An empty record (type 0) keeps the saved stats.
 Tests: `cargo test` 292 passed, fmt and Clippy `-D warnings` clean (tested
 offline, synthetic bytes). The stats are whatever the player's game sends: no
 growth check yet. Nothing reads `nativeStats` yet (phone app, race check).
+
+## Own Chao as breeding partners (2026-11-22)
+
+Base `4372b18` (main). Changed paths: `src/life.rs`, `tests/life_protocol.rs`,
+`LIFE.md`, this board. `breed` with a `partnerId` on the caller's own
+memory card (same `card()`) lays the egg at once in the caller's nest: the
+partner need not be connected, in the same garden or in the mood, and no offer
+is sent. The caller still needs breed 10000, both must be adults (not Chaos),
+the card must hold fewer than 8 Chao, and a full caller nest fails
+`nest-full`. Other players' Chao keep the offer and answer. Tests:
+`cargo test` 295 passed, fmt and Clippy `-D warnings` clean (offline).

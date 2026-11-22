@@ -98,7 +98,7 @@ Strict `life` WebSocket envelope:
 
 | Intent | Fields | Meaning |
 | --- | --- | --- |
-| `breed` | `partnerId` | Mate call, or the answer to the partner's open call. |
+| `breed` | `partnerId` | Mate call, or the answer to the partner's open call. A Chao on the caller's own memory card needs no answer: the egg is laid at once in the caller's nest. |
 | `hatch` | `eggId` | Hatch a nest egg (grey cocoon after its check, or dead). |
 | `release-egg` | `eggId` | Remove an egg from the nest. |
 
@@ -107,7 +107,7 @@ replayed, code, revision, rulesVersion, effects}`. Codes: `offer-sent`,
 `garden-full`, `egg-laid`, `hatched`, `released`, `invalid-request`,
 `stale-revision`, `request-id-conflict`, `activity-conflict`, `partner-busy`,
 `stage-conflict`, `out-of-range`, `not-ready`, `invalid-partner`,
-`partner-unavailable`, `partner-nest-full`, `egg-unavailable`, `save-failed`.
+`partner-unavailable`, `partner-nest-full`, `nest-full`, `egg-unavailable`, `save-failed`.
 Retries replay the stored result. The last 256 receipts are kept; an older
 retry fails `stale-revision`. A save failure rolls back both partners.
 
