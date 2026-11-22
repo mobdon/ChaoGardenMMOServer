@@ -196,6 +196,13 @@ impl Accounts {
         self.list.values().find(|a| a.card_hash == card_hash)
     }
     /// Why a new account can't be made, if it can't.
+    /// The username of the account a memory card belongs to.
+    pub fn username_for_card(&self, card_hash: &str) -> Option<&str> {
+        self.list
+            .values()
+            .find(|a| a.card_hash == card_hash)
+            .map(|a| a.username.as_str())
+    }
     pub fn taken(&self, username: &str, email: &str, card_hash: &str) -> Option<&'static str> {
         if self.list.contains_key(&username.to_lowercase()) {
             return Some("That username is taken.");
