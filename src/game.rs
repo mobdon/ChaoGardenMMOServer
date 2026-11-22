@@ -367,6 +367,11 @@ pub struct Mission {
     pub enemies: Vec<Enemy>,
     pub rings: Vec<Ring>,
 }
+fn mutes(listener: &Player, speaker: &str) -> bool {
+    listener.profile_extra["muted"]
+        .as_array()
+        .is_some_and(|l| l.iter().any(|v| v == speaker))
+}
 /// Game units around a Chao within which others hear its voice.
 const VOICE_RADIUS: f64 = 150.;
 #[derive(Clone, Debug)]
@@ -1200,6 +1205,10 @@ impl Game {
             return;
         }
         match action {
+            "mute" => {
+                self.mute(p, message);
+                return;
+            }
             "voice" => {
                 self.voice(p, message);
                 return;
@@ -2063,17 +2072,11 @@ impl Game {
         }
         let msg = json!({"type":"event","kind":"chat","channel":channel,
             "fromId":p.id,"fromName":p.name,"text":text});
-        if channel == "world" {
-            self.events.push(Event {
-                target: None,
-                message: msg,
-            });
-            return;
-        }
+        let world = channel == "world";
         let mut targets: Vec<String> = self
             .players
             .values()
-            .filter(|o| o.connections > 0 && self.same_room(p, o))
+            .filter(|o| o.connections > 0 && (world || self.same_room(p, o)) && !mutes(o, &p.id))
             .map(|o| o.id.clone())
             .collect();
         targets.push(p.id.clone());
@@ -2098,7 +2101,7 @@ impl Game {
         let near: Vec<(String, f64)> = self
             .players
             .values()
-            .filter(|o| o.connections > 0 && self.same_room(p, o))
+            .filter(|o| o.connections > 0 && self.same_room(p, o) && !mutes(o, &p.id))
             .filter_map(|o| {
                 let (ox, oz) = pos(o)?;
                 let d = (ox - x).hypot(oz - z);
@@ -2109,9 +2112,34 @@ impl Game {
             self.events.push(Event {
                 target: Some(target),
                 message: json!({"type":"event","kind":"voice",
-                "fromId":p.id,"volume":volume,"data":data}),
+                "fromId":p.id,"fromName":p.name,"volume":volume,"data":data}),
             });
         }
+    }
+    /// Mutes live in the player's server save; the server then never sends
+    /// that player's chat or voice to them.
+    fn mute(&mut self, p: &mut Player, message: &Value) {
+        let Some(target) = message["playerId"].as_str() else {
+            return;
+        };
+        if target == p.id || !p.profile_extra.is_object() {
+            return;
+        }
+        let mut list: Vec<Value> = p.profile_extra["muted"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        list.retain(|v| v != target);
+        if message["muted"] != false && list.len() < 500 {
+            list.push(target.into());
+        }
+        let reply = json!({"type":"event","kind":"mutes","muted":list});
+        p.profile_extra["muted"] = Value::Array(list);
+        self.dirty = true;
+        self.events.push(Event {
+            target: Some(p.id.clone()),
+            message: reply,
+        });
     }
     fn same_room(&self, viewer: &Player, other: &Player) -> bool {
         if viewer.zone != other.zone {
