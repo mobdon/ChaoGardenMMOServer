@@ -794,6 +794,24 @@ impl Game {
             })
             .collect()
     }
+    /// Delete the Chao a token opens. The owner's admin Chao and a Chao that is out right now stay.
+    pub fn delete_chao(&mut self, token: &str) -> Result<String, &'static str> {
+        let player = self
+            .player_for_token(token)
+            .ok_or("Invalid session token.")?;
+        if player.admin {
+            return Err("The admin Chao can't be deleted.");
+        }
+        if player.connections > 0 {
+            return Err("This Chao is playing right now. Leave the game first.");
+        }
+        let (id, hash) = (player.id.clone(), player.token_hash.clone());
+        self.tokens.remove(&hash);
+        self.players.remove(&id);
+        self.benched.remove(&id);
+        self.dirty = true;
+        Ok(id)
+    }
     /// The card a bearer credential (a Chao's token or a card code) opens.
     pub fn card_for(&self, credential: &str) -> Option<String> {
         if let Some(p) = self.player_for_token(credential) {
