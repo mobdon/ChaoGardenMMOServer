@@ -889,18 +889,18 @@ async fn chao_record_put(
     let Some(p) = game.players.get_mut(&id) else {
         return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
     };
-    let mut save = false;
-    if p.chao_record != body {
+    // The copy is saved with the profile, so the card list has it after a restart.
+    let changed = p.chao_record != body;
+    if changed {
         p.chao_record = body.to_vec();
         p.chao_record_version += 1;
         // An empty record (type 0) keeps the stats already saved.
         if let Some(stats) = crate::game_save::native_stats(&body) {
-            save = p.native_stats != Some(stats);
             p.native_stats = Some(stats);
         }
     }
     let version = p.chao_record_version;
-    game.dirty |= save;
+    game.dirty |= changed;
     Json(json!({"ok": true, "version": version})).into_response()
 }
 /// Another connected player's Chao record in the caller's room (the same
@@ -2306,6 +2306,57 @@ mod account_tests {
             .unwrap()
             .to_bytes();
         (status, bytes.to_vec())
+    }
+
+    #[tokio::test]
+    async fn the_card_list_carries_each_played_chao_record_across_a_restart() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        async fn call(app: &Router, method: &str, uri: &str, bearer: &str, body: Vec<u8>) -> Value {
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+                .body(axum::body::Body::from(body))
+                .unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{method} {uri}");
+            let bytes = http_body_util::BodyExt::collect(response.into_body())
+                .await
+                .unwrap()
+                .to_bytes();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        let app = router(state.clone());
+        let (card, first, _) = new_account(&app).await;
+        let (status, made) = post(
+            &app,
+            "/api/session",
+            json!({"name": "Second", "card": card}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        // Synthetic test record: right size, a non-empty type byte, filler.
+        let mut record = vec![7u8; CHAO_RECORD_BYTES];
+        record[0x80] = 2;
+        call(&app, "PUT", "/api/chao-record", &first, record.clone()).await;
+        let check = |listed: Value| {
+            let chao = listed["chao"].as_array().unwrap().clone();
+            assert_eq!(chao.len(), 2);
+            for entry in chao {
+                if entry["token"] == json!(first) {
+                    let text = entry["record"].as_str().expect("played Chao has a record");
+                    assert_eq!(STANDARD.decode(text).unwrap(), record);
+                } else {
+                    assert!(entry.get("record").is_none(), "never played: no record");
+                }
+            }
+        };
+        check(call(&app, "GET", "/api/card", &card, vec![]).await);
+        state.persist(&mut state.game.lock().unwrap()).unwrap();
+        let reloaded = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        check(call(&router(reloaded), "GET", "/api/card", &card, vec![]).await);
     }
 
     #[tokio::test]
