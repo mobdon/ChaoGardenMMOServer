@@ -835,7 +835,7 @@ fn deleting_a_chao_removes_it_and_its_token_but_keeps_the_admin() {
     let (mut g, id, token) = fixture(false);
     g.players.get_mut(&id).unwrap().connections = 0;
     assert_eq!(g.delete_chao(&token), Ok(id.clone()));
-    assert!(g.players.get(&id).is_none() && g.player_for_token(&token).is_none());
+    assert!(!g.players.contains_key(&id) && g.player_for_token(&token).is_none());
     let (mut g, id, token) = fixture(true);
     g.players.get_mut(&id).unwrap().connections = 0;
     assert!(g.players[&id].admin && g.delete_chao(&token).is_err());
