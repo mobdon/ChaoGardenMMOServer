@@ -550,3 +550,26 @@ git). Limits: every face part in the model is drawn (eyelids, mouth); the
 face rule, head ball, body families with morphs, colour table, the full
 motion set and eggs are not converted yet; Steam folder only, no disc image;
 not run on a hosted server.
+
+## Test-only stats and story override (2026-11-22, branch `claude/project-thread-h0midt`)
+
+Base `f80efa8` (main). Changed paths: `src/service.rs`, `src/accounts.rs`,
+`tests/test_override.rs`, this board. `POST /api/test/override` lets a test
+account set its own Chao's profile stats (level, grade, points) and its
+card's story progress (`none`, `hero`, `dark`, `all`). It answers 404 unless
+`CHAO_TEST_ACCOUNTS` names accounts (empty by default), 403 for a caller whose
+account is not named or whose card holds an admin Chao, and the server refuses
+to start with `CHAO_TEST_ACCOUNTS` on a non-loopback listener or with
+`CHAO_PUBLIC_URL` set. Tests: `cargo test` passes with 3 new route tests, fmt
+and Clippy `-D warnings` clean (tested offline). Limits: the start-up refusal
+has no test; profile stats are replaced by the game's own Chao record the next
+time the game sends one; nothing is deployed.
+
+Update, same day: a card with an admin Chao may now use the route too, on any
+server, but only when `CHAO_ADMIN_KEY` is set (32 characters or more; only its
+hash is kept) and the request carries that key in the `x-admin-key` header.
+Without both the card and the key the answer is the same 404 or 403 as for any
+player. Tests: `cargo test` 317 pass with 4 route tests, fmt and Clippy clean
+(tested offline). Limits: one key for the whole server, no per-moderator keys
+or roles, no rate limit on wrong keys, and the key length check at start-up
+has no test; nothing is deployed and no key is set anywhere.
