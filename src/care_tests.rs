@@ -742,3 +742,48 @@ fn unavailable_tiny_source_preserves_owned_fruit_and_rejects_noncanonical_ids() 
         false
     );
 }
+
+#[test]
+fn chat_room_reaches_only_the_room_and_world_reaches_everyone() {
+    let (mut game, a) = fixture(false);
+    let b = game.create_session(&json!({"name":"Synthetic b"})).unwrap()["player"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    game.connect(&b);
+    game.players.get_mut(&b).unwrap().zone = "elsewhere".into();
+    game.events.clear();
+    game.action(
+        &a,
+        &json!({"type":"action","action":"chat","channel":"room","text":" hi\u{7}\n "}),
+    );
+    let chats: Vec<_> = game
+        .events
+        .iter()
+        .filter(|e| e.message["kind"] == "chat")
+        .collect();
+    assert_eq!(chats.len(), 1);
+    assert_eq!(chats[0].target.as_deref(), Some(a.as_str()));
+    assert_eq!(chats[0].message["text"], "hi");
+    game.events.clear();
+    game.action(
+        &a,
+        &json!({"type":"action","action":"chat","channel":"world","text":"again"}),
+    );
+    assert!(
+        game.events.iter().all(|e| e.message["kind"] != "chat"),
+        "1 s chat cooldown"
+    );
+    game.time += 1001.;
+    game.action(
+        &a,
+        &json!({"type":"action","action":"chat","channel":"world","text":"x".repeat(500)}),
+    );
+    let chat = game
+        .events
+        .iter()
+        .find(|e| e.message["kind"] == "chat")
+        .unwrap();
+    assert!(chat.target.is_none());
+    assert_eq!(chat.message["text"].as_str().unwrap().len(), 200);
+}
