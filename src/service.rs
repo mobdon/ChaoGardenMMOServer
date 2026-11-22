@@ -952,6 +952,8 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "dark-walker-booster",
         "shadow-air-shoes-left",
         "shadow-air-shoes-right",
+        "sonic-light-shoes-left",
+        "sonic-light-shoes-right",
         "knuckles-hammer-gloves-left",
         "knuckles-hammer-gloves-right",
         // Native Chao behaviour clips selected locally by the client tooling.
