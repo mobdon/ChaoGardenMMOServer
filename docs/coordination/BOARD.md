@@ -689,3 +689,24 @@ game button calls these routes yet.
 walk-in rooms: room chat there answers with a notice and voice is dropped;
 world chat is unchanged. Tests: `cargo test` 321 pass, clippy and fmt clean
 (tested offline). Limits: no group chat for a shared race or bout yet.
+
+## Queues for group Chao Race and PvP Chao Karate, step 1 (2026-11-22)
+Base 75253e6. Changed paths: `src/queue.rs` (new), `src/game.rs`, `src/lib.rs`.
+Actions `queue-join` (`event` `chao-karate` or `chao-race`, `ranked`, and
+`courseId` for a race), `queue-ready` (`ready`) and `queue-leave`; members get
+`{"kind":"queue"}` events listing the group, ready marks and `started`. A
+Karate group holds 2, a race group 8; a group starts when it has at least two
+members and all are ready. Ranked and unranked never mix. Changing area or
+disconnecting leaves the group. Tests: `cargo test` all pass (5 new), clippy
+and fmt clean (tested offline). Limits: groups are memory only; a started
+group runs no bout or race yet and saves no result or ranked record; no group
+chat or voice channel yet; no client sends these actions.
+
+## Queue group chat and voice (2026-11-22)
+Changed paths: `src/game.rs`, `src/queue.rs`. Chat takes a third channel,
+`group`, delivered only to the sender's queue group. In the menu areas voice
+from a queue member is relayed to the rest of its group at full volume (no
+distance), and still reaches the staff voice tap under the speaker's room
+(`chao-race` or `chao-karate`). Outside a group both stay off there. Tests:
+`cargo test --lib` 134 pass (1 new), clippy and fmt clean (tested offline).
+Limits: no client sends the `group` channel yet.

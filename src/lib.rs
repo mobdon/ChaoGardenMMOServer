@@ -22,6 +22,7 @@ pub mod mail;
 pub mod metrics;
 pub mod native_tiny;
 pub mod phone;
+pub mod queue;
 pub mod recomp;
 pub mod service;
 pub mod story;
