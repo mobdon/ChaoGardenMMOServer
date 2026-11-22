@@ -581,3 +581,18 @@ takes effect once the file and the audit entry are written. Tests: `cargo
 test` 316 pass, clippy and fmt clean (tested offline). Limits: a ban is per
 card, a new account gets around it; no chat log, voice listen-in or panel
 page yet; not run on a hosted server.
+
+## Staff chat log and voice listen-in (2026-11-22)
+Builds on the two staff entries above. Changed paths: `src/game.rs`,
+`src/service.rs`. The game keeps the last 200 chat lines in memory, each
+with a line number that chat events now carry. `GET /api/panel/chat` lists
+them; `POST /api/panel/chat/delete` removes one, sends every connected
+player a `chat-delete` event and records the deleted line in the audit log.
+`GET /api/panel/voice?room=&after=` returns a room's recent voice frames
+for polling; frames are kept (memory only, 400 at most) only while a staff
+member is polling, and each new sitting is audited. `GET /api/panel/status`
+shows admins who is listening. Tests: `cargo test` 316 pass, clippy and fmt
+clean (tested offline). Limits: the game page does not yet act on
+`chat-delete`; a room is the zone name, so race courses and karate bouts
+are not told apart; polling adds a fraction of a second of delay; no panel
+page yet; not run on a hosted server.

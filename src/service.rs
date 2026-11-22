@@ -141,6 +141,8 @@ pub struct AppState {
     /// Open panel sessions: token hash -> (lowercase username, last use). Memory only.
     panel_sessions: Arc<Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>>,
     started: std::time::Instant,
+    /// Staff listening to a room's voice: username -> (room, last poll).
+    panel_listens: Arc<Mutex<BTreeMap<String, (String, std::time::Instant)>>>,
     connections: Arc<Semaphore>,
     seen_connections: Arc<Mutex<BTreeSet<String>>>,
 }
@@ -295,6 +297,7 @@ impl AppState {
             mailer: Arc::new(crate::mail::Mailer::from_env()),
             panel_sessions: Arc::default(),
             started: std::time::Instant::now(),
+            panel_listens: Arc::default(),
             game: Arc::new(Mutex::new(game)),
             config: Arc::new(config),
             events,
@@ -546,6 +549,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/panel/status", get(panel_status))
         .route("/api/panel/players", get(panel_players))
         .route("/api/panel/sanction", post(panel_sanction))
+        .route("/api/panel/chat", get(panel_chat))
+        .route("/api/panel/chat/delete", post(panel_chat_delete))
+        .route("/api/panel/voice", get(panel_voice))
         .route("/api/tiny-care", post(tiny_care))
         .route(
             "/api/tiny-chao",
@@ -1464,15 +1470,29 @@ async fn panel_me(State(state): State<AppState>, headers: HeaderMap) -> Response
 }
 /// Server status for staff: players online and how long the server has been up.
 async fn panel_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if panel_staff(&state, &headers).is_none() {
+    let Some((_, role)) = panel_staff(&state, &headers) else {
         return error(StatusCode::NOT_FOUND, "Not found.");
-    }
+    };
     let online = state
         .game
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .online_connections();
-    no_store(json!({"online": online, "uptimeSeconds": state.started.elapsed().as_secs()}))
+    let now = std::time::Instant::now();
+    let listening: Vec<Value> = state
+        .panel_listens
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter(|(_, (_, at))| now.duration_since(*at) < LISTEN_GAP)
+        .map(|(name, (room, _))| json!({"staff": name, "room": room}))
+        .collect();
+    let mut body = json!({"online": online, "uptimeSeconds": state.started.elapsed().as_secs()});
+    // Only admins see who is listening in.
+    if role == crate::accounts::Role::Admin {
+        body["listening"] = json!(listening);
+    }
+    no_store(body)
 }
 /// Who is online, with room, account name, staff role and running limits.
 async fn panel_players(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1594,6 +1614,102 @@ async fn panel_sanction(
         return error(StatusCode::INTERNAL_SERVER_ERROR, "Could not save that.");
     }
     no_store(json!({"ok": true, "limits": next}))
+}
+/// The recent chat lines, oldest first.
+async fn panel_chat(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if panel_staff(&state, &headers).is_none() {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    }
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    no_store(json!({ "lines": game.chat_log }))
+}
+async fn panel_chat_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some((staff, _)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(line) = input["line"].as_u64().and_then(|l| game.delete_chat(l)) else {
+        return error(StatusCode::NOT_FOUND, "No such line.");
+    };
+    publish_events(&state, &mut game);
+    drop(game);
+    // The audit entry keeps the deleted words, so a delete can be reviewed.
+    if let Err(cause) = crate::audit::record(
+        &state.config.data_dir,
+        &staff,
+        "chat-delete",
+        &line.to_string(),
+    ) {
+        eprintln!("Audit log write failed: {cause}");
+    }
+    no_store(json!({"ok": true}))
+}
+/// A listen-in counts as one sitting while its polls are this close together.
+const LISTEN_GAP: Duration = Duration::from_secs(10);
+
+/// Listen in on one room's voice: the frames after `after`, polled a few times a second.
+/// Each new sitting (or change of room) is written to the audit log before any audio is given.
+async fn panel_voice(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some((staff, _)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let room = query.get("room").cloned().unwrap_or_default();
+    if room.is_empty()
+        || room.len() > 40
+        || !room
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return error(StatusCode::BAD_REQUEST, "Name a room.");
+    }
+    let after = query
+        .get("after")
+        .and_then(|a| a.parse::<u64>().ok())
+        .unwrap_or(0);
+    let now = std::time::Instant::now();
+    let fresh = {
+        let mut listens = state
+            .panel_listens
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let old = listens.insert(staff.clone(), (room.clone(), now));
+        !old.is_some_and(|(was, at)| was == room && now.duration_since(at) < LISTEN_GAP)
+    };
+    if fresh
+        && let Err(cause) =
+            crate::audit::record(&state.config.data_dir, &staff, "voice-listen", &room)
+    {
+        eprintln!("Audit log write failed: {cause}");
+        state
+            .panel_listens
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&staff);
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not start listening.",
+        );
+    }
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    game.voice_tap_until = crate::game::unix_now() + LISTEN_GAP.as_secs();
+    let frames: Vec<&Value> = game
+        .voice_tap
+        .iter()
+        .filter(|f| f["room"] == room.as_str() && f["frame"].as_u64().is_some_and(|n| n > after))
+        .collect();
+    no_store(json!({ "frames": frames }))
 }
 /// The login screen's delete: copies profiles.json aside first, then removes the Chao for good.
 async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -2493,9 +2609,98 @@ mod account_tests {
                 .clone()
         };
         assert_eq!(act(own, "chat", json!(1)).await.0, StatusCode::FORBIDDEN);
+        // Chat log and delete: a line is listed, deleted once, and everyone is told to drop it.
+        {
+            let mut game = state.game.lock().unwrap();
+            game.sanctions.clear();
+            game.time += 2000.;
+            game.action(
+                &loud,
+                &json!({"type":"action","action":"chat","channel":"world","text":"rude words"}),
+            );
+            game.drain_events();
+        }
+        let (_, chat) = panel(&app, "/api/panel/chat", "x-panel-token", &token, None).await;
+        let last = chat["lines"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(
+            (last["text"].as_str(), last["fromId"].as_str()),
+            (Some("rude words"), Some(loud.as_str()))
+        );
+        let mut watching = state.events.subscribe();
+        let delete = Some(json!({"line": last["line"]}));
+        let (status, _) = panel(
+            &app,
+            "/api/panel/chat/delete",
+            "x-panel-token",
+            &token,
+            delete.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let told = watching.try_recv().unwrap();
+        assert_eq!(
+            (told.message["kind"].as_str(), told.target.as_deref()),
+            (Some("chat-delete"), Some(loud.as_str()))
+        );
+        let (status, _) = panel(
+            &app,
+            "/api/panel/chat/delete",
+            "x-panel-token",
+            &token,
+            delete,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (_, chat) = panel(&app, "/api/panel/chat", "x-panel-token", &token, None).await;
+        assert!(
+            chat["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| l["text"] != "rude words")
+        );
+        // Voice listen-in: nothing is kept until staff listen; then a room's frames come back
+        // even with no Chao position, only for that room, and the sitting is logged once.
+        let speak = |state: &AppState| {
+            let mut game = state.game.lock().unwrap();
+            game.time += 100.;
+            game.action(
+                &loud,
+                &json!({"type":"action","action":"voice","data":"AAAA"}),
+            );
+        };
+        speak(&state);
+        assert!(state.game.lock().unwrap().voice_tap.is_empty());
+        let room = state.game.lock().unwrap().players[&loud].zone.clone();
+        let listen = format!("/api/panel/voice?room={room}");
+        let (status, heard) = panel(&app, &listen, "x-panel-token", &token, None).await;
+        assert_eq!(
+            (status, heard["frames"].as_array().unwrap().len()),
+            (StatusCode::OK, 0)
+        );
+        speak(&state);
+        let (_, heard) = panel(&app, &listen, "x-panel-token", &token, None).await;
+        assert_eq!(heard["frames"][0]["data"], "AAAA");
+        let after = format!("{listen}&after={}", heard["frames"][0]["frame"]);
+        let (_, heard) = panel(&app, &after, "x-panel-token", &token, None).await;
+        assert_eq!(heard["frames"].as_array().unwrap().len(), 0);
+        let (_, heard) = panel(
+            &app,
+            "/api/panel/voice?room=elsewhere",
+            "x-panel-token",
+            &token,
+            None,
+        )
+        .await;
+        assert_eq!(heard["frames"].as_array().unwrap().len(), 0);
+        let (_, live) = panel(&app, "/api/panel/status", "x-panel-token", &token, None).await;
+        assert!(live.get("listening").is_none());
         for (path, body) in [
             ("/api/panel/players", None),
             ("/api/panel/sanction", Some(json!({}))),
+            ("/api/panel/chat", None),
+            ("/api/panel/chat/delete", Some(json!({"line": 1}))),
+            ("/api/panel/voice?room=x", None),
         ] {
             let (status, _) = panel(&app, path, "x-panel-token", "nope", body).await;
             assert_eq!(status, StatusCode::NOT_FOUND);
@@ -2516,6 +2721,9 @@ mod account_tests {
         assert_eq!(log.matches("\"panel-login\"").count(), 2);
         assert_eq!(log.matches("\"chat:10\"").count(), 1);
         assert_eq!(log.matches("\"kick:null\"").count(), 1);
+        assert_eq!(log.matches("chat-delete").count(), 1);
+        assert!(log.contains("rude words"));
+        assert_eq!(log.matches("voice-listen").count(), 2);
         assert_eq!(log.matches("panel-login-refused").count(), 4);
         assert!(!log.contains(&panel_key));
     }

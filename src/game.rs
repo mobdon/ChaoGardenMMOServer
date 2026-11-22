@@ -426,6 +426,10 @@ fn mutes(listener: &Player, speaker: &str) -> bool {
         .as_array()
         .is_some_and(|l| l.iter().any(|v| v == speaker))
 }
+/// Chat lines kept for staff.
+const CHAT_LOG: usize = 200;
+/// Voice frames kept while staff listen in (60 ms each).
+const VOICE_TAP: usize = 400;
 /// Game units around a Chao within which others hear its voice.
 const VOICE_RADIUS: f64 = 150.;
 #[derive(Clone, Debug)]
@@ -468,6 +472,14 @@ pub struct Game {
     pub benched: BTreeSet<String>,
     /// Staff limits by memory card (`Player::card`). Kept in `sanctions.json` by the service.
     pub sanctions: BTreeMap<String, Sanction>,
+    /// The last `CHAT_LOG` chat lines, for staff (memory only).
+    pub chat_log: std::collections::VecDeque<Value>,
+    chat_lines: u64,
+    /// Voice frames kept for staff listening in, only while `voice_tap_until`
+    /// (Unix seconds) is ahead of now. Nothing is written to disk.
+    pub voice_tap: std::collections::VecDeque<Value>,
+    pub voice_tap_until: u64,
+    voice_frames: u64,
     pub tokens: BTreeMap<String, String>,
     pub events: Vec<Event>,
     pub dirty: bool,
@@ -551,6 +563,11 @@ impl Game {
             players: BTreeMap::new(),
             benched: BTreeSet::new(),
             sanctions: BTreeMap::new(),
+            chat_log: Default::default(),
+            chat_lines: 0,
+            voice_tap: Default::default(),
+            voice_tap_until: 0,
+            voice_frames: 0,
             tokens: BTreeMap::new(),
             events: vec![],
             dirty: false,
@@ -993,6 +1010,25 @@ impl Game {
         };
         self.players.insert(id, player);
         result
+    }
+    /// Staff delete of one chat line: gone from the log, and every connected
+    /// player is told to drop it. False when the line is not in the log.
+    pub fn delete_chat(&mut self, line: u64) -> Option<Value> {
+        let at = self.chat_log.iter().position(|l| l["line"] == line)?;
+        let removed = self.chat_log.remove(at)?;
+        let targets: Vec<String> = self
+            .players
+            .values()
+            .filter(|o| o.connections > 0)
+            .map(|o| o.id.clone())
+            .collect();
+        for target in targets {
+            self.events.push(Event {
+                target: Some(target),
+                message: json!({"type":"event","kind":"chat-delete","line":line}),
+            });
+        }
+        Some(removed)
     }
     /// The limits on a player's memory card that are still running.
     pub fn sanction(&self, p: &Player) -> Sanction {
@@ -2259,8 +2295,16 @@ impl Game {
             });
             return;
         }
-        let msg = json!({"type":"event","kind":"chat","channel":channel,
+        self.chat_lines += 1;
+        let msg = json!({"type":"event","kind":"chat","channel":channel,"line":self.chat_lines,
             "fromId":p.id,"fromName":p.name,"text":text});
+        if self.chat_log.len() == CHAT_LOG {
+            self.chat_log.pop_front();
+        }
+        self.chat_log.push_back(
+            json!({"line":self.chat_lines,"at":unix_now(),"channel":channel,
+            "room":p.zone,"fromId":p.id,"fromName":p.name,"text":text}),
+        );
         let world = channel == "world";
         let mut targets: Vec<String> = self
             .players
@@ -2324,11 +2368,22 @@ impl Game {
         let Some(data) = message["data"].as_str() else {
             return;
         };
-        let pos = |q: &Player| Some((q.chao_pose["x"].as_f64()?, q.chao_pose["z"].as_f64()?));
-        let Some((x, z)) = pos(p) else { return };
         if data.is_empty() || data.len() > 1400 || self.sanction(p).voice_until > 0 {
             return;
         }
+        if self.voice_tap_until > unix_now() {
+            self.voice_frames += 1;
+            if self.voice_tap.len() == VOICE_TAP {
+                self.voice_tap.pop_front();
+            }
+            self.voice_tap
+                .push_back(json!({"frame":self.voice_frames,"room":p.zone,
+                "fromId":p.id,"fromName":p.name,"data":data}));
+        } else {
+            self.voice_tap.clear();
+        }
+        let pos = |q: &Player| Some((q.chao_pose["x"].as_f64()?, q.chao_pose["z"].as_f64()?));
+        let Some((x, z)) = pos(p) else { return };
         let near: Vec<(String, f64)> = self
             .players
             .values()
