@@ -523,6 +523,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/chao-record", put(chao_record_put))
         .route("/api/chao-record/{id}", get(chao_record_get))
         .route("/api/card", get(card))
+        .route("/api/settings", get(settings_get).post(settings_post))
         .route("/api/gear-pickup", post(gear_pickup))
         .route("/api/account/register", post(account_register))
         .route("/api/account/login", post(account_login))
@@ -921,6 +922,24 @@ async fn card(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return error(StatusCode::NOT_FOUND, "Memory card was not found.");
     }
     Json(json!({"chao": chao})).into_response()
+}
+/// The pause menu's Extras settings, for the game page outside a room.
+async fn settings_get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    settings_reply(&state, &headers, None)
+}
+async fn settings_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(changes): Json<Value>,
+) -> Response {
+    settings_reply(&state, &headers, Some(&changes))
+}
+fn settings_reply(state: &AppState, headers: &HeaderMap, changes: Option<&Value>) -> Response {
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    match bearer(headers).and_then(|token| game.settings_for_token(token, changes)) {
+        Some(settings) => Json(json!({ "settings": settings })).into_response(),
+        None => error(StatusCode::UNAUTHORIZED, "Invalid session token."),
+    }
 }
 #[allow(clippy::result_large_err)]
 fn json_body(headers: &HeaderMap, body: &Bytes) -> Result<Value, Response> {
