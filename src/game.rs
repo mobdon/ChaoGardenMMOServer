@@ -1686,7 +1686,7 @@ impl Game {
             let water = p.zone == "garden" && dist(p.x, p.z, -8., 0.) < 5.;
             let metal = p.gear.look.as_deref() == Some("metal-sonic-chao");
             let gravity = if metal { METAL_CHAO_GRAVITY } else { 12. };
-            // Outside races every player Chao runs at the Metal Sonic Chao's top speed;
+            // Outside races every player Chao runs at Sonic/Shadow top speed (rows 0/1 SpeedMaxH = row 12);
             // races keep the stat-based speed.
             let land_speed = if metal || p.race.is_none() {
                 METAL_CHAO_TOP_SPEED
