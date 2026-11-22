@@ -4,13 +4,13 @@ use axum::{
     Json, Router,
     body::{Body, Bytes},
     extract::{
-        DefaultBodyLimit, OriginalUri, Query, Request, State, WebSocketUpgrade,
+        DefaultBodyLimit, OriginalUri, Path, Query, Request, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket},
     },
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -136,6 +136,7 @@ pub struct AppState {
     pub events: broadcast::Sender<Event>,
     pub shutdown: watch::Sender<bool>,
     pub metrics: Arc<Metrics>,
+    pub accounts: Arc<Mutex<crate::accounts::Accounts>>,
     connections: Arc<Semaphore>,
     seen_connections: Arc<Mutex<BTreeSet<String>>>,
 }
@@ -280,6 +281,9 @@ impl AppState {
         let (shutdown, _) = watch::channel(false);
         let connections = Arc::new(Semaphore::new(config.max_connections));
         Ok(Self {
+            accounts: Arc::new(Mutex::new(crate::accounts::Accounts::load(
+                config.data_dir.clone(),
+            )?)),
             game: Arc::new(Mutex::new(game)),
             config: Arc::new(config),
             events,
@@ -516,8 +520,12 @@ pub fn router(state: AppState) -> Router {
             post(game_save_renew).delete(game_save_release),
         )
         .route("/api/game-save/status", get(game_save_status))
+        .route("/api/chao-record", put(chao_record_put))
+        .route("/api/chao-record/{id}", get(chao_record_get))
         .route("/api/card", get(card))
         .route("/api/settings", get(settings_get).post(settings_post))
+        .route("/api/account/register", post(account_register))
+        .route("/api/account/login", post(account_login))
         .route("/api/chao", delete(delete_chao))
         // Deployment probes and metrics: unauthenticated, cheap, excluded from
         // the request metrics themselves.
@@ -826,6 +834,65 @@ async fn game_save_put(State(state): State<AppState>, headers: HeaderMap, body: 
         Err(io_error) => save_failed("write", io_error),
     }
 }
+/// Size of one native Chao save record.
+pub const CHAO_RECORD_BYTES: usize = 0x800;
+/// The caller's own Chao record, raw, from its game (client chao_player
+/// export_record). A changed record bumps the version others see in the
+/// snapshot as players[].chaoRecordVersion.
+async fn chao_record_put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if body.len() != CHAO_RECORD_BYTES {
+        return error(StatusCode::BAD_REQUEST, "A Chao record is 2048 bytes.");
+    }
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(id) = bearer(&headers)
+        .and_then(|t| game.player_for_token(t))
+        .map(|p| p.id.clone())
+    else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    let Some(p) = game.players.get_mut(&id) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    if p.chao_record != body {
+        p.chao_record = body.to_vec();
+        p.chao_record_version += 1;
+    }
+    Json(json!({"ok": true, "version": p.chao_record_version})).into_response()
+}
+/// Another connected player's Chao record in the caller's room (the same
+/// players its snapshot lists), for the caller's game to draw that Chao.
+async fn chao_record_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(viewer) = bearer(&headers).and_then(|t| game.player_for_token(t)) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    match game
+        .players
+        .get(&id)
+        .filter(|p| p.connections > 0 && !p.chao_record.is_empty() && game.same_room(viewer, p))
+    {
+        Some(p) => (
+            [
+                (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+                (
+                    header::HeaderName::from_static("x-chao-record-version"),
+                    p.chao_record_version.to_string(),
+                ),
+            ],
+            p.chao_record.clone(),
+        )
+            .into_response(),
+        None => error(StatusCode::NOT_FOUND, "That Chao isn't here."),
+    }
+}
 /// Insert a memory card: every Chao on it, with the token that opens each.
 async fn card(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let game = state.game.lock().unwrap_or_else(|p| p.into_inner());
@@ -854,6 +921,141 @@ fn settings_reply(state: &AppState, headers: &HeaderMap, changes: Option<&Value>
         Some(settings) => Json(json!({ "settings": settings })).into_response(),
         None => error(StatusCode::UNAUTHORIZED, "Invalid session token."),
     }
+}
+#[allow(clippy::result_large_err)]
+fn json_body(headers: &HeaderMap, body: &Bytes) -> Result<Value, Response> {
+    if !headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("application/json"))
+    {
+        return Err(error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Use application/json.",
+        ));
+    }
+    serde_json::from_slice(body).map_err(|_| error(StatusCode::BAD_REQUEST, "Invalid JSON."))
+}
+/// Makes an account for the memory card the caller holds (its card code).
+async fn account_register(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let field = |k: &str| input[k].as_str().unwrap_or_default().trim().to_owned();
+    let (username, email, card) = (field("username"), field("email"), field("card"));
+    let password = input["password"].as_str().unwrap_or_default().to_owned();
+    if !crate::accounts::valid_username(&username) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Usernames are 3 to 20 letters, numbers, _ or -.",
+        );
+    }
+    if !crate::accounts::valid_email(&email) {
+        return error(StatusCode::BAD_REQUEST, "That email doesn't look right.");
+    }
+    if !crate::accounts::valid_password(&password) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Passwords are 8 to 128 characters.",
+        );
+    }
+    if state
+        .game
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .card_chao(&card)
+        .is_empty()
+    {
+        return error(StatusCode::NOT_FOUND, "Memory card was not found.");
+    }
+    let made = {
+        let (username, email, password, card) =
+            (username.clone(), email.clone(), password, card.clone());
+        tokio::task::spawn_blocking(move || {
+            crate::accounts::Account::new(&username, &email, &password, &card)
+        })
+        .await
+    };
+    let Ok(Ok(account)) = made else {
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not make your account.",
+        );
+    };
+    let mut accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(why) = accounts.taken(&username, &email, &account.card_hash) {
+        return error(StatusCode::CONFLICT, why);
+    }
+    match accounts.insert(account) {
+        Ok(()) => Json(json!({"username": username})).into_response(),
+        Err(cause) => {
+            eprintln!("Account save failed: {cause}");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not save your account.",
+            )
+        }
+    }
+}
+/// Username (or email) and password: answers with the card code and the
+/// card's Chao, as `/api/card` does for a card code.
+async fn account_login(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let login = input["login"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let password = input["password"].as_str().unwrap_or_default().to_owned();
+    let refused = || error(StatusCode::UNAUTHORIZED, "Wrong username or password.");
+    if login.is_empty() || login.len() > 254 || password.len() > 512 {
+        return refused();
+    }
+    let account = {
+        let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+        if accounts.locked(&login, std::time::Instant::now()) {
+            return error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many tries. Wait a minute.",
+            );
+        }
+        accounts.find(&login).cloned()
+    };
+    let card = tokio::task::spawn_blocking(move || match account {
+        Some(account) => account.open(&password),
+        None => {
+            crate::accounts::waste_a_check(&password);
+            None
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+    let mut accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(card) = card else {
+        accounts.failed(&login, std::time::Instant::now());
+        return refused();
+    };
+    accounts.succeeded(&login);
+    drop(accounts);
+    let chao = state
+        .game
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .card_sessions(&card);
+    let mut response = Json(json!({"card": card, "chao": chao})).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
 }
 /// The login screen's delete: copies profiles.json aside first, then removes the Chao for good.
 async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1698,5 +1900,68 @@ mod capacity_tests {
         assert!(rendered.contains("chao_tick_duration_seconds_bucket{le=\"0.1\"} 2\n"));
         assert!(rendered.contains("chao_tick_duration_seconds_sum 0.102\n"));
         assert!(rendered.contains("chao_tick_duration_seconds_count 2\n"));
+    }
+}
+
+#[cfg(test)]
+mod account_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    async fn post(app: &Router, path: &str, body: Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::post(path)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn register_then_login_returns_the_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        let app = router(state.clone());
+        let (status, made) = post(&app, "/api/session", json!({"name": "Test"})).await;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let card = made["card"].as_str().unwrap().to_owned();
+        let account = json!({"username": "tester", "email": "t@example.com", "password": "long enough pw", "card": card});
+        assert_eq!(
+            post(&app, "/api/account/register", account.clone()).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post(&app, "/api/account/register", account).await.0,
+            StatusCode::CONFLICT
+        );
+        let (status, login) = post(
+            &app,
+            "/api/account/login",
+            json!({"login": "T@example.com", "password": "long enough pw"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(login["card"], card);
+        assert_eq!(login["chao"][0]["token"], made["token"]);
+        let wrong = json!({"login": "tester", "password": "wrong password"});
+        assert_eq!(
+            post(&app, "/api/account/login", wrong).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        let on_disk = fs::read_to_string(dir.path().join("accounts.json")).unwrap();
+        assert!(!on_disk.contains(&card) && !on_disk.contains("long enough pw"));
     }
 }

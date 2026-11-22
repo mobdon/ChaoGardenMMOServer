@@ -786,6 +786,15 @@ fn chat_room_reaches_only_the_room_and_world_reaches_everyone() {
         .collect();
     assert_eq!(chats.len(), 2, "world reaches the other room too");
     assert_eq!(chats[0].message["text"].as_str().unwrap().len(), 200);
+    // What each socket is sent goes through event_visible.
+    let seen = |game: &Game, id: &str| {
+        game.events
+            .iter()
+            .filter(|e| e.message["kind"] == "chat" && game.event_visible(id, e))
+            .count()
+    };
+    assert_eq!(seen(&game, &a), 1);
+    assert_eq!(seen(&game, &b), 1);
     // b mutes a: saved in b's profile, and a's chat no longer reaches b.
     game.action(&b, &json!({"type":"action","action":"mute","playerId":a}));
     assert_eq!(game.players[&b].profile()["muted"], json!([a]));
@@ -802,6 +811,19 @@ fn chat_room_reaches_only_the_room_and_world_reaches_everyone() {
         .collect();
     assert_eq!(chats.len(), 1);
     assert_eq!(chats[0].target.as_deref(), Some(a.as_str()));
+    // Unmuting takes a off b's saved list, and a's chat reaches b again.
+    game.action(
+        &b,
+        &json!({"type":"action","action":"mute","playerId":a,"muted":false}),
+    );
+    assert_eq!(game.players[&b].profile()["muted"], json!([]));
+    game.time += 1001.;
+    game.events.clear();
+    game.action(
+        &a,
+        &json!({"type":"action","action":"chat","channel":"world","text":"back"}),
+    );
+    assert_eq!(seen(&game, &b), 1);
 }
 
 #[test]

@@ -112,6 +112,10 @@ pub struct Player {
     /// The player's Chao as its game draws it in a Chao World area (draw-only
     /// for others; not saved).
     pub chao_pose: Value,
+    /// The player's own Chao save record (0x800 raw bytes) as its game holds
+    /// it, relayed so other games draw that Chao (live only; not saved).
+    pub chao_record: Vec<u8>,
+    pub chao_record_version: u64,
     pub tiny_result: Option<Value>,
     pub watch: Option<WatchState>,
     pub care: crate::care::CareState,
@@ -222,6 +226,7 @@ impl Player {
             "life": crate::life::public_summary(self),
             "animalParts": self.care.animal_parts, "hat": self.care.hat,
             "chaoPose": if self.connections > 0 { self.chao_pose.clone() } else { Value::Null },
+            "chaoRecordVersion": if self.connections > 0 && !self.chao_record.is_empty() { json!(self.chao_record_version) } else { Value::Null },
         })
     }
     pub fn profile(&self) -> Value {
@@ -630,6 +635,8 @@ impl Game {
             tiny_records: phone::restore_records(&data["tinyRecords"]),
             tiny_game: None,
             chao_pose: Value::Null,
+            chao_record: Vec::new(),
+            chao_record_version: 0,
             tiny_result: None,
             watch: None,
             care: crate::care::CareState::restore(data.get("care"))?,
@@ -2205,7 +2212,7 @@ impl Game {
             message: reply,
         });
     }
-    fn same_room(&self, viewer: &Player, other: &Player) -> bool {
+    pub fn same_room(&self, viewer: &Player, other: &Player) -> bool {
         if viewer.zone != other.zone {
             return false;
         }
