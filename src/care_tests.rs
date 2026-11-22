@@ -779,13 +779,29 @@ fn chat_room_reaches_only_the_room_and_world_reaches_everyone() {
         &a,
         &json!({"type":"action","action":"chat","channel":"world","text":"x".repeat(500)}),
     );
-    let chat = game
+    let chats: Vec<_> = game
         .events
         .iter()
-        .find(|e| e.message["kind"] == "chat")
-        .unwrap();
-    assert!(chat.target.is_none());
-    assert_eq!(chat.message["text"].as_str().unwrap().len(), 200);
+        .filter(|e| e.message["kind"] == "chat")
+        .collect();
+    assert_eq!(chats.len(), 2, "world reaches the other room too");
+    assert_eq!(chats[0].message["text"].as_str().unwrap().len(), 200);
+    // b mutes a: saved in b's profile, and a's chat no longer reaches b.
+    game.action(&b, &json!({"type":"action","action":"mute","playerId":a}));
+    assert_eq!(game.players[&b].profile()["muted"], json!([a]));
+    game.time += 1001.;
+    game.events.clear();
+    game.action(
+        &a,
+        &json!({"type":"action","action":"chat","channel":"world","text":"hi"}),
+    );
+    let chats: Vec<_> = game
+        .events
+        .iter()
+        .filter(|e| e.message["kind"] == "chat")
+        .collect();
+    assert_eq!(chats.len(), 1);
+    assert_eq!(chats[0].target.as_deref(), Some(a.as_str()));
 }
 
 #[test]
@@ -811,6 +827,7 @@ fn voice_reaches_only_near_chao_in_the_same_room() {
         .collect();
     assert_eq!(v.len(), 1);
     assert_eq!(v[0].target.as_deref(), Some(ids[0].as_str()));
+    assert!(v[0].message["fromName"].is_string());
     assert!((v[0].message["volume"].as_f64().unwrap() - (1. - 50. / 150.)).abs() < 1e-9);
     game.time += 100.;
     game.events.clear();

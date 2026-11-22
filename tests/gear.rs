@@ -44,6 +44,22 @@ fn owner_gear_slots_persist_without_changing_chao_stats_or_active_mech_state() {
         after["gear"],
         json!({"footwear":"shadow-air-shoes","hands":"knuckles-hammer-gloves"})
     );
+    action(
+        &mut game,
+        &id,
+        "equip-owner-gear",
+        json!({"item":"sonic-light-shoes"}),
+    );
+    assert_eq!(
+        game.players[&id].public()["gear"]["footwear"],
+        "sonic-light-shoes"
+    );
+    action(
+        &mut game,
+        &id,
+        "equip-owner-gear",
+        json!({"item":"shadow-air-shoes"}),
+    );
     for key in [
         "stats",
         "rings",
@@ -186,7 +202,7 @@ fn metal_sonic_chao_look_is_owner_only_and_persists() {
 }
 
 #[test]
-fn metal_sonic_chao_look_runs_at_his_own_top_speed() {
+fn every_chao_runs_at_metal_sonic_chao_top_speed() {
     let travel = |metal: bool| {
         let (mut game, id, _) = fixture(true);
         if metal {
@@ -205,21 +221,17 @@ fn metal_sonic_chao_look_runs_at_his_own_top_speed() {
         game.players[&id].x - start
     };
     let (chao, metal) = (travel(false), travel(true));
-    assert!(chao > 0.1 && metal > chao * 3., "chao {chao} metal {metal}");
+    assert!(
+        chao > 6.9 && (metal - chao).abs() < 1e-9,
+        "chao {chao} metal {metal}"
+    );
 }
 
 #[test]
-fn metal_sonic_chao_look_jumps_like_metal_sonic() {
-    let peak = |metal: bool| {
-        let (mut game, id, _) = fixture(true);
-        if metal {
-            action(
-                &mut game,
-                &id,
-                "equip-owner-gear",
-                json!({"item":"metal-sonic-chao"}),
-            );
-        }
+fn owner_chao_jumps_like_metal_sonic() {
+    // A normal player's Chao against the owner's Chao (Metal Sonic movement).
+    let peak = |owner: bool| {
+        let (mut game, id, _) = fixture(owner);
         game.set_input(&id, &json!({"dx":0,"dz":0,"jump":true}));
         let mut top: f64 = 0.;
         for _ in 0..40 {

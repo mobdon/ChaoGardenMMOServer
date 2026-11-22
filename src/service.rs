@@ -10,7 +10,7 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -518,6 +518,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/game-save/status", get(game_save_status))
         .route("/api/card", get(card))
         .route("/api/settings", get(settings_get).post(settings_post))
+        .route("/api/chao", delete(delete_chao))
         // Deployment probes and metrics: unauthenticated, cheap, excluded from
         // the request metrics themselves.
         .route("/livez", get(livez))
@@ -854,6 +855,38 @@ fn settings_reply(state: &AppState, headers: &HeaderMap, changes: Option<&Value>
         None => error(StatusCode::UNAUTHORIZED, "Invalid session token."),
     }
 }
+/// The login screen's delete: copies profiles.json aside first, then removes the Chao for good.
+async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(token) = bearer(&headers) else {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    if game.player_for_token(token).is_none() {
+        return error(StatusCode::UNAUTHORIZED, "Invalid session token.");
+    }
+    let profiles = state.config.data_dir.join("profiles.json");
+    if profiles.exists() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if let Err(cause) = fs::copy(
+            &profiles,
+            state
+                .config
+                .data_dir
+                .join(format!("profiles.before-delete-{stamp}.json")),
+        ) {
+            return save_failed("backup", cause);
+        }
+    }
+    match game.delete_chao(token) {
+        Ok(id) => match state.persist(&mut game) {
+            Ok(()) => Json(json!({"deleted": id})).into_response(),
+            Err(cause) => save_failed("delete", cause),
+        },
+        Err(message) => error(StatusCode::CONFLICT, message),
+    }
+}
 /// The title screen's look at the card: never checks the save out.
 async fn game_save_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let (id, in_game) = {
@@ -938,6 +971,8 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "dark-walker-booster",
         "shadow-air-shoes-left",
         "shadow-air-shoes-right",
+        "sonic-light-shoes-left",
+        "sonic-light-shoes-right",
         "knuckles-hammer-gloves-left",
         "knuckles-hammer-gloves-right",
         // Native Chao behaviour clips selected locally by the client tooling.
@@ -951,6 +986,16 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "emotion-flame-atlas.png",
         "emotion-sphere.png",
         "chao-stat-panel.png",
+        // The Kindergarten medical chart pages (al_stg_kinder_ad_tex entry 7, laid out by
+        // ChaoStgKinder fn_74_C50C), cropped to the panel, as the MMO Tab menu background.
+        "medchart-page-a.png",
+        "medchart-page-b.png",
+        "medchart-page-c.png",
+        "medchart-page-a5.png",
+        "medchart-page-b5.png",
+        "medchart-page-c5.png",
+        "medchart-page-d.png",
+        "medchart-page-e.png",
         "chao-stat-font.png",
         "chao-race-parameter.png",
         "chao-select-window.png",
