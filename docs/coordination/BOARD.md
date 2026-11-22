@@ -664,3 +664,12 @@ returns the newest 200 audit entries. Tests: `cargo test` 320 pass, clippy
 and fmt clean; headless page check as a throwaway admin (tested offline).
 Limits: gear buttons cover only the two items the server knows; no egg or
 other grants; not run on a hosted server.
+
+## Sign-up needs agreement to the Terms of Service (2026-11-22)
+`POST /api/account/register` refuses (400) unless the body has `agree: true`,
+and stores the terms version (`TERMS_VERSION`, a date) on the account as
+`terms`; a password reset keeps it. The client sign-up form sends `agree` from
+a required tick box and serves the page at `/terms.html`. Tests: `cargo test`
+320 pass, clippy and fmt clean (tested offline). Limits: a client without the
+tick box can no longer sign up, so both sides ship together; accounts made
+earlier carry no `terms` and are not asked again.

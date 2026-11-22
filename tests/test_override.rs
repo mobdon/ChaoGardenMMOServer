@@ -43,7 +43,7 @@ async fn account(state: &AppState, username: &str) -> String {
         "/api/account/register",
         "",
         json!({"username": username, "email": format!("{username}@example.test"),
-               "password": "synthetic-pass", "card": session["card"]}),
+               "password": "synthetic-pass", "card": session["card"], "agree": true}),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

@@ -1053,6 +1053,8 @@ fn json_body(headers: &HeaderMap, body: &Bytes) -> Result<Value, Response> {
     }
     serde_json::from_slice(body).map_err(|_| error(StatusCode::BAD_REQUEST, "Invalid JSON."))
 }
+/// The Terms of Service a new account agrees to; bump with the page's date.
+const TERMS_VERSION: &str = "2026-11-22";
 /// Makes an account for the memory card the caller holds (its card code).
 async fn account_register(
     State(state): State<AppState>,
@@ -1066,6 +1068,12 @@ async fn account_register(
     let field = |k: &str| input[k].as_str().unwrap_or_default().trim().to_owned();
     let (username, email, card) = (field("username"), field("email"), field("card"));
     let password = input["password"].as_str().unwrap_or_default().to_owned();
+    if input["agree"] != true {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Please agree to the Terms of Service.",
+        );
+    }
     if !crate::accounts::valid_username(&username) {
         return error(
             StatusCode::BAD_REQUEST,
@@ -1098,12 +1106,13 @@ async fn account_register(
         })
         .await
     };
-    let Ok(Ok(account)) = made else {
+    let Ok(Ok(mut account)) = made else {
         return error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Could not make your account.",
         );
     };
+    account.terms = Some(TERMS_VERSION.to_owned());
     let mut accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(why) = accounts.taken(&username, &email, &account.card_hash) {
         return error(StatusCode::CONFLICT, why);
@@ -2960,7 +2969,7 @@ mod account_tests {
             let (status, _) = post(
                 &app,
                 "/api/account/register",
-                json!({"username": name, "email": format!("{name}@example.com"), "password": "correct horse", "card": made["card"]}),
+                json!({"username": name, "email": format!("{name}@example.com"), "password": "correct horse", "card": made["card"], "agree": true}),
             )
             .await;
             assert_eq!(status, StatusCode::OK);
@@ -3460,10 +3469,21 @@ mod account_tests {
         let (status, made) = post(&app, "/api/session", json!({"name": "Test"})).await;
         assert_eq!(status, StatusCode::OK, "{made}");
         let card = made["card"].as_str().unwrap().to_owned();
-        let account = json!({"username": "tester", "email": "t@example.com", "password": "long enough pw", "card": card});
+        let account = json!({"username": "tester", "email": "t@example.com", "password": "long enough pw", "card": card, "agree": true});
+        let mut unagreed = account.clone();
+        unagreed["agree"] = json!(false);
+        assert_eq!(
+            post(&app, "/api/account/register", unagreed).await.0,
+            StatusCode::BAD_REQUEST
+        );
         assert_eq!(
             post(&app, "/api/account/register", account.clone()).await.0,
             StatusCode::OK
+        );
+        let saved = std::fs::read_to_string(dir.path().join("accounts.json")).unwrap();
+        assert!(
+            saved.contains(TERMS_VERSION),
+            "the agreed terms are on the account"
         );
         assert_eq!(
             post(&app, "/api/account/register", account).await.0,
@@ -3492,7 +3512,7 @@ mod account_tests {
         let card = made["card"].as_str().unwrap().to_owned();
         let token = made["token"].as_str().unwrap().to_owned();
         let id = made["player"]["id"].as_str().unwrap().to_owned();
-        let account = json!({"username": "tester", "email": "t@example.com", "password": "long enough pw", "card": card});
+        let account = json!({"username": "tester", "email": "t@example.com", "password": "long enough pw", "card": card, "agree": true});
         assert_eq!(
             post(app, "/api/account/register", account).await.0,
             StatusCode::OK
