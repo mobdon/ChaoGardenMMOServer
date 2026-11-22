@@ -144,6 +144,29 @@ pub struct NativeStats {
     pub skills: [NativeSkill; 7],
 }
 
+impl NativeStats {
+    /// Puts the record's numbers in the profile: level, grade, points and progress
+    /// of the seven skills, in the game's order, replace the profile's own. Glue:
+    /// level and points are held to the profile's limits (99 and 9999).
+    pub fn apply(
+        &self,
+        stats: &mut std::collections::BTreeMap<String, crate::game::Stat>,
+        exp: &mut [i16; 7],
+    ) {
+        *exp = self.skills.map(|skill| skill.progress.into());
+        for (name, skill) in crate::game::ALL_STATS.into_iter().zip(self.skills) {
+            stats.insert(
+                name.into(),
+                crate::game::Stat {
+                    grade: skill.grade.into(),
+                    level: u16::from(skill.level).min(99),
+                    points: u32::from(skill.points).min(9999),
+                },
+            );
+        }
+    }
+}
+
 /// Size of one native Chao save record.
 pub const CHAO_RECORD: usize = 0x800;
 
@@ -193,6 +216,14 @@ mod stats_tests {
             }
         );
         assert_eq!(chao.skills[6].points, 0x0702);
+        let mut stats = std::collections::BTreeMap::new();
+        let mut exp = [0; 7];
+        chao.apply(&mut stats, &mut exp);
+        assert_eq!(exp, [10, 11, 12, 13, 14, 15, 16]);
+        assert_eq!(stats.len(), 7);
+        let run = &stats["run"];
+        assert_eq!((run.grade, run.level, run.points), (2, 92, 0x0302));
+        assert_eq!(stats["intelligence"].level, 96);
         assert_eq!(native_stats(&r[..CHAO_RECORD - 1]), None);
         r.push(0);
         assert_eq!(native_stats(&r), None);

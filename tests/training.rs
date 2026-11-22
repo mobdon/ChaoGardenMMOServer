@@ -131,7 +131,7 @@ fn start_requires_explicit_tiny_entry_and_accepts_only_five_stats_and_minute_dur
             .unwrap();
         assert_eq!(result["accepted"], true, "{stat}");
         assert_eq!(game.players[&id].stats, before);
-        let view = training::public(&game.players[&id], NOW);
+        let view = training::public(&game, &game.players[&id], NOW);
         assert_eq!(view["job"]["stat"], stat);
         assert_eq!(view["job"]["phase"], "training");
         assert_eq!(view["job"]["deadlineServerMs"], NOW + 60_000);
@@ -343,7 +343,7 @@ fn active_training_blocks_care_shop_games_races_mech_ai_and_player_movement() {
     assert!(!p.input.jump && !p.input.boost);
     assert!(p.watch.is_none());
     assert_eq!(p.stats["run"].points, 0);
-    assert!(training::public(p, NOW)["eligibility"]["canStart"] == false);
+    assert!(training::public(&game, p, NOW)["eligibility"]["canStart"] == false);
 }
 
 fn failed_save_restores(
@@ -448,7 +448,7 @@ fn offline_job_resumes_after_restart_settles_automatically_once_and_survives_two
         assert_eq!(p.connections, 0);
         assert!(p.watch.is_none());
         assert_eq!(
-            training::public(p, NOW + 30_000)["job"]["remainingMs"],
+            training::public(&game, p, NOW + 30_000)["job"]["remainingMs"],
             90_000
         );
         assert_eq!(
@@ -936,7 +936,7 @@ fn paid_training_quotes_selected_skill_and_legacy_free_receipts_still_load() {
         .get_mut("run")
         .unwrap()
         .level = 75;
-    let offer = training::public(&g.players[&id], NOW);
+    let offer = training::public(&g, &g.players[&id], NOW);
     assert_eq!(offer["quotes"]["run"], json!([4, 60, 240, 1920]));
     assert_eq!(offer["quotes"]["swim"], json!([1, 15, 60, 480]));
     rejected(
@@ -989,4 +989,41 @@ fn paid_training_quotes_selected_skill_and_legacy_free_receipts_still_load() {
         true
     );
     assert_eq!(g.players[&id].rings, 20);
+}
+
+/// Synthetic fruit rows (test input, never game data): a trained point costs
+/// half of the cheapest fruit's price for that point, and the saved receipt
+/// still loads.
+#[test]
+fn training_costs_half_the_fruit_price_per_point_when_fruit_data_is_loaded() {
+    use tiny_garden_core::shop::{TinyFruit, TinyShopCatalog};
+    let (directory, state, id) = fixture(true);
+    let mut game = state.game.lock().unwrap();
+    let mut fruits: [TinyFruit; 7] = std::array::from_fn(|i| TinyFruit {
+        id: i as u8,
+        price: 100,
+        raw: [0; 7],
+    });
+    // Run is column 4. Fruit 2: 30 rings for 20 points. Fruit 3: dearer per point.
+    (fruits[2].price, fruits[2].raw[4]) = (30, 2);
+    (fruits[3].price, fruits[3].raw[4]) = (90, 3);
+    game.tiny_shop_catalog = Some(TinyShopCatalog { fruits });
+    game.players.get_mut(&id).unwrap().rings = 100;
+    let offer = training::public(&game, &game.players[&id], NOW);
+    // 0.75 rings a minute, rounded up: 1, 15, 60 and 480 minutes.
+    assert_eq!(offer["quotes"]["run"], json!([1, 12, 45, 360]));
+    // No fruit grows swim here: the skill band price stays.
+    assert_eq!(offer["quotes"]["swim"], json!([1, 15, 60, 480]));
+    let revision = game.players[&id].care.revision;
+    let begin = request(
+        revision,
+        json!({"kind":"training_start","stat":"run","durationMs":3_600_000,"quotedCostRings":45}),
+    );
+    let result = state.care_action_at(&mut game, &id, &begin, NOW).unwrap();
+    assert_eq!(result["accepted"], true);
+    assert_eq!(result["effects"]["training"]["tariff"], "half-fruit-v1");
+    assert_eq!(game.players[&id].rings, 55);
+    state.persist(&mut game).unwrap();
+    drop(game);
+    AppState::load(Config::local(directory.path().to_owned(), false)).unwrap();
 }

@@ -896,12 +896,28 @@ async fn chao_record_put(
         p.chao_record_version += 1;
         // An empty record (type 0) keeps the stats already saved.
         if let Some(stats) = crate::game_save::native_stats(&body) {
+            // Only numbers the game itself changed replace the profile's. A record
+            // that still holds the last numbers seen must not undo what the Tiny
+            // Garden gave since; the game takes those from the profile instead.
+            if p.native_stats != Some(stats) && !p.admin {
+                stats.apply(&mut p.stats, &mut p.life.exp);
+            }
             p.native_stats = Some(stats);
         }
     }
     let version = p.chao_record_version;
+    // The profile's skills as [level, progress, points] in the game's order, for
+    // the game to take what the Tiny Garden gave. The owner's fixed perfect
+    // profile is never handed to a record.
+    let skills = (!p.admin).then(|| {
+        crate::game::ALL_STATS
+            .iter()
+            .zip(p.life.exp)
+            .map(|(name, exp)| json!([p.stats[*name].level, exp, p.stats[*name].points]))
+            .collect::<Vec<_>>()
+    });
     game.dirty |= changed;
-    Json(json!({"ok": true, "version": version})).into_response()
+    Json(json!({"ok": true, "version": version, "skills": skills})).into_response()
 }
 /// Another connected player's Chao record in the caller's room (the same
 /// players its snapshot lists), for the caller's game to draw that Chao.
