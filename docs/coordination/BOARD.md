@@ -640,3 +640,14 @@ player. Tests: `cargo test` 317 pass with 4 route tests, fmt and Clippy clean
 (tested offline). Limits: one key for the whole server, no per-moderator keys
 or roles, no rate limit on wrong keys, and the key length check at start-up
 has no test; nothing is deployed and no key is set anywhere.
+
+## Admin override in the staff panel (2026-11-22)
+Changed path: `src/service.rs`. The stat and story override logic is shared
+as `apply_override`; `POST /api/test/override` is unchanged in behaviour.
+New `POST /api/panel/override` takes the same body from a panel session
+with the admin role and applies it to that admin's own Chao (the one out,
+else the first on the card). Moderators get 403; each use is audited.
+Tests: `cargo test` 320 pass, clippy and fmt clean; headless page check as
+a throwaway admin (tested offline). Limits: own Chao only; the shared
+`CHAO_ADMIN_KEY` path on the test route still exists beside it; not run on
+a hosted server.

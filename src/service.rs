@@ -580,6 +580,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/panel/players", get(panel_players))
         .route("/api/panel/sanction", post(panel_sanction))
         .route("/api/panel/leaderboard", get(panel_leaderboard))
+        .route("/api/panel/override", post(panel_override))
         .route("/api/panel/invisible", post(panel_invisible))
         .route("/api/panel/goto", post(panel_goto))
         .route("/api/panel/chat", get(panel_chat))
@@ -2023,6 +2024,17 @@ async fn test_override(
             "Only a test account or the admin can do this.",
         );
     }
+    apply_override(&state, &mut game, &id, &card, &body)
+}
+/// Sets a Chao's stats and its card's story progress from an override body.
+/// A body with any bad value changes nothing.
+fn apply_override(
+    state: &AppState,
+    game: &mut Game,
+    id: &str,
+    card: &str,
+    body: &Value,
+) -> Response {
     let story = match body["story"].as_str() {
         None => None,
         Some("none") => Some(vec![]),
@@ -2041,7 +2053,7 @@ async fn test_override(
     // Checked whole before anything changes.
     let mut stats = vec![];
     for (name, wanted) in body["stats"].as_object().into_iter().flatten() {
-        let Some(mut stat) = game.players[&id].stats.get(name).cloned() else {
+        let Some(mut stat) = game.players[id].stats.get(name).cloned() else {
             return error(StatusCode::BAD_REQUEST, "Unknown stat.");
         };
         let field = |key: &str, max: u64| match &wanted[key] {
@@ -2067,18 +2079,60 @@ async fn test_override(
     }
     if let Some(cleared) = &story {
         let cleared = cleared.iter().copied().collect();
-        if let Err(cause) = crate::story::write(&state.config.data_dir, &card, &cleared) {
+        if let Err(cause) = crate::story::write(&state.config.data_dir, card, &cleared) {
             return save_failed("story write", cause);
         }
     }
     if !stats.is_empty() {
-        game.players.get_mut(&id).unwrap().stats.extend(stats);
+        game.players.get_mut(id).unwrap().stats.extend(stats);
         game.dirty = true;
-        if let Err(cause) = state.persist(&mut game) {
+        if let Err(cause) = state.persist(game) {
             return save_failed("stat write", cause);
         }
     }
     Json(json!({"ok": true})).into_response()
+}
+/// The override for an admin signed in to the panel: their own Chao's stats and their
+/// card's story progress (same body as the test route). Moderators get 403.
+async fn panel_override(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some((staff, role)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    if role != crate::accounts::Role::Admin {
+        return error(StatusCode::FORBIDDEN, "Only an admin can do that.");
+    }
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let card = {
+        let accounts = state.accounts.lock().unwrap_or_else(|p| p.into_inner());
+        accounts.find(&staff).map(|a| a.card_hash.clone())
+    };
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    // The Chao that is out if one is, else the first on the card.
+    let own = card.and_then(|card| {
+        let mut mine: Vec<_> = game.players.values().filter(|p| p.card() == card).collect();
+        mine.sort_by_key(|p| p.connections == 0);
+        mine.first().map(|p| (p.id.clone(), card.clone()))
+    });
+    let Some((id, card)) = own else {
+        return error(StatusCode::CONFLICT, "Your account has no Chao.");
+    };
+    if let Err(cause) = crate::audit::record(
+        &state.config.data_dir,
+        &staff,
+        "override",
+        &format!("{id} {input}"),
+    ) {
+        eprintln!("Audit log write failed: {cause}");
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "Could not save that.");
+    }
+    apply_override(&state, &mut game, &id, &card, &input)
 }
 /// The game is still running with the card in: keep the lease without moving the save.
 async fn game_save_renew(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -2994,6 +3048,35 @@ mod account_tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(seen(&loud, &own));
+        // The override is the admin's alone, and acts on their own Chao.
+        let over = Some(json!({"stats": {"run": {"level": 99}}}));
+        let (status, _) = panel(
+            &app,
+            "/api/panel/override",
+            "x-panel-token",
+            &token,
+            over.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(state.game.lock().unwrap().players[&own].stats["run"].level < 99);
+        let boss_key = set("modder", Some(Role::Admin)).unwrap();
+        let (_, body) = sign_in("modder", "correct horse", boss_key).await;
+        let boss = body["token"].as_str().unwrap().to_owned();
+        let bad = Some(json!({"stats": {"run": {"level": 100}}}));
+        let (status, _) = panel(&app, "/api/panel/override", "x-panel-token", &boss, bad).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = panel(&app, "/api/panel/override", "x-panel-token", &boss, over).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            state.game.lock().unwrap().players[&own].stats["run"].level,
+            99
+        );
+        assert!(state.game.lock().unwrap().players[&loud].stats["run"].level < 99);
+        // The old moderator key and session are gone with the new role's key.
+        let panel_key = set("modder", Some(Role::Moderator)).unwrap();
+        let (_, body) = sign_in("modder", "correct horse", panel_key.clone()).await;
+        let token = body["token"].as_str().unwrap().to_owned();
         // Leaderboard: richest first, with the account name.
         state
             .game
@@ -3061,6 +3144,7 @@ mod account_tests {
             ("/api/panel/players", None),
             ("/api/panel/sanction", Some(json!({}))),
             ("/api/panel/invisible", Some(json!({"on": true}))),
+            ("/api/panel/override", Some(json!({}))),
             ("/api/panel/goto", Some(json!({"playerId": "x"}))),
             ("/api/panel/chat", None),
             ("/api/panel/leaderboard", None),
@@ -3083,7 +3167,8 @@ mod account_tests {
         let (status, _) = panel(&app, "/api/panel/me", "x-panel-token", &token, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         let log = fs::read_to_string(dir.path().join("audit.log")).unwrap();
-        assert_eq!(log.matches("\"panel-login\"").count(), 2);
+        assert_eq!(log.matches("\"panel-login\"").count(), 4);
+        assert_eq!(log.matches("\"override\"").count(), 2);
         assert_eq!(log.matches("\"chat:10\"").count(), 1);
         assert_eq!(log.matches("\"kick:null\"").count(), 1);
         assert_eq!(log.matches("chat-delete").count(), 1);
