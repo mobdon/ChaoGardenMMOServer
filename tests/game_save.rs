@@ -368,3 +368,41 @@ async fn every_chao_on_a_card_shares_its_game_save() {
 async fn json_of(response: Response<Body>) -> Value {
     serde_json::from_slice(&bytes(response).await).unwrap()
 }
+
+#[tokio::test]
+async fn level_shoe_pickup_route_needs_a_token_and_a_known_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+    let app = || router(state.clone());
+    let auth = format!("Bearer {}", token(&state).await);
+    let json = ("content-type", "application/json");
+    let pick = |item: &str| json!({ "item": item }).to_string().into_bytes();
+    let no_token = call(
+        app(),
+        "POST",
+        "/api/gear-pickup",
+        &[json],
+        pick("sonic-light-shoes"),
+    )
+    .await;
+    assert_eq!(no_token.status(), StatusCode::UNAUTHORIZED);
+    let unknown = call(
+        app(),
+        "POST",
+        "/api/gear-pickup",
+        &[json, ("authorization", &auth)],
+        pick("knuckles-hammer-gloves"),
+    )
+    .await;
+    assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
+    let ok = call(
+        app(),
+        "POST",
+        "/api/gear-pickup",
+        &[json, ("authorization", &auth)],
+        pick("sonic-light-shoes"),
+    )
+    .await;
+    assert_eq!(ok.status(), StatusCode::OK);
+    assert_eq!(json_of(ok).await["foundGear"], json!(["sonic-light-shoes"]));
+}

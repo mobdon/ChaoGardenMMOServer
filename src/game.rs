@@ -226,6 +226,7 @@ impl Player {
             "life": crate::life::public_summary(self),
             "animalParts": self.care.animal_parts, "hat": self.care.hat,
             "chaoPose": if self.connections > 0 { self.chao_pose.clone() } else { Value::Null },
+            "foundGear": self.profile_extra["foundGear"].as_array().cloned().unwrap_or_default(),
             "chaoRecordVersion": if self.connections > 0 && !self.chao_record.is_empty() { json!(self.chao_record_version) } else { Value::Null },
         })
     }
@@ -261,6 +262,14 @@ fn settings_value_ok(key: &str, value: &Value) -> bool {
         "fps" => value.as_u64().is_some_and(|v| [60, 120, 165].contains(&v)),
         _ => false,
     }
+}
+
+/// Shoes the game's own level pickup has given this memory card.
+pub const FOUND_GEAR: [&str; 2] = ["sonic-light-shoes", "shadow-air-shoes"];
+fn found(profile: &Value, item: &str) -> bool {
+    profile["foundGear"]
+        .as_array()
+        .is_some_and(|list| list.iter().any(|v| v == item))
 }
 
 // Canonical known values win; unmodeled object fields survive a round trip.
@@ -615,7 +624,9 @@ impl Game {
             boost_energy: 100.,
             gear: Gear {
                 footwear: match data["gear"]["footwear"].as_str() {
-                    Some(shoes @ ("shadow-air-shoes" | "sonic-light-shoes")) if admin => {
+                    Some(shoes @ ("shadow-air-shoes" | "sonic-light-shoes"))
+                        if admin || found(data, shoes) =>
+                    {
                         Some(shoes.into())
                     }
                     _ => None,
@@ -861,6 +872,30 @@ impl Game {
         self.tokens.insert(player.token_hash.clone(), id);
         self.dirty = true;
         Some(token)
+    }
+    /// The game's own upgrade pickup in a level (the page has no room socket
+    /// there): the shoes join every Chao of the token's memory card, once.
+    /// shortcut: the server trusts the page's report; check it against the
+    /// card's game save once that save's upgrade bytes are mapped.
+    pub fn gear_pickup_for_token(&mut self, token: &str, item: &str) -> Option<Value> {
+        if !FOUND_GEAR.contains(&item) {
+            return None;
+        }
+        let card = self.player_for_token(token)?.card().to_owned();
+        for q in self.players.values_mut().filter(|q| q.card() == card) {
+            if !q.profile_extra.is_object() {
+                q.profile_extra = json!({});
+            }
+            if !found(&q.profile_extra, item) {
+                let list = &mut q.profile_extra["foundGear"];
+                if !list.is_array() {
+                    *list = json!([]);
+                }
+                list.as_array_mut()?.push(json!(item));
+                self.dirty = true;
+            }
+        }
+        Some(self.player_for_token(token)?.profile_extra["foundGear"].clone())
     }
     pub fn player_for_token(&self, token: &str) -> Option<&Player> {
         if token.len() > 256 {
@@ -1313,7 +1348,11 @@ impl Game {
                 return;
             }
             "equip-owner-gear" | "unequip-owner-gear" => {
-                if !p.admin {
+                let own_shoes = match message["item"].as_str() {
+                    Some(item) if action == "equip-owner-gear" => found(&p.profile_extra, item),
+                    _ => message["slot"] == "footwear",
+                };
+                if !p.admin && !own_shoes {
                     self.notice(&id, "Only the owner admin can equip these extras.", "error");
                     return;
                 }
