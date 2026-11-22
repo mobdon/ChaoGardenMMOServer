@@ -531,3 +531,22 @@ tables in `src/story.rs`); one finished side opens Cannon's Core. Tests:
 `cargo test` passes with 5 new unit tests and 1 route test, fmt and Clippy
 `-D warnings` clean (tested offline). Limits: the server trusts the game's
 report of a clear; no client calls the routes yet; nothing is deployed.
+
+## Chao models converted in the browser (2026-11-22, client branch `claude/project-thread-lz5yk1`)
+
+Client base `bb57319` (main), commits `bc0cf0d` and `918b8c6`. Changed client
+paths: `asset-tools/crates/sa2/src/{chao_dll.rs,chao_glb.rs,motion.rs,visual_glb.rs,lib.rs}`,
+`asset-tools/crates/sa2/tests/native_local.rs`,
+`asset-tools/crates/sa2-texture-wasm/src/lib.rs`, `public/game-texture.wasm`,
+`src/game-assets.js`, `src/chao-portrait.js`. No server source changed.
+The login portrait reads `Data_DLL.dll` (`AL_RootObject`, `al_motion_table`),
+`al_body.prs` and `al_nc00.GVP` from the player's saved game folder handle and
+builds the model with its stand motion in memory; `/api/assets/*.glb` stays as
+the fallback only. Tests: three opt-in Rust tests against the installed game
+and the SA Tools split of the same model and motion pass; client `npm test`
+190 pass, 0 fail; headless Chromium mounts all seven portrait models from a
+folder handle with no `/api` request (tested offline, real files kept out of
+git). Limits: every face part in the model is drawn (eyelids, mouth); the
+face rule, head ball, body families with morphs, colour table, the full
+motion set and eggs are not converted yet; Steam folder only, no disc image;
+not run on a hosted server.
