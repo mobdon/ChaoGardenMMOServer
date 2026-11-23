@@ -1064,7 +1064,7 @@ fn json_body(headers: &HeaderMap, body: &Bytes) -> Result<Value, Response> {
     serde_json::from_slice(body).map_err(|_| error(StatusCode::BAD_REQUEST, "Invalid JSON."))
 }
 /// The Terms of Service a new account agrees to; bump with the page's date.
-const TERMS_VERSION: &str = "2026-11-22";
+const TERMS_VERSION: &str = "2026-11-23";
 /// Makes an account for the memory card the caller holds (its card code).
 async fn account_register(
     State(state): State<AppState>,
