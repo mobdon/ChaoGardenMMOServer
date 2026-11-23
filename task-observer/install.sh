@@ -24,7 +24,7 @@ fi
 # The skill folder must keep references/ and scripts/ beside SKILL.md (an incomplete install silently skips episodes).
 rm -rf ~/.claude/skills/task-observer && cp -r "$tmp/task-observer" ~/.claude/skills/ && rm -rf "$tmp"
 cp "$here/task-observer-start.py" ~/.claude/hooks/task-observer-start.py
-python3 - <<'EOF'   # register the SessionStart hook next to caveman's and rtk's (idempotent; never touches other hooks)
+WS="$ws" python3 - <<'EOF'   # register the SessionStart hook next to caveman's and rtk's (idempotent; never touches other hooks)
 import json, os
 p = os.path.expanduser('~/.claude/settings.json')
 s = json.load(open(p)) if os.path.exists(p) else {}
@@ -32,6 +32,8 @@ cmd = 'python3 ~/.claude/hooks/task-observer-start.py'
 hooks = s.setdefault('hooks', {}).setdefault('SessionStart', [])
 if not any(h.get('command') == cmd for e in hooks for h in e.get('hooks', [])):
     hooks.append({'hooks': [{'type': 'command', 'command': cmd, 'timeout': 10}]})
+# sessions do not inherit SHARED_DIR, so without this the hook pointed every session at ~/toolkit-data (an empty or missing log)
+s.setdefault('env', {})['TASK_OBSERVER_WORKSPACE'] = os.environ['WS']
 json.dump(s, open(p, 'w'), indent=2)
 EOF
 # The skill's "Workspace creation" command (references/observation-log.md), run every install: an empty workspace made the
