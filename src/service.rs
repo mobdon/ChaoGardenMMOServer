@@ -2902,10 +2902,12 @@ async fn handle_socket(
                         } else if let Ok(value) = serde_json::from_slice::<Value>(&message.into_data()) {
                             let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
                             let moving = value["type"] == "input" || (value["type"] == "action" && value["action"] == "save");
+                            // The game's own Karate menu queues from inside the game, so the queue actions pass while the game holds the card.
+                            let queueing = value["type"] == "action" && value["action"].as_str().is_some_and(|a| matches!(a, "queue-join" | "queue-ready" | "queue-leave"));
                             let tiny_play = value["type"] == "tiny-input" || (value["type"] == "action" && value["action"].as_str().is_some_and(|a| a.starts_with("tiny-")));
                             if tiny_play && !tiny {
                                 response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"tiny-needs-phone","text":"Tiny Chao Garden plays on your phone."}).to_string().into()), 0));
-                            } else if !moving && game.players.get(&id).is_some_and(|p| crate::game_save::leased(&game, p.card(), std::time::Instant::now())) {
+                            } else if !moving && !queueing && game.players.get(&id).is_some_and(|p| crate::game_save::leased(&game, p.card(), std::time::Instant::now())) {
                                 response=Some((Message::Text(json!({"type":"notice","kind":"error","code":"in-game","text":"Your Chao is in the big garden right now. Leave the game to care for it here."}).to_string().into()), 0));
                             } else {
                             match value["type"].as_str() {
