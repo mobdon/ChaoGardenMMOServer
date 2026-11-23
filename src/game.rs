@@ -1215,6 +1215,14 @@ impl Game {
     /// Native Chao Karate: one class, five rounds; the class emblem on a clean sweep.
     fn chao_karate(&mut self, p: &mut Player, message: &Value) {
         let id = p.id.clone();
+        if p.care.tiny_resident
+            || p.activity_lease.is_some()
+            || p.race.is_some()
+            || p.karate.is_some()
+        {
+            self.notice(&id, "Your Chao is busy with another activity.", "error");
+            return;
+        }
         let (Some(data), Some(motion)) = (self.karate.clone(), self.native_chao.motion.clone())
         else {
             self.notice(
