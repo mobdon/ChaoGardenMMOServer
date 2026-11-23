@@ -62,7 +62,12 @@ pub struct Live {
     rng: crate::competition_native::MslRand,
     /// Game frames (60 a second) owed to the bout.
     owed: f64,
+    /// Frames of the game's entrance still to pass before the fighters move.
+    entrance: u32,
 }
+
+/// fn_72_5020 counts 0x1D6 frames of entrance before a bout's first frame.
+const ENTRANCE_FRAMES: u32 = 0x1D6;
 
 #[derive(Default)]
 pub struct Queues {
@@ -116,8 +121,16 @@ pub fn leave(game: &mut Game, actor: Option<&mut Player>, id: &str) {
     let group = &game.queues.groups[at];
     if group.started && group.event == "chao-karate" {
         let (group, other) = (group.id, usize::from(group.members[0].0 == id));
-        game.queues.bouts.retain(|live| live.group != group);
-        let detail = json!({"winner": other, "reason": "forfeit"});
+        let live = game
+            .queues
+            .bouts
+            .iter()
+            .position(|live| live.group == group);
+        let (frames, hp) = live.map_or((0, [(0., 0.); 2]), |at| {
+            let bout = game.queues.bouts.remove(at).bout;
+            (bout.frame, bout.hp())
+        });
+        let detail = json!({"winner": other, "reason": "forfeit", "frames": frames, "hp": [hp[0].0, hp[1].0]});
         finish(game, actor, group, Some((Some(other), detail)));
         return;
     }
@@ -162,6 +175,19 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
         "queue-leave" => {
             let id = player.id.clone();
             leave(game, Some(player), &id);
+        }
+        "queue-cheer" => {
+            // The game's A press for a discouraged Chao (fn_72_EDE8).
+            let group = game
+                .queues
+                .group_of(&player.id)
+                .map(|g| (g.id, g.members.get(1).is_some_and(|m| m.0 == player.id)));
+            let live = group.and_then(|(id, right)| {
+                Some((game.queues.bouts.iter_mut().find(|l| l.group == id)?, right))
+            });
+            if let Some((live, right)) = live {
+                live.bout.cheered[usize::from(right)] = true;
+            }
         }
         "queue-attack" => {
             let group = game
@@ -229,13 +255,15 @@ fn bout(game: &mut Game, actor: &mut Player, group: &Group) {
     let mut rng = crate::competition_native::MslRand {
         next: game.karate_rng.rand() as u32,
     };
-    let bout = crate::karate::Bout::new(&motion, &mut rng, [a, b]);
+    let mut bout = crate::karate::Bout::new(&motion, &mut rng, [a, b]);
+    bout.pvp = true;
     tell(game, group, &bout);
     game.queues.bouts.push(Live {
         group: group.id,
         bout,
         rng,
         owed: 0.,
+        entrance: ENTRANCE_FRAMES,
     });
 }
 
@@ -273,8 +301,12 @@ pub fn tick(game: &mut Game, dt: f64) {
         live.owed += dt * f64::from(crate::competition_native::karate::FRAMES_PER_SECOND);
         while live.owed >= 1. && !live.bout.over() {
             live.owed -= 1.;
-            live.bout
-                .step(&data.rows, motion, &data.arena, &mut live.rng);
+            if live.entrance > 0 {
+                live.entrance -= 1;
+            } else {
+                live.bout
+                    .step(&data.rows, motion, &data.arena, &mut live.rng);
+            }
         }
         tell(game, &group, &live.bout);
         if live.bout.over() {

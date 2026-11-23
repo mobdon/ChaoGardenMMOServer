@@ -60,6 +60,8 @@ pub mod karate {
         pub const STAGGER: u8 = 7;
     }
     pub mod flag {
+        /// Set by a cheer press until its gain lands (fn_72_EDE8 0xF1DC).
+        pub const CHEERED: u16 = 0x2000;
         pub const KNOCKED_OUT: u16 = 0x1000;
         pub const GIVE_UP: u16 = 0x800;
         pub const ATTACK_HIT: u16 = 0x400;
@@ -240,18 +242,35 @@ pub mod karate {
         }
     }
 
-    /// fn_72_EDE8 without the cheering branch.
+    /// fn_72_EDE8. `cheer` is the 2-player cheering branch (0xF1B8..0xF318):
+    /// `Some(pressed)` when the fighter can be cheered this frame (its action
+    /// record's +5 bit 0x10 is set) and whether its player newly pressed A.
+    /// `None` leaves cheering out; the 1-player branch (0xEF10) is not ported.
     pub fn zeal_step(
         me: &mut Fighter,
         rec: &mut StateRecord,
         side: i16,
         leader: i16,
         rng: &mut MslRand,
+        cheer: Option<bool>,
     ) {
         if matches!(rec.state, 1 | 0xA | 0xB) {
             return;
         }
         me.zeal -= 1000.0f32 / (1800.0f32 + 1800.0f32 * (me.intellect / 1000.0f32));
+        if let (state::STAGGER, Some(pressed)) = (rec.state, cheer) {
+            if pressed {
+                rec.flags |= flag::CHEERED;
+            }
+            // The gain lands on frame 5 of the 0..=60 counter (0xF220).
+            if rec.frame == 5 && rec.flags & flag::CHEERED != 0 {
+                // lbl_72_data_16844, _16848, _1684C; capped by lbl_72_rodata_480.
+                let gain = 100.0f32 + 300.0f32 * (me.luck / 1000.0f32);
+                let _ = rng.rand(); // 0xF270: taken, result not used
+                me.zeal += gain.min(200.0);
+                rec.flags &= !flag::CHEERED;
+            }
+        }
         if me.zeal > 1000.0 {
             me.zeal = 1000.0;
         } else if me.zeal < 0.0 {
@@ -726,6 +745,34 @@ mod tests {
             [r.rand(), r.rand(), r.rand(), r.rand(), r.rand()],
             [16838, 5758, 10113, 17515, 31051]
         );
+    }
+
+    #[test]
+    fn a_cheer_lifts_a_discouraged_chao_on_frame_five_only() {
+        let mut r = MslRand::default();
+        let mut me = karate::fighter([0; 7], false, false, false, &mut r);
+        me.zeal = 100.0;
+        me.luck = 1000.0;
+        let decay = 1000.0f32 / (1800.0f32 + 1800.0f32 * (me.intellect / 1000.0f32));
+        let mut rec = karate::StateRecord {
+            state: karate::state::STAGGER,
+            ..Default::default()
+        };
+        // The press is kept, nothing is gained before frame 5.
+        karate::zeal_step(&mut me, &mut rec, 0, 0, &mut r, Some(true));
+        assert_eq!(me.zeal, 100.0 - decay);
+        assert_ne!(rec.flags & karate::flag::CHEERED, 0);
+        rec.frame = 5;
+        let before = (me.zeal, r.next);
+        karate::zeal_step(&mut me, &mut rec, 0, 0, &mut r, Some(false));
+        // 100 + 300 * luck/1000 is 400, capped at 200.
+        assert_eq!(me.zeal, before.0 - decay + 200.0);
+        assert_eq!(rec.flags & karate::flag::CHEERED, 0);
+        assert_ne!(r.next, before.1);
+        // Outside the 2-player bout nothing is gained.
+        let before = me.zeal;
+        karate::zeal_step(&mut me, &mut rec, 0, 0, &mut r, None);
+        assert_eq!(me.zeal, before - decay);
     }
 
     #[test]

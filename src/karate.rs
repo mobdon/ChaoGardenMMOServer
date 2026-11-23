@@ -340,9 +340,20 @@ fn motion_handler(
                 let r = (s.aux.row as usize).min(rows.len().saturating_sub(1));
                 link(s, rows, r, rows[r].link_step);
                 s.rec.flags &= !0x8000;
+                // The discouraged actions 21..=28 open themselves to a cheer
+                // at once (fn_72_D8DC 0xD980, fn_72_E66C 0xE724, fn_72_CEA8 0xCF58).
+                if (21..=28).contains(&id) {
+                    s.aux.bits |= IMPACT;
+                }
                 s.aux.step = 1;
             }
-            1 if !linking => s.aux.step = 2,
+            1 if !linking => {
+                // Action 20 does once its motion has linked (fn_72_E278 0xE3D8).
+                if id == 20 {
+                    s.aux.bits |= IMPACT;
+                }
+                s.aux.step = 2;
+            }
             2 if matches!(id, 12 | 38) && (ended || stopped) => {
                 s.rec.flags |= 0x8000;
                 s.aux.step = 3;
@@ -458,6 +469,10 @@ pub struct Bout {
     /// The attack each side's player pressed (0 = none), used at that side's
     /// next attack pick. MMO glue, as the client's karate hook does it.
     pub pressed: [i8; 2],
+    /// Two players' bout (the game's mode byte +5 not 0): they can cheer.
+    pub pvp: bool,
+    /// Each side's player newly pressed A (cheer); taken by the next frame.
+    pub cheered: [bool; 2],
 }
 
 impl Bout {
@@ -491,6 +506,8 @@ impl Bout {
             frame: 0,
             knocked_out: None,
             pressed: [0; 2],
+            pvp: false,
+            cheered: [false; 2],
         }
     }
 
@@ -562,7 +579,10 @@ impl Bout {
             ]);
             let s = &mut sides[i];
             resolve_hit(&mut s.rec);
-            karate::zeal_step(&mut s.me, &mut s.rec, i as i16, lead, rng);
+            // Cheering is the 2-player branch: each side's own player's A.
+            let cheer = std::mem::take(&mut self.cheered[i]);
+            let cheer = (self.pvp && s.aux.bits & IMPACT != 0).then_some(cheer);
+            karate::zeal_step(&mut s.me, &mut s.rec, i as i16, lead, rng, cheer);
             motion_handler(s, rows, motion_table, dist, opp_pos);
             s.motion.step(motion_table);
             mov_control(s);
