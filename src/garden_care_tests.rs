@@ -181,8 +181,8 @@ fn black_market_restocks_on_entry_and_sells_at_native_prices() {
         send(&mut game, &id, 16, sell("sa2-fruit:21"))["code"],
         "item-not-owned"
     );
-    // Restock is due 10,800 frames later at the earliest (timer draw 0).
-    game.time += 10_800. * FRAME_MS;
+    // Restock is due at the next Tiny Garden shop hour.
+    game.time += crate::collection::ROTATION_MS as f64;
     assert_eq!(
         send(&mut game, &id, 17, market)["effects"]["restocked"],
         true

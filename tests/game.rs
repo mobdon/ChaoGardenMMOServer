@@ -269,26 +269,27 @@ fn ring_pickups_require_proximity_and_respawn_once() {
 }
 
 #[test]
-fn alignment_gates_and_choice_cooldown_are_authoritative() {
+fn alignment_gates_hold_and_no_action_changes_alignment() {
     let (mut g, id, _) = fixture(false);
     act(&mut g, &id, "hero", json!({}));
     assert_eq!(g.players[&id].zone, "hub");
-    act(&mut g, &id, "align-good", json!({}));
-    act(&mut g, &id, "align-good", json!({}));
-    assert_eq!(g.players[&id].alignment, 15.);
-    for _ in 0..3 {
-        advance(&mut g, 1600);
-        act(&mut g, &id, "align-good", json!({}));
+    // Hero/Dark Fruit is the only way: the old choice actions do nothing.
+    for action in ["align-good", "align-dark"] {
+        act(&mut g, &id, action, json!({}));
+        assert_eq!(g.players[&id].alignment, 0.);
     }
-    assert_eq!(g.players[&id].alignment, 60.);
-    assert_eq!(g.players[&id].form, "hero");
+    g.players
+        .get_mut(&id)
+        .unwrap()
+        .body
+        .set_alignment_percent(60.);
     act(&mut g, &id, "hero", json!({}));
     assert_eq!(g.players[&id].zone, "hero");
-    for _ in 0..20 {
-        advance(&mut g, 1600);
-        act(&mut g, &id, "align-dark", json!({}));
-    }
-    assert_eq!(g.players[&id].alignment, -100.);
+    g.players
+        .get_mut(&id)
+        .unwrap()
+        .body
+        .set_alignment_percent(-60.);
     act(&mut g, &id, "dark", json!({}));
     assert_eq!(g.players[&id].zone, "dark");
 }
@@ -461,8 +462,6 @@ fn normal_chaos_evolution_requires_earned_milestones_even_with_perfect_stats() {
         p.happiness = 80.;
     }
     act(&mut g, &id, "evolve", json!({}));
-    assert_eq!(g.players[&id].form, "chaos");
-    act(&mut g, &id, "align-dark", json!({}));
     assert_eq!(g.players[&id].form, "chaos");
 }
 

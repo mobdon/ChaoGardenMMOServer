@@ -1683,7 +1683,7 @@ impl Game {
                 } else {
                     p.alignment <= -60.
                 }) {
-                    self.notice(&id, format!("{} Garden needs {} alignment. Make garden choices to change your alignment.", if action == "hero" { "Hero" } else { "Dark" }, if action == "hero" { "+60" } else { "−60" }), "error");
+                    self.notice(&id, format!("{} Garden needs {} alignment. Hero Fruit and Dark Fruit from the Black Market change your alignment.", if action == "hero" { "Hero" } else { "Dark" }, if action == "hero" { "+60" } else { "−60" }), "error");
                     return;
                 }
                 let _ = self.teleport(p, action, 0., 6.);
@@ -1754,28 +1754,6 @@ impl Game {
         }
         if action == "buy" {
             self.buy(p, message["item"].as_str());
-            return;
-        }
-        if action == "align-good" || action == "align-dark" {
-            if !p.cooldown("alignment", self.time, 1500.) {
-                self.notice(&id, "Give your last choice a moment.", "info");
-                return;
-            }
-            p.body.set_alignment_percent(
-                (p.alignment + if action == "align-good" { 15. } else { -15. }).clamp(-100., 100.),
-            );
-            p.happiness = (p.happiness + 2.).min(100.);
-            p.update_form();
-            self.dirty = true;
-            self.notice(
-                &id,
-                if action == "align-good" {
-                    "You helped another Chao. Hero alignment +15."
-                } else {
-                    "You played a mischievous prank. Dark alignment +15."
-                },
-                "info",
-            );
             return;
         }
         if let Some(stat) = action

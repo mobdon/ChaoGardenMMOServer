@@ -942,14 +942,14 @@ fn apply(
             if !near(game, p, "hub", MARKET_X, MARKET_Z, 2.) {
                 return Err("out-of-range");
             }
-            let frame = garden::frame_at(now);
-            let restocked = p.care.market.due(frame);
+            // Same clock as the Tiny Garden shop's hourly rotation.
+            let restocked = p.care.market.due(training_now);
             if p.care.market.garden_id.is_none() {
                 p.care.market.garden_id = Some(garden_id());
             }
             if restocked {
                 let emblems = p.care.emblems.count();
-                p.care.market.restock(frame, emblems, rand);
+                p.care.market.restock(training_now, emblems, rand);
             }
             Ok(json!({"restocked":restocked,"market":p.care.market.public()}))
         }
