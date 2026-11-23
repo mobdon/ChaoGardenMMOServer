@@ -423,26 +423,47 @@ pub fn run_round(
     let d: Descriptor = tables.descriptors[row];
     let s = tables.skills.get(usize::from(d.skills))?;
     let opp_skills = [s[0], s[1], s[2], s[3], s[4], s[5], s[6]];
-    let mut make = |skills, cpu, child, x: f32, yaw: i32, kind| Side {
-        me: karate::fighter(skills, cpu, child, false, rng),
-        rec: StateRecord {
-            state: state::READY,
-            ..Default::default()
-        },
-        aux: Aux::default(),
-        motion: Motion::start(motion_table, 0),
-        // fn_72_5020: start positions .data 0x1888 (±5, 8, 19), yaw ±0x4000.
-        pos: [x, 8., 19.],
-        yaw,
-        vel: [0.; 3],
-        acc: [0.; 3],
-        mov_flags: 8,
-        kind,
-    };
     // shortcut: the owner's work +6 kind is not traced; 0 (no descriptor kind).
+    let entrants = [
+        (owner_skills, false, child, 0),
+        (opp_skills, true, false, d.kind),
+    ];
+    let mut round = fight(rows, motion_table, arena, rng, entrants);
+    round.opponent_row = row;
+    Some(round)
+}
+
+/// One native round between two given fighters: (skill points, computer
+/// opponent, child, descriptor kind) for the left and the right side.
+/// shortcut: for two players' Chao both sides are set up as the owner's side
+/// (no computer spread, kind 0); the native 2-player setup is not traced.
+pub fn fight(
+    rows: &[MotionRow],
+    motion_table: &MotionTable,
+    arena: &Arena,
+    rng: &mut MslRand,
+    entrants: [([u16; 7], bool, bool, i16); 2],
+) -> Round {
+    let mut make =
+        |(skills, cpu, child, kind): ([u16; 7], bool, bool, i16), x: f32, yaw: i32| Side {
+            me: karate::fighter(skills, cpu, child, false, rng),
+            rec: StateRecord {
+                state: state::READY,
+                ..Default::default()
+            },
+            aux: Aux::default(),
+            motion: Motion::start(motion_table, 0),
+            // fn_72_5020: start positions .data 0x1888 (±5, 8, 19), yaw ±0x4000.
+            pos: [x, 8., 19.],
+            yaw,
+            vel: [0.; 3],
+            acc: [0.; 3],
+            mov_flags: 8,
+            kind,
+        };
     let mut sides = [
-        make(owner_skills, false, child, -5., 0x4000, 0),
-        make(opp_skills, true, false, 5., -0x4000, d.kind),
+        make(entrants[0], -5., 0x4000),
+        make(entrants[1], 5., -0x4000),
     ];
     let limit = karate::ROUND_SECONDS * karate::FRAMES_PER_SECOND;
     let mut frame = 0;
@@ -496,7 +517,7 @@ pub fn run_round(
         Some(k) => 1 - k as i16,
         None => karate::leader(hp),
     };
-    Some(Round {
+    Round {
         winner,
         reason: if knocked_out.is_some() {
             "knockout"
@@ -505,8 +526,8 @@ pub fn run_round(
         },
         frames: frame,
         hp: [sides[0].me.hp, sides[1].me.hp],
-        opponent_row: row,
-    })
+        opponent_row: 0,
+    }
 }
 
 const SLOW_CHILD: u16 = 1;
