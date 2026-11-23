@@ -167,7 +167,7 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
             let group = game
                 .queues
                 .group_of(&player.id)
-                .map(|g| (g.id, g.members[1].0 == player.id));
+                .map(|g| (g.id, g.members.get(1).is_some_and(|m| m.0 == player.id)));
             let Some((group, right)) = group else { return };
             let Some(live) = game.queues.bouts.iter_mut().find(|l| l.group == group) else {
                 return;
@@ -508,6 +508,19 @@ mod tests {
         let saved = game.players[&ids[1]].profile();
         assert_eq!(restore_ranked(&saved["ranked"])["chao-karate"].wins, 1);
         assert!(game.queues.groups.is_empty());
+    }
+
+    #[test]
+    fn an_attack_press_with_no_running_bout_is_ignored() {
+        let (mut game, ids) = game_with(1);
+        join_karate(&mut game, &ids[0], false);
+        // Alone in a waiting group: nothing to press into, and nothing breaks.
+        send(
+            &mut game,
+            &ids[0],
+            json!({"type":"action","action":"queue-attack","move":7}),
+        );
+        assert_eq!(game.queues.groups[0].members.len(), 1);
     }
 
     #[test]
