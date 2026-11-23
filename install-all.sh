@@ -58,12 +58,14 @@ json.dump(d, open(p, 'w'), indent=2)
 claude mcp remove -s user skillsmp >/dev/null 2>&1 || true
 # skillsmp.com/mcp needs a SkillsMP account (401 AUTH_REQUIRED without one). The key lives only in
 # the environment variable SKILLSMP_API_KEY; the literal ${SKILLSMP_API_KEY} is expanded by Claude Code at connect time.
+set +x   # the test below expands the key: with tracing on, a run inside a session wrote the value into the install log
 if [ -n "${SKILLSMP_API_KEY:-}" ] || [ -n "${KIT_KEYS_IN_ENV:-}" ]; then   # KIT_KEYS_IN_ENV: cloud Setup script cannot see the keys, sessions can
   claude mcp add --scope user --transport http skillsmp https://skillsmp.com/mcp --header 'Authorization: Bearer ${SKILLSMP_API_KEY}'
 else
   echo "skillsmp: no SKILLSMP_API_KEY set; registered without auth (it will answer 401)"
   claude mcp add --scope user --transport http skillsmp https://skillsmp.com/mcp
 fi
+set -x
 git config --global --add safe.directory '*'      # the shared folder's repo is owned by another user id
 # Left over from older setups: the markitdown MCP server (it needed mcp 2.x in its own env, and timed out at
 # session start; the CLI below is what the rules use), the full caveman plugin (made the main session terse) and its marketplace.

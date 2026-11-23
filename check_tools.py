@@ -428,6 +428,8 @@ def _():
     env = json.load(open(HOME + '/.claude/settings.json')).get('env', {})
     if env.get('MCP_TIMEOUT') != '120000' or env.get('RTK_SUPPRESS_HOOK_WARNING') != '1':
         return out('FAIL', 'task-observer', 'settings.json env lacks MCP_TIMEOUT=120000 / RTK_SUPPRESS_HOOK_WARNING=1 (re-run install-all.sh)')
+    if env.get('TASK_OBSERVER_WORKSPACE') != ws or ws not in main:
+        return out('FAIL', 'task-observer', f'settings.json env TASK_OBSERVER_WORKSPACE is not {ws}: sessions would log to ~/toolkit-data (bash $KIT_DIR/task-observer/install.sh)')
     out('PASS', 'task-observer', 'skill + SessionStart hook; controller vs worker messages correct; workspace and log present; settings env set')
 
 
@@ -623,8 +625,9 @@ def _():
     if len(key) < 8:
         return out('WARN', 'context7 key', 'no CONTEXT7_API_KEY in this environment; nothing to scan')
     roots = [CLAUDE_JSON, HOME + '/.claude', HOME + '/.config', HOME + '/.serena', HOME + '/.claude-mem/settings.json', WT_ROOT + '/reports',
-             '/tmp/claude-0/logs', KIT, SHARED, '/tmp/claude/memory', REPO + '/.serena']
-    hits, n, kb = [], 0, key.encode()
+             '/tmp/claude-0/logs', '/tmp/toolkit-setup.log', '/tmp/toolkit-install-manual.log', KIT, SHARED, '/tmp/claude/memory', REPO + '/.serena']
+    # every kit key, not only Context7's: install-all.sh once traced the SkillsMP key into its log
+    hits, n, kbs = [], 0, [v.encode() for k in ('CONTEXT7_API_KEY', 'SKILLSMP_API_KEY', 'GEMINI_API_KEY') if len(v := os.environ.get(k, '')) >= 8]
     for r in roots:
         files = [r] if os.path.isfile(r) else [os.path.join(d, f) for d, _, fs in os.walk(r) for f in fs] if os.path.isdir(r) else []
         for f in files:
@@ -632,7 +635,8 @@ def _():
                 if os.path.getsize(f) > 30 << 20:
                     continue
                 n += 1
-                if kb in open(f, 'rb').read():
+                data = open(f, 'rb').read()
+                if any(kb in data for kb in kbs):
                     hits.append(f)
             except OSError:
                 pass
