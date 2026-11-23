@@ -1149,7 +1149,7 @@ impl Game {
         if let Some(mut player) = self.players.remove(id) {
             player.connections = player.connections.saturating_sub(1);
             if player.connections == 0 {
-                crate::queue::leave(self, id);
+                crate::queue::leave(self, Some(&mut player), id);
             }
             if let Some(run) = &mut player.tiny_game {
                 run.release_controls();
@@ -1503,7 +1503,7 @@ impl Game {
                 return;
             }
             if p.zone != zone {
-                crate::queue::leave(self, &id);
+                crate::queue::leave(self, Some(p), &id);
             }
             p.zone = zone.into();
             p.chao_pose = Value::Null;
@@ -2076,6 +2076,7 @@ impl Game {
         }
         let dt = dt.min(0.1);
         self.time += dt * 1000.;
+        crate::queue::tick(self, dt);
         let ids: Vec<_> = self.players.keys().cloned().collect();
         for id in ids {
             let mut p = self.players.remove(&id).unwrap();

@@ -435,8 +435,6 @@ pub fn run_round(
 
 /// One native round between two given fighters: (skill points, computer
 /// opponent, child, descriptor kind) for the left and the right side.
-/// shortcut: for two players' Chao both sides are set up as the owner's side
-/// (no computer spread, kind 0); the native 2-player setup is not traced.
 pub fn fight(
     rows: &[MotionRow],
     motion_table: &MotionTable,
@@ -444,32 +442,102 @@ pub fn fight(
     rng: &mut MslRand,
     entrants: [([u16; 7], bool, bool, i16); 2],
 ) -> Round {
-    let mut make =
-        |(skills, cpu, child, kind): ([u16; 7], bool, bool, i16), x: f32, yaw: i32| Side {
-            me: karate::fighter(skills, cpu, child, false, rng),
-            rec: StateRecord {
-                state: state::READY,
-                ..Default::default()
-            },
-            aux: Aux::default(),
-            motion: Motion::start(motion_table, 0),
-            // fn_72_5020: start positions .data 0x1888 (±5, 8, 19), yaw ±0x4000.
-            pos: [x, 8., 19.],
-            yaw,
-            vel: [0.; 3],
-            acc: [0.; 3],
-            mov_flags: 8,
-            kind,
-        };
-    let mut sides = [
-        make(entrants[0], -5., 0x4000),
-        make(entrants[1], 5., -0x4000),
-    ];
-    let limit = karate::ROUND_SECONDS * karate::FRAMES_PER_SECOND;
-    let mut frame = 0;
-    let mut knocked_out: Option<usize> = None;
-    while frame < limit && knocked_out.is_none() {
-        frame += 1;
+    let mut bout = Bout::new(motion_table, rng, entrants);
+    while !bout.step(rows, motion_table, arena, rng) {}
+    bout.round()
+}
+
+/// A round that is advanced one game frame at a time, so two players' bout
+/// can run live and take their attack buttons.
+/// shortcut: for two players' Chao both sides are set up as the owner's side
+/// (no computer spread, kind 0); the native 2-player setup is not traced.
+pub struct Bout {
+    sides: [Side; 2],
+    pub frame: u32,
+    knocked_out: Option<usize>,
+    /// The attack each side's player pressed (0 = none), used at that side's
+    /// next attack pick. MMO glue, as the client's karate hook does it.
+    pub pressed: [i8; 2],
+}
+
+impl Bout {
+    pub fn new(
+        motion_table: &MotionTable,
+        rng: &mut MslRand,
+        entrants: [([u16; 7], bool, bool, i16); 2],
+    ) -> Self {
+        let mut make =
+            |(skills, cpu, child, kind): ([u16; 7], bool, bool, i16), x: f32, yaw: i32| Side {
+                me: karate::fighter(skills, cpu, child, false, rng),
+                rec: StateRecord {
+                    state: state::READY,
+                    ..Default::default()
+                },
+                aux: Aux::default(),
+                motion: Motion::start(motion_table, 0),
+                // fn_72_5020: start positions .data 0x1888 (±5, 8, 19), yaw ±0x4000.
+                pos: [x, 8., 19.],
+                yaw,
+                vel: [0.; 3],
+                acc: [0.; 3],
+                mov_flags: 8,
+                kind,
+            };
+        Self {
+            sides: [
+                make(entrants[0], -5., 0x4000),
+                make(entrants[1], 5., -0x4000),
+            ],
+            frame: 0,
+            knocked_out: None,
+            pressed: [0; 2],
+        }
+    }
+
+    pub fn over(&self) -> bool {
+        self.knocked_out.is_some()
+            || self.frame >= karate::ROUND_SECONDS * karate::FRAMES_PER_SECOND
+    }
+
+    /// Health and full health of both sides.
+    pub fn hp(&self) -> [(f32, f32); 2] {
+        [0, 1].map(|i| (self.sides[i].me.hp, self.sides[i].me.hp_max))
+    }
+
+    /// Whether a side may use the two strong moves (fn_72_FCC8: +0x2C > 1600).
+    pub fn strong(&self, side: usize) -> bool {
+        self.sides[side].me.power > 1600.
+    }
+
+    /// Both fighters as the players' games need them to show the bout: place,
+    /// facing, health, the state record's state and step, the karate action
+    /// (fn_72_B620's id) and the Chao motion with its frame.
+    pub fn public(&self) -> Value {
+        Value::Array(
+            self.sides
+                .iter()
+                .map(|s| {
+                    serde_json::json!({"pos": s.pos, "yaw": s.yaw & 0xffff, "hp": s.me.hp, "maxHp": s.me.hp_max,
+                        "state": s.rec.state, "step": s.rec.step, "action": s.aux.motion,
+                        "motion": s.motion.num, "motionFrame": s.motion.frame})
+                })
+                .collect(),
+        )
+    }
+
+    /// One game frame; true once the round is over.
+    pub fn step(
+        &mut self,
+        rows: &[MotionRow],
+        motion_table: &MotionTable,
+        arena: &Arena,
+        rng: &mut MslRand,
+    ) -> bool {
+        if self.over() {
+            return true;
+        }
+        let sides = &mut self.sides;
+        self.frame += 1;
         for i in 0..2 {
             let o = 1 - i;
             let opp_pos = sides[o].pos;
@@ -479,7 +547,15 @@ pub fn fight(
                 let (a, b) = (sides[i].pos, opp_pos);
                 ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
             };
-            state_handler(&mut sides, i, dist, opp_pos, opp_power, rng);
+            state_handler(
+                sides,
+                i,
+                dist,
+                opp_pos,
+                opp_power,
+                rng,
+                &mut self.pressed[i],
+            );
             let lead = karate::leader([
                 (sides[0].me.hp, sides[0].me.hp_max),
                 (sides[1].me.hp, sides[1].me.hp_max),
@@ -496,7 +572,7 @@ pub fn fight(
                 s.rec.flags |= flag::KNOCKED_OUT;
             }
             if s.rec.flags & flag::KNOCKED_OUT != 0 {
-                knocked_out = Some(i);
+                self.knocked_out = Some(i);
             }
             // 0x10F60: the frame counter wraps after 60.
             s.rec.frame = if s.rec.frame >= 60 {
@@ -504,29 +580,40 @@ pub fn fight(
             } else {
                 s.rec.frame + 1
             };
-            if knocked_out.is_some() {
+            if self.knocked_out.is_some() {
                 break;
             }
         }
+        self.over()
     }
-    let hp = [
-        (sides[0].me.hp, sides[0].me.hp_max),
-        (sides[1].me.hp, sides[1].me.hp_max),
-    ];
-    let winner = match knocked_out {
-        Some(k) => 1 - k as i16,
-        None => karate::leader(hp),
-    };
-    Round {
-        winner,
-        reason: if knocked_out.is_some() {
-            "knockout"
-        } else {
-            "time-limit"
-        },
-        frames: frame,
-        hp: [sides[0].me.hp, sides[1].me.hp],
-        opponent_row: 0,
+
+    pub fn round(&self) -> Round {
+        let hp = self.hp();
+        Round {
+            winner: match self.knocked_out {
+                Some(k) => 1 - k as i16,
+                None => karate::leader(hp),
+            },
+            reason: if self.knocked_out.is_some() {
+                "knockout"
+            } else {
+                "time-limit"
+            },
+            frames: self.frame,
+            hp: [hp[0].0, hp[1].0],
+            opponent_row: 0,
+        }
+    }
+}
+
+/// The attack a fighter does: the player's pressed one when the game allows
+/// it (5 and 8 need power above 1600), else the game's own pick. Only the four
+/// attacks fn_72_FCC8 itself picks are taken.
+fn choose(native: i8, pressed: i8, power: f32) -> i8 {
+    match pressed {
+        4 | 7 => pressed,
+        5 | 8 if power > 1600. => pressed,
+        _ => native,
     }
 }
 
@@ -569,6 +656,7 @@ fn state_handler(
     opp_pos: [f32; 3],
     opp_power: f32,
     rng: &mut MslRand,
+    pressed: &mut i8,
 ) {
     let o = 1 - i;
     match sides[i].rec.state {
@@ -613,6 +701,7 @@ fn state_handler(
                     (true, true) => 5,
                     (true, false) => 4,
                 };
+                let id = choose(id, std::mem::take(pressed), s.me.power);
                 s.aux.bits &= !IMPACT;
                 set_motion(s, id);
                 s.rec.state = state::ATTACK;
@@ -886,6 +975,21 @@ mod tests {
         };
         resolve_hit(&mut miss);
         assert_eq!(miss.state, 5);
+    }
+
+    #[test]
+    fn a_pressed_attack_keeps_the_power_gate() {
+        assert_eq!([choose(4, 7, 1200.), choose(7, 4, 1200.)], [7, 4]);
+        assert_eq!([choose(4, 5, 1600.), choose(4, 8, 1600.5)], [4, 8]);
+        // No press, Beating Up (no caller in the module) or junk: the game's pick.
+        assert_eq!(
+            [
+                choose(5, 0, 2000.),
+                choose(5, 6, 2000.),
+                choose(7, 9, 2000.)
+            ],
+            [5, 5, 7]
+        );
     }
 
     #[test]

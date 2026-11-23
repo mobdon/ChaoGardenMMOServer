@@ -3,8 +3,10 @@
 //! A player in the matching Chao World area joins a queue (ranked or not; a
 //! race also names its course) and lands in a group. Every member marks
 //! ready; the group starts once all have, with at least two members. A Karate
-//! group's bout is then run here by the native round and its result sent to
-//! both; a ranked one lands in each player's win/loss record. A race group
+//! group's bout then runs live here, frame by frame, by the native round; each
+//! player's pressed attack is used at their Chao's next attack pick. Both get
+//! the bout's state as it runs and its result; a ranked one lands in each
+//! player's win/loss record. Leaving a running bout forfeits it. A race group
 //! only starts: the native race is not ported end to end, so nothing runs it.
 use crate::competition;
 use crate::game::{Event, Game, Player};
@@ -52,9 +54,20 @@ impl Group {
     }
 }
 
+/// A Karate group's running bout.
+pub struct Live {
+    group: u64,
+    bout: crate::karate::Bout,
+    /// The bout's own `rand` stream.
+    rng: crate::competition_native::MslRand,
+    /// Game frames (60 a second) owed to the bout.
+    owed: f64,
+}
+
 #[derive(Default)]
 pub struct Queues {
     pub groups: Vec<Group>,
+    pub bouts: Vec<Live>,
     made: u64,
 }
 
@@ -93,11 +106,21 @@ fn announce(game: &mut Game, group: &Group, joiner: Option<&Player>) {
     }
 }
 
-/// Takes the player out of its group, if any, and tells the rest.
-pub fn leave(game: &mut Game, id: &str) {
+/// Takes the player out of its group, if any, and tells the rest. `actor` is
+/// that player when it is out of `game.players` (its own action is running).
+/// Leaving a started Karate bout forfeits it to the other fighter.
+pub fn leave(game: &mut Game, actor: Option<&mut Player>, id: &str) {
     let Some(at) = game.queues.groups.iter().position(|g| g.has(id)) else {
         return;
     };
+    let group = &game.queues.groups[at];
+    if group.started && group.event == "chao-karate" {
+        let (group, other) = (group.id, usize::from(group.members[0].0 == id));
+        game.queues.bouts.retain(|live| live.group != group);
+        let detail = json!({"winner": other, "reason": "forfeit"});
+        finish(game, actor, group, Some((Some(other), detail)));
+        return;
+    }
     game.queues.groups[at].members.retain(|(m, _)| m != id);
     game.events.push(Event {
         target: Some(id.into()),
@@ -136,7 +159,26 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
                 bout(game, player, &group);
             }
         }
-        "queue-leave" => leave(game, &player.id),
+        "queue-leave" => {
+            let id = player.id.clone();
+            leave(game, Some(player), &id);
+        }
+        "queue-attack" => {
+            let group = game
+                .queues
+                .group_of(&player.id)
+                .map(|g| (g.id, g.members[1].0 == player.id));
+            let Some((group, right)) = group else { return };
+            let Some(live) = game.queues.bouts.iter_mut().find(|l| l.group == group) else {
+                return;
+            };
+            // One move at a time: a press waits for that Chao's next attack pick.
+            let (slot, id) = (usize::from(right), message["move"].as_i64().unwrap_or(0));
+            let allowed = matches!(id, 4 | 7) || (matches!(id, 5 | 8) && live.bout.strong(slot));
+            if allowed && live.bout.pressed[slot] == 0 {
+                live.bout.pressed[slot] = id as i8;
+            }
+        }
         _ => {}
     }
 }
@@ -152,8 +194,8 @@ fn fighter(p: &Player) -> Option<([u16; 7], bool, bool, i16)> {
     Some((skills, false, child, 0))
 }
 
-/// Runs a started Karate group's bout: one native round, first member on the
-/// left. Without the local native karate data, or with a Chao that cannot
+/// Starts a started Karate group's bout: the native round, first member on
+/// the left. Without the local native karate data, or with a Chao that cannot
 /// fight, the group is told and released with no result.
 fn bout(game: &mut Game, actor: &mut Player, group: &Group) {
     let entrant = |game: &Game, id: &str| {
@@ -168,8 +210,11 @@ fn bout(game: &mut Game, actor: &mut Player, group: &Group) {
         entrant(game, &group.members[0].0),
         entrant(game, &group.members[1].0),
     );
-    let ready = (game.karate.clone(), game.native_chao.motion.clone(), sides);
-    let (Some(data), Some(motion), (Some(a), Some(b))) = ready else {
+    let (true, Some(motion), (Some(a), Some(b))) = (
+        game.karate.is_some(),
+        game.native_chao.motion.clone(),
+        sides,
+    ) else {
         for (id, _) in &group.members {
             game.notice(
                 id,
@@ -177,23 +222,70 @@ fn bout(game: &mut Game, actor: &mut Player, group: &Group) {
                 "error",
             );
         }
-        finish(game, actor, group.id, None);
+        finish(game, Some(actor), group.id, None);
         return;
     };
-    let round = crate::karate::fight(
-        &data.rows,
-        &motion,
-        &data.arena,
-        &mut game.karate_rng,
-        [a, b],
-    );
-    let bout = json!({"winner": round.winner, "reason": round.reason, "frames": round.frames, "hp": round.hp});
-    finish(
-        game,
-        actor,
-        group.id,
-        Some((usize::try_from(round.winner).ok().filter(|w| *w < 2), bout)),
-    );
+    // Each bout rolls its own dice, started from the game's stream.
+    let mut rng = crate::competition_native::MslRand {
+        next: game.karate_rng.rand() as u32,
+    };
+    let bout = crate::karate::Bout::new(&motion, &mut rng, [a, b]);
+    tell(game, group, &bout);
+    game.queues.bouts.push(Live {
+        group: group.id,
+        bout,
+        rng,
+        owed: 0.,
+    });
+}
+
+/// The running bout's state for both players: the server's bout is the one
+/// their games show.
+fn tell(game: &mut Game, group: &Group, bout: &crate::karate::Bout) {
+    let members: Vec<&String> = group.members.iter().map(|m| &m.0).collect();
+    let message = json!({"type":"event","kind":"queue-bout","group":group.id,"frame":bout.frame,
+        "members":members,"fighters":bout.public(),"strong":[bout.strong(0), bout.strong(1)],
+        "pressed":bout.pressed});
+    for (id, _) in &group.members {
+        game.events.push(Event {
+            target: Some(id.clone()),
+            message: message.clone(),
+        });
+    }
+}
+
+/// Advances every running bout by the game frames `dt` seconds hold (the
+/// game runs 60 a second) and ends the ones that are over.
+pub fn tick(game: &mut Game, dt: f64) {
+    if game.queues.bouts.is_empty() {
+        return;
+    }
+    let (data, motion) = (game.karate.clone(), game.native_chao.motion.clone());
+    for mut live in std::mem::take(&mut game.queues.bouts) {
+        let group = game.queues.groups.iter().find(|g| g.id == live.group);
+        let Some(group) = group.cloned() else {
+            continue;
+        };
+        let (Some(data), Some(motion)) = (&data, &motion) else {
+            finish(game, None, group.id, None);
+            continue;
+        };
+        live.owed += dt * f64::from(crate::competition_native::karate::FRAMES_PER_SECOND);
+        while live.owed >= 1. && !live.bout.over() {
+            live.owed -= 1.;
+            live.bout
+                .step(&data.rows, motion, &data.arena, &mut live.rng);
+        }
+        tell(game, &group, &live.bout);
+        if live.bout.over() {
+            let round = live.bout.round();
+            let detail = json!({"winner": round.winner, "reason": round.reason, "frames": round.frames, "hp": round.hp});
+            let winner = usize::try_from(round.winner).ok().filter(|w| *w < 2);
+            finish(game, None, group.id, Some((winner, detail)));
+        } else {
+            game.queues.bouts.push(live);
+        }
+    }
 }
 
 /// Ends a started group: `outcome` is the winner's member slot (`None` for a
@@ -202,7 +294,7 @@ fn bout(game: &mut Game, actor: &mut Player, group: &Group) {
 /// dissolved so its members can queue again.
 pub fn finish(
     game: &mut Game,
-    actor: &mut Player,
+    mut actor: Option<&mut Player>,
     group_id: u64,
     outcome: Option<(Option<usize>, Value)>,
 ) {
@@ -214,10 +306,9 @@ pub fn finish(
     let mut records = serde_json::Map::new();
     if let Some((winner, _)) = &outcome {
         for (slot, id) in ids.iter().enumerate() {
-            let p = if **id == actor.id {
-                Some(&mut *actor)
-            } else {
-                game.players.get_mut(*id)
+            let p = match actor.as_deref_mut() {
+                Some(a) if a.id == **id => Some(a),
+                _ => game.players.get_mut(*id),
             };
             let Some(p) = p.filter(|_| group.ranked) else {
                 continue;
@@ -391,7 +482,7 @@ mod tests {
         let mut actor = game.players.remove(&ids[1]).unwrap();
         finish(
             &mut game,
-            &mut actor,
+            Some(&mut actor),
             group,
             Some((Some(1), json!({"frames": 9}))),
         );
@@ -416,6 +507,19 @@ mod tests {
         // The record survives a save and the group is gone: both can queue again.
         let saved = game.players[&ids[1]].profile();
         assert_eq!(restore_ranked(&saved["ranked"])["chao-karate"].wins, 1);
+        assert!(game.queues.groups.is_empty());
+    }
+
+    #[test]
+    fn leaving_a_started_ranked_bout_forfeits_it() {
+        let (mut game, ids) = game_with(2);
+        join_karate(&mut game, &ids[0], true);
+        join_karate(&mut game, &ids[1], true);
+        // As a running bout leaves it (the test game has no karate data to run one).
+        game.queues.groups[0].started = true;
+        game.disconnect(&ids[0]);
+        assert_eq!(game.players[&ids[0]].ranked["chao-karate"].losses, 1);
+        assert_eq!(game.players[&ids[1]].ranked["chao-karate"].wins, 1);
         assert!(game.queues.groups.is_empty());
     }
 
