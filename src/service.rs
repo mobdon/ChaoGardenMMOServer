@@ -172,6 +172,8 @@ pub struct AppState {
     started: std::time::Instant,
     /// Staff listening to a room's voice: username -> (room, last poll).
     panel_listens: Arc<Mutex<BTreeMap<String, (String, std::time::Instant)>>>,
+    /// Staff talking to one player: username -> (player id, last frame).
+    panel_talks: Arc<Mutex<BTreeMap<String, (String, std::time::Instant)>>>,
     connections: Arc<Semaphore>,
     seen_connections: Arc<Mutex<BTreeSet<String>>>,
 }
@@ -330,6 +332,7 @@ impl AppState {
             panel_sessions: Arc::default(),
             started: std::time::Instant::now(),
             panel_listens: Arc::default(),
+            panel_talks: Arc::default(),
             game: Arc::new(Mutex::new(game)),
             config: Arc::new(config),
             events,
@@ -599,6 +602,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/panel/reports/done", post(panel_report_done))
         .route("/api/panel/chat/delete", post(panel_chat_delete))
         .route("/api/panel/voice", get(panel_voice))
+        .route("/api/panel/talk", post(panel_talk))
         .route("/api/tiny-care", post(tiny_care))
         .route(
             "/api/tiny-chao",
@@ -2161,6 +2165,69 @@ async fn panel_voice(
         .collect();
     no_store(json!({ "frames": frames }))
 }
+/// Hold-to-talk to one player: one voice frame, heard by that player only, wherever they are.
+/// The player sees the staff member's name unless that staff member is invisible (or has no
+/// Chao in the game). Each new sitting is written to the audit log first; nothing is recorded.
+async fn panel_talk(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let Some((staff, _)) = panel_staff(&state, &headers) else {
+        return error(StatusCode::NOT_FOUND, "Not found.");
+    };
+    let input = match json_body(&headers, &body) {
+        Ok(input) => input,
+        Err(response) => return response,
+    };
+    let data = input["data"].as_str().unwrap_or_default();
+    if data.is_empty() || data.len() > 1400 {
+        return error(StatusCode::BAD_REQUEST, "Send one voice frame.");
+    }
+    let mut game = state.game.lock().unwrap_or_else(|p| p.into_inner());
+    let Some((target, name)) = input["playerId"]
+        .as_str()
+        .and_then(|id| game.players.get(id))
+        .filter(|p| p.connections > 0)
+        .map(|p| (p.id.clone(), p.name.clone()))
+    else {
+        return error(StatusCode::NOT_FOUND, "That player is not online.");
+    };
+    let now = std::time::Instant::now();
+    let fresh = {
+        let mut talks = state.panel_talks.lock().unwrap_or_else(|p| p.into_inner());
+        let old = talks.insert(staff.clone(), (target.clone(), now));
+        !old.is_some_and(|(was, at)| was == target && now.duration_since(at) < LISTEN_GAP)
+    };
+    if fresh
+        && let Err(cause) = crate::audit::record(
+            &state.config.data_dir,
+            &staff,
+            "voice-talk",
+            &format!("{name} ({target})"),
+        )
+    {
+        eprintln!("Audit log write failed: {cause}");
+        state
+            .panel_talks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&staff);
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not start talking.",
+        );
+    }
+    let seen = staff_chao(&state, &game, &staff).is_some_and(|own| !game.invisible.contains(&own));
+    let from = if seen {
+        format!("Staff {staff}")
+    } else {
+        "Staff".to_owned()
+    };
+    game.events.push(crate::game::Event {
+        target: Some(target),
+        message: json!({"type": "event", "kind": "voice", "staff": true,
+            "fromName": from, "volume": 1., "data": data}),
+    });
+    publish_events(&state, &mut game);
+    no_store(json!({"ok": true}))
+}
 /// The login screen's delete: copies profiles.json aside first, then removes the Chao for good.
 async fn delete_chao(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(token) = bearer(&headers) else {
@@ -3581,6 +3648,43 @@ mod account_tests {
         )
         .await;
         assert_eq!(heard["frames"].as_array().unwrap().len(), 0);
+        // Talk to one player: only that player hears it, the name shows only while the staff
+        // member's Chao is seen, and a run of frames is one audit line.
+        let talk = json!({"playerId": loud, "data": "BBBB"});
+        let mut sent = state.events.subscribe();
+        for _ in 0..2 {
+            let (status, _) = panel(
+                &app,
+                "/api/panel/talk",
+                "x-panel-token",
+                &token,
+                Some(talk.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let mut spoken = 0;
+        while let Ok(event) = sent.try_recv() {
+            if event.message["staff"] == true {
+                assert_eq!(event.target.as_deref(), Some(loud.as_str()));
+                assert!(
+                    event.message["fromName"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("Staff")
+                );
+                spoken += 1;
+            }
+        }
+        assert_eq!(spoken, 2);
+        for bad in [
+            json!({"playerId": "nobody", "data": "BBBB"}),
+            json!({"playerId": loud}),
+        ] {
+            let (status, _) =
+                panel(&app, "/api/panel/talk", "x-panel-token", &token, Some(bad)).await;
+            assert_ne!(status, StatusCode::OK);
+        }
         let (_, live) = panel(&app, "/api/panel/status", "x-panel-token", &token, None).await;
         assert!(live.get("listening").is_none());
         for (path, body) in [
@@ -3599,6 +3703,10 @@ mod account_tests {
             ("/api/panel/leaderboard", None),
             ("/api/panel/chat/delete", Some(json!({"line": 1}))),
             ("/api/panel/voice?room=x", None),
+            (
+                "/api/panel/talk",
+                Some(json!({"playerId": "x", "data": "AAAA"})),
+            ),
         ] {
             let (status, _) = panel(&app, path, "x-panel-token", "nope", body).await;
             assert_eq!(status, StatusCode::NOT_FOUND);
@@ -3624,6 +3732,7 @@ mod account_tests {
         assert_eq!(log.matches("chat-delete").count(), 1);
         assert!(log.contains("rude words"));
         assert_eq!(log.matches("voice-listen").count(), 2);
+        assert_eq!(log.matches("voice-talk").count(), 1);
         assert_eq!(log.matches("invisible-o").count(), 2);
         assert_eq!(log.matches("\"goto\"").count(), 1);
         assert_eq!(log.matches("panel-login-refused").count(), 5);
