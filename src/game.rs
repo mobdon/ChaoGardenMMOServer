@@ -236,11 +236,16 @@ impl Player {
             "animalParts": self.care.animal_parts, "hat": self.care.hat,
             "chaoPose": if self.connections > 0 { self.chao_pose.clone() } else { Value::Null },
             "foundGear": self.profile_extra["foundGear"].as_array().cloned().unwrap_or_default(),
-            "chaoRecordVersion": if self.connections > 0 && !self.chao_record.is_empty() { json!(self.chao_record_version) } else { Value::Null },
+            "chaoRecordVersion": if self.record_shown() { json!(self.chao_record_version) } else { Value::Null },
         });
         // Set apart: the object above is at the json! macro's size limit.
         public["ranked"] = json!(self.ranked);
         public
+    }
+    /// Others in the room draw this Chao from its own record: while it is
+    /// connected, and while it stays behind as a Tiny Garden resident.
+    pub fn record_shown(&self) -> bool {
+        !self.chao_record.is_empty() && (self.connections > 0 || self.watch.is_some())
     }
     /// The copy of this Chao's native record as base64; None before it has played.
     pub fn record_base64(&self) -> Option<String> {
