@@ -176,6 +176,19 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
             let id = player.id.clone();
             leave(game, Some(player), &id);
         }
+        "queue-cheer" => {
+            // The game's A press for a discouraged Chao (fn_72_EDE8).
+            let group = game
+                .queues
+                .group_of(&player.id)
+                .map(|g| (g.id, g.members.get(1).is_some_and(|m| m.0 == player.id)));
+            let live = group.and_then(|(id, right)| {
+                Some((game.queues.bouts.iter_mut().find(|l| l.group == id)?, right))
+            });
+            if let Some((live, right)) = live {
+                live.bout.cheered[usize::from(right)] = true;
+            }
+        }
         "queue-attack" => {
             let group = game
                 .queues
@@ -242,7 +255,8 @@ fn bout(game: &mut Game, actor: &mut Player, group: &Group) {
     let mut rng = crate::competition_native::MslRand {
         next: game.karate_rng.rand() as u32,
     };
-    let bout = crate::karate::Bout::new(&motion, &mut rng, [a, b]);
+    let mut bout = crate::karate::Bout::new(&motion, &mut rng, [a, b]);
+    bout.pvp = true;
     tell(game, group, &bout);
     game.queues.bouts.push(Live {
         group: group.id,
