@@ -4021,7 +4021,7 @@ mod account_tests {
             let mut game = state.game.lock().unwrap();
             let mut p = game.players.remove(&owner_id).unwrap();
             let home = json!({"enabled": true, "zone": p.zone, "x": p.x, "z": p.z});
-            crate::watch::restore(&mut game, &mut p, &home);
+            crate::watch::restore(&game, &mut p, &home);
             assert!(p.watch.is_some(), "the resident is in its garden");
             let zone = p.zone.clone();
             game.players.insert(owner_id.clone(), p);
