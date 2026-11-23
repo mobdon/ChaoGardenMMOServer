@@ -1418,7 +1418,8 @@ async fn one_game_leads_an_areas_character_chao_and_the_lead_passes_on() {
     one.send(poses(1.5)).await.unwrap();
     let seen = snapshot_until(&mut two, |s| s["residents"]["poses"][0][1] == 1.5).await;
     assert_eq!(seen["residents"]["lead"], false);
-    // Not six numbers each: refused, the old poses stay.
+    // Not six numbers each: refused, the old poses stay (checked after the handover).
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
     one.send(send(
         json!({"type":"action","action":"resident-pose","poses":[[0, "far"]]}),
     ))
@@ -1433,7 +1434,8 @@ async fn one_game_leads_an_areas_character_chao_and_the_lead_passes_on() {
     .unwrap();
     let seen = snapshot_until(&mut two, |s| s["residents"]["lead"] == true).await;
     assert_eq!(seen["residents"]["poses"][0][1], 1.5);
-    // A leader whose game goes silent loses the lead when someone else is there.
+    // Bo's game leads but never sends: after 2 s of silence the lead passes
+    // to the next player there.
     one.send(go()).await.unwrap();
     snapshot_until(&mut one, |s| s["residents"]["lead"] == true).await;
 }

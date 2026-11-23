@@ -1432,6 +1432,28 @@ impl Game {
     fn action_inner(&mut self, p: &mut Player, message: &Value) {
         let action = message["action"].as_str().unwrap_or_default();
         let id = p.id.clone();
+        if action == "resident-pose" {
+            // Before the busy checks below: about 10 a second, never worth a notice.
+            // The area's character Chao as the leader's game runs them: up to
+            // 3 of [which, x, y, z, angle, motion]. Anyone else's are dropped.
+            let ok = message["poses"].as_array().is_some_and(|a| {
+                a.len() <= 3
+                    && a.iter().all(|r| {
+                        r.as_array().is_some_and(|r| {
+                            r.len() == 6 && r.iter().all(|v| v.as_f64().is_some_and(f64::is_finite))
+                        })
+                    })
+            });
+            if let Some(room) = self
+                .resident_rooms
+                .get_mut(p.zone.as_str())
+                .filter(|room| ok && room.leader == p.id)
+            {
+                room.heard = self.time;
+                room.poses = message["poses"].clone();
+            }
+            return;
+        }
         if action.starts_with("competition-") {
             competition::action(self, p, message);
             return;
@@ -1499,27 +1521,6 @@ impl Game {
                 if merged.len() <= 8 {
                     p.chao_pose = Value::Object(merged);
                 }
-            }
-            return;
-        }
-        if action == "resident-pose" {
-            // The area's character Chao as the leader's game runs them: up to
-            // 3 of [which, x, y, z, angle, motion]. Anyone else's are dropped.
-            let ok = message["poses"].as_array().is_some_and(|a| {
-                a.len() <= 3
-                    && a.iter().all(|r| {
-                        r.as_array().is_some_and(|r| {
-                            r.len() == 6 && r.iter().all(|v| v.as_f64().is_some_and(f64::is_finite))
-                        })
-                    })
-            });
-            if let Some(room) = self
-                .resident_rooms
-                .get_mut(p.zone.as_str())
-                .filter(|room| ok && room.leader == p.id)
-            {
-                room.heard = self.time;
-                room.poses = message["poses"].clone();
             }
             return;
         }
