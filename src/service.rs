@@ -138,7 +138,7 @@ impl AppState {
             Game::new(profiles, terrains, config.owner_bootstrap, now).map_err(io::Error::other)?;
         if let Some(path) = &config.tiny_garden_payload {
             let bytes = crate::care::load_tiny_payload(path)?;
-            game.native_tiny.load_memory(&bytes)?;
+            game.native_tiny.load_a2ne(&bytes)?;
             game.tiny_shop_catalog = Some(
                 tiny_garden_core::shop::TinyShopCatalog::from_verified_payload(&bytes)
                     .map_err(io::Error::other)?,

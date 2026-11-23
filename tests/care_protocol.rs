@@ -489,7 +489,7 @@ async fn real_sockets_start_cancel_training_once_show_epoch_history_and_replay_c
     assert_eq!(care_result(&mut first, &enter).await["accepted"], true);
     let begin = request(
         1,
-        json!({"kind":"training_start","stat":"run","durationMs":60_000}),
+        json!({"kind":"training_start","stat":"run","durationMs":60_000,"quotedCostRings":1}),
     );
     tokio::join!(send(&mut first, &begin), send(&mut second, &begin));
     let (one, two) = tokio::join!(
@@ -499,6 +499,11 @@ async fn real_sockets_start_cancel_training_once_show_epoch_history_and_replay_c
     assert_eq!(one["accepted"], true);
     assert_eq!(two["accepted"], true);
     assert_ne!(one["replayed"], two["replayed"]);
+    assert_eq!(
+        saved_profile(&server, id)["rings"],
+        19,
+        "concurrent starts charged once"
+    );
     let snapshot = receive(&mut first, |v| {
         v["type"] == "snapshot" && v["care"]["revision"] == 2
     })
@@ -561,6 +566,10 @@ async fn real_sockets_start_cancel_training_once_show_epoch_history_and_replay_c
         true
     );
     assert_eq!(game.players[id].care.history.len(), 3);
+    assert_eq!(
+        game.players[id].rings, 19,
+        "cancel and replay do not charge again or refund"
+    );
     assert_eq!(game.players[id].stats["run"].points, 0);
 }
 
@@ -580,7 +589,7 @@ async fn ready_training_settles_over_real_websocket_and_reconnect_cannot_award_a
         let started = chao_game_server::service::trusted_unix_ms() - 60_001;
         let begin = request(
             1,
-            json!({"kind":"training_start","stat":"fly","durationMs":60_000}),
+            json!({"kind":"training_start","stat":"fly","durationMs":60_000,"quotedCostRings":1}),
         );
         assert_eq!(
             server
@@ -635,7 +644,7 @@ async fn running_service_automatically_commits_ready_training_before_announcing_
         );
         let begin = request(
             1,
-            json!({"kind":"training_start","stat":"power","durationMs":60_000}),
+            json!({"kind":"training_start","stat":"power","durationMs":60_000,"quotedCostRings":1}),
         );
         assert_eq!(
             server
@@ -781,4 +790,213 @@ async fn real_native_egg_shop_purchase_and_hatch_add_one_owned_chao_after_durabl
         1
     );
     assert_eq!(game.players[id].id, id);
+}
+
+#[tokio::test]
+#[ignore = "requires private A2NE payload"]
+async fn native_weed_owner_pull_resumes_after_restart_without_awards() {
+    let path = std::path::PathBuf::from(std::env::var_os("CHAO_TINY_GARDEN_PAYLOAD").unwrap());
+    let (server, owner, visitor) = TestServer::start_with_native(Some(path.clone())).await;
+    let id = owner["player"]["id"].as_str().unwrap();
+    let mut s = server.socket(&owner).await;
+    let enter = request(0, json!({"kind":"tiny_enter"}));
+    send(&mut s, &enter).await;
+    assert_eq!(care_result(&mut s, &enter).await["accepted"], true);
+    let clock = |state: &AppState, n| {
+        let mut g = state.game.lock().unwrap();
+        for _ in 0..n {
+            g.tick(0.05);
+        }
+    };
+    clock(&server.state, 24);
+    let v = receive(&mut s, |v| {
+        v["care"]["tinyWeeds"]["items"][0]["ready"] == true
+    })
+    .await;
+    let item = &v["care"]["tinyWeeds"]["items"][0];
+    let mut outsider = server.socket(&visitor).await;
+    let priv_view = receive(&mut outsider, |v| v["type"] == "snapshot").await;
+    assert!(priv_view["care"]["tinyWeeds"].is_null());
+    let stale = request(
+        1,
+        json!({"kind":"tiny_weed_pull","slot":item["slot"],"generation":99}),
+    );
+    send(&mut s, &stale).await;
+    assert_eq!(
+        care_result(&mut s, &stale).await["code"],
+        "weed-unavailable"
+    );
+    let pull = request(
+        1,
+        json!({"kind":"tiny_weed_pull","slot":item["slot"],"generation":item["generation"]}),
+    );
+    let before = saved_profile(&server, id);
+    let block = server.directory.path().join("profiles.json.tmp");
+    fs::create_dir(&block).unwrap();
+    send(&mut s, &pull).await;
+    assert_eq!(care_result(&mut s, &pull).await["code"], "save-failed");
+    fs::remove_dir(block).unwrap();
+    send(&mut s, &pull).await;
+    assert_eq!(care_result(&mut s, &pull).await["accepted"], true);
+    let mut cfg = Config::local(server.directory.path().to_owned(), false);
+    cfg.tiny_garden_payload = Some(path);
+    let loaded = AppState::load(cfg.clone()).unwrap();
+    clock(&loaded, 30);
+    {
+        let mut g = loaded.game.lock().unwrap();
+        loaded.persist(&mut g).unwrap();
+    }
+    let final_state = AppState::load(cfg).unwrap();
+    let mut g = final_state.game.lock().unwrap();
+    let view = chao_game_server::care::public(&g, id);
+    assert_eq!(view["tinyWeeds"]["items"], json!([]));
+    assert_eq!(view["history"][1]["kind"], "tiny_weed_pull");
+    let replay = final_state
+        .care_action_at(&mut g, id, &pull, 123456789)
+        .unwrap();
+    assert_eq!(replay["replayed"], true);
+    let after = saved_profile(&server, id);
+    assert_eq!(before["rings"], after["rings"]);
+    assert_eq!(before["stats"], after["stats"]);
+}
+
+#[tokio::test]
+#[ignore = "requires supplied private A2NE garden"]
+async fn toy_shop_and_performance_cross_socket_and_reload() {
+    let path = std::path::PathBuf::from(std::env::var_os("CHAO_TINY_GARDEN_PAYLOAD").unwrap());
+    let (server, owner, _) = TestServer::start_with_native(Some(path.clone())).await;
+    let id = owner["player"]["id"].as_str().unwrap();
+    let mut socket = server.socket(&owner).await;
+    let enter = request(0, json!({"kind":"tiny_enter"}));
+    send(&mut socket, &enter).await;
+    assert_eq!(care_result(&mut socket, &enter).await["accepted"], true);
+    let buy = request(1, json!({"kind":"tiny_toy_buy","id":0}));
+    send(&mut socket, &buy).await;
+    assert_eq!(
+        care_result(&mut socket, &buy).await["code"],
+        "insufficient-rings"
+    );
+    server
+        .state
+        .game
+        .lock()
+        .unwrap()
+        .players
+        .get_mut(id)
+        .unwrap()
+        .rings = 11000;
+    let skipped = request(1, json!({"kind":"tiny_toy_buy","id":2}));
+    send(&mut socket, &skipped).await;
+    assert_eq!(
+        care_result(&mut socket, &skipped).await["code"],
+        "toy-not-offered"
+    );
+    send(&mut socket, &buy).await;
+    assert_eq!(care_result(&mut socket, &buy).await["accepted"], true);
+    send(&mut socket, &buy).await;
+    assert_eq!(care_result(&mut socket, &buy).await["replayed"], true);
+    let play = request(2, json!({"kind":"tiny_toy_play","id":0}));
+    send(&mut socket, &play).await;
+    assert_eq!(care_result(&mut socket, &play).await["accepted"], true);
+    let v = receive(&mut socket, |v| v["care"]["tinyToys"]["play"]["id"] == 0).await;
+    assert_eq!(v["care"]["tinyToys"]["items"][0]["owned"], true);
+    let mut cfg = Config::local(server.directory.path().to_owned(), false);
+    cfg.tiny_garden_payload = Some(path);
+    let loaded = AppState::load(cfg).unwrap();
+    let mut g = loaded.game.lock().unwrap();
+    g.connect(id);
+    assert_eq!(g.players[id].rings, 10000);
+    let stats = g.players[id].stats.clone();
+    for _ in 0..18 {
+        g.tick(0.1);
+    }
+    assert!(chao_game_server::care::public(&g, id)["tinyToys"]["play"].is_null());
+    let duck = request(3, json!({"kind":"tiny_toy_buy","id":1}));
+    assert_eq!(
+        loaded.care_action(&mut g, id, &duck).unwrap()["accepted"],
+        true
+    );
+    let offer = chao_game_server::care::public(&g, id);
+    assert_eq!(offer["tinyToys"]["items"][2]["offered"], false);
+    assert_eq!(offer["tinyToys"]["tvWaitTicks"], 0x34bc0);
+    let t = g.players.get_mut(id).unwrap().care.toys.as_mut().unwrap();
+    for _ in 0..36_300 {
+        t.advance(0.1);
+    }
+    let tv = request(4, json!({"kind":"tiny_toy_buy","id":2}));
+    assert_eq!(
+        loaded.care_action(&mut g, id, &tv).unwrap()["accepted"],
+        true
+    );
+    assert_eq!(g.players[id].rings, 0);
+    assert_eq!(g.players[id].stats, stats);
+    for (rev, toy) in [(5, 1), (6, 2)] {
+        let perform = request(rev, json!({"kind":"tiny_toy_play","id":toy}));
+        assert_eq!(
+            loaded.care_action(&mut g, id, &perform).unwrap()["accepted"],
+            true
+        );
+        for _ in 0..42 {
+            g.tick(0.1);
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires private A2NE payload"]
+async fn native_needs_resume_mid_countdown_and_feed_refusal_keeps_bag() {
+    let path = std::path::PathBuf::from(std::env::var_os("CHAO_TINY_GARDEN_PAYLOAD").unwrap());
+    let (server, owner, _) = TestServer::start_with_native(Some(path.clone())).await;
+    let id = owner["player"]["id"].as_str().unwrap();
+    let mut socket = server.socket(&owner).await;
+    let item = {
+        let mut g=server.state.game.lock().unwrap();
+        let idx=g.tiny_shop_catalog.as_ref().unwrap().fruits.iter().position(|f|f.raw[1]>0).unwrap();
+        let item=format!("tiny-fruit:{idx}");
+        let p=g.players.get_mut(id).unwrap();p.hunger=100.;p.care.inventory.insert(item.clone(),1);item
+    };
+    let enter=request(0,json!({"kind":"tiny_enter"}));
+    send(&mut socket,&enter).await; assert_eq!(care_result(&mut socket,&enter).await["accepted"],true);
+    let feed=request(1,json!({"kind":"consume","itemId":item}));
+    send(&mut socket,&feed).await;assert_eq!(care_result(&mut socket,&feed).await["code"],"chao-too-full");
+    {
+        let mut g=server.state.game.lock().unwrap();
+        for _ in 0..20 {g.tick(0.1);}
+        assert_eq!(g.players[id].hunger,100.);
+        server.state.persist(&mut g).unwrap();
+    }
+    let mut cfg=Config::local(server.directory.path().to_owned(),false);cfg.tiny_garden_payload=Some(path);
+    let loaded=AppState::load(cfg).unwrap();let mut g=loaded.game.lock().unwrap();
+    for _ in 0..13 {g.tick(0.1);}
+    assert_eq!(g.players[id].hunger,99.5);
+    assert_eq!(g.players[id].care.inventory[&item],1);
+}
+#[tokio::test]
+#[ignore = "requires private A2NE payload"]
+async fn four_native_weeds_lower_mood_until_owner_pulls_one() {
+    let path=std::path::PathBuf::from(std::env::var_os("CHAO_TINY_GARDEN_PAYLOAD").unwrap());
+    let (server,owner,_)=TestServer::start_with_native(Some(path)).await;
+    let id=owner["player"]["id"].as_str().unwrap();
+    let mut socket=server.socket(&owner).await;
+    let enter=request(0,json!({"kind":"tiny_enter"}));send(&mut socket,&enter).await;
+    assert_eq!(care_result(&mut socket,&enter).await["accepted"],true);
+    let (weed,initial)={
+        let mut g=server.state.game.lock().unwrap();
+        for _ in 0..12000 {
+            g.players.get_mut(id).unwrap().hunger=80.; // isolate weeds from hunger/fullness
+            g.tick(0.1);
+            if chao_game_server::care::public(&g,id)["tinyWeeds"]["items"].as_array().unwrap().len()==4 {break;}
+        }
+        let v=chao_game_server::care::public(&g,id);
+        assert_eq!(v["tinyWeeds"]["items"].as_array().unwrap().len(),4);
+        let initial=g.players[id].happiness;
+        for _ in 0..125 {g.tick(0.1);}
+        assert_eq!(g.players[id].happiness,initial-0.5);
+        (v["tinyWeeds"]["items"][0].clone(),initial)
+    };
+    let pull=request(1,json!({"kind":"tiny_weed_pull","slot":weed["slot"],"generation":weed["generation"]}));
+    send(&mut socket,&pull).await;assert_eq!(care_result(&mut socket,&pull).await["accepted"],true);
+    let mut g=server.state.game.lock().unwrap();for _ in 0..140{g.tick(0.1);}
+    assert_eq!(chao_game_server::care::public(&g,id)["tinyWeeds"]["items"].as_array().unwrap().len(),3);
+    assert_eq!(g.players[id].happiness,initial-0.5);
 }

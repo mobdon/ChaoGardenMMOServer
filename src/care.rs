@@ -38,6 +38,19 @@ pub enum Intent {
     },
     #[serde(rename = "tiny_enter")]
     TinyEnter,
+    #[serde(rename = "tiny_toy_buy")]
+    TinyToyBuy {
+        id: u8,
+    },
+    #[serde(rename = "tiny_toy_play")]
+    TinyToyPlay {
+        id: u8,
+    },
+    #[serde(rename = "tiny_weed_pull")]
+    TinyWeedPull {
+        slot: u8,
+        generation: u32,
+    },
     #[serde(rename = "tiny_egg_purchase")]
     TinyEggPurchase {
         #[serde(rename = "eggId")]
@@ -55,6 +68,12 @@ pub enum Intent {
         stat: tiny_garden_core::training::Stat,
         #[serde(rename = "durationMs")]
         duration_ms: u64,
+        #[serde(
+            rename = "quotedCostRings",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        quoted_cost: Option<u32>,
     },
     #[serde(rename = "training_cancel")]
     TrainingCancel {
@@ -121,6 +140,9 @@ impl HistoryEntry {
             Intent::Consume { item_id } => ("consume", Some(item_id.clone())),
             Intent::Purchase { item_id } => ("purchase", Some(item_id.clone())),
             Intent::TinyPurchase { item_id } => ("tiny_purchase", Some(item_id.clone())),
+            Intent::TinyToyBuy { .. } => ("tiny_toy_buy", None),
+            Intent::TinyToyPlay { .. } => ("tiny_toy_play", None),
+            Intent::TinyWeedPull { .. } => ("tiny_weed_pull", None),
             Intent::TinyEnter => ("tiny_enter", None),
             Intent::TinyEggPurchase { .. } => ("tiny_egg_purchase", None),
             Intent::TinyEggHatch { .. } => ("tiny_egg_hatch", None),
@@ -159,6 +181,10 @@ pub struct CareState {
     /// Durable, explicit Tiny Garden residency opt-in. Legacy profiles stay manual.
     #[serde(default)]
     pub tiny_resident: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weeds: Option<crate::weeds::Patch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toys: Option<crate::toys::Toys>,
     #[serde(default)]
     pub training: Option<crate::training::TrainingState>,
 }
@@ -177,6 +203,8 @@ impl Default for CareState {
             last_effect_at: None,
             activity_lock: None,
             tiny_resident: false,
+            weeds: None,
+            toys: None,
             training: None,
         }
     }
@@ -202,6 +230,8 @@ fn valid_request(r: &Request) -> bool {
             | Intent::Purchase { item_id }
             | Intent::TinyPurchase { item_id } => valid_item(item_id),
             Intent::Pickup { pickup_id } => !pickup_id.is_empty() && pickup_id.len() <= 128,
+            Intent::TinyToyBuy { id } | Intent::TinyToyPlay { id } => *id < 3,
+            Intent::TinyWeedPull { slot, generation } => *slot < 16 && *generation > 0,
             Intent::Pet | Intent::TinyEnter => true,
             Intent::TinyEggPurchase { egg_id, .. } => *egg_id < 12,
             Intent::TinyEggHatch { owned_egg_id } => Uuid::parse_str(owned_egg_id)
@@ -224,6 +254,8 @@ impl CareState {
         let state: Self =
             serde_json::from_value(value.clone()).map_err(|_| "Invalid saved care state")?;
         if state.version != 1
+            || state.toys.as_ref().is_some_and(|t| !t.valid())
+            || state.weeds.as_ref().is_some_and(|w| !w.valid())
             || state
                 .training
                 .as_ref()
@@ -420,6 +452,8 @@ pub fn public(game: &Game, id: &str) -> Value {
         "training":crate::training::public(p,crate::service::trusted_unix_ms()),
         "tinyEggShop":crate::collection::shop_public(game,p,crate::service::trusted_unix_ms()),
         "tinyCollection":crate::collection::public(game,p,crate::service::trusted_unix_ms()),
+        "tinyToys":game.tiny_egg_source.as_ref().map(|src|p.care.toys.as_ref().unwrap_or(&Default::default()).public(src)),
+        "tinyWeeds":p.care.weeds.as_ref().filter(|_|game.native_tiny.weeds.is_some()).map(|w|w.public()),
         "history":p.care.history,
         "shop":[{"itemId":"garden-fruit","price":3,"enabled":true,"rules":"adapted"},{"itemId":"sa2:22","price":12,"enabled":game.care_catalog.enabled(),"rules":"adapted"},{"itemId":"sa2:23","price":12,"enabled":game.care_catalog.enabled(),"rules":"adapted"}],
         "eligibility":{"canCare":!conflict(p,false),"canPickup":!conflict(p,true),"activityLock":p.care.activity_lock,
@@ -508,6 +542,30 @@ fn apply(
         Intent::TinyEggPurchase { .. } | Intent::TinyEggHatch { .. } => {
             crate::collection::apply(game, p, &request.intent, training_now, &request.request_id)
         }
+        Intent::TinyToyBuy { id } | Intent::TinyToyPlay { id } => crate::toys::apply(
+            p,
+            game.tiny_egg_source
+                .as_ref()
+                .ok_or("native-data-unavailable")?,
+            *id,
+            matches!(request.intent, Intent::TinyToyBuy { .. }),
+        ),
+        Intent::TinyWeedPull { slot, generation } => {
+            let assets = game
+                .native_tiny
+                .weeds
+                .as_ref()
+                .ok_or("native-data-unavailable")?;
+            if !p.care.tiny_resident {
+                return Err("activity-conflict");
+            }
+            p.care
+                .weeds
+                .as_mut()
+                .ok_or("weed-unavailable")?
+                .pull(*slot, *generation, assets)?;
+            Ok(json!({"slot":slot,"generation":generation}))
+        }
         Intent::TinyEnter => {
             crate::watch::enter_tiny(game, p)?;
             Ok(json!({"tinyResident":crate::watch::tiny_public(p)}))
@@ -591,6 +649,10 @@ fn apply(
                     .as_ref()
                     .ok_or("native-data-unavailable")?
                     .fruits[id];
+                if p.care.inventory.get(item_id).copied().unwrap_or(0)>0 &&
+                   !tiny_garden_core::native_needs::accepts_fruit((p.hunger*2.).round().clamp(0.,200.) as u8, fruit.raw[1]) {
+                    return Err("chao-too-full");
+                }
                 take_quantity(p, item_id)?;
                 // Native needs use signed-byte ×20 in a 0..200 range. Map to
                 // this host's 0..100 needs explicitly; native experience-bar

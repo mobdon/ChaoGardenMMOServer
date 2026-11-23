@@ -1346,6 +1346,22 @@ impl Game {
         for id in ids {
             let mut p = self.players.remove(&id).unwrap();
             watch::maintain_tiny(self, &mut p);
+            if p.care.tiny_resident
+                && p.tiny_game.is_none()
+                && p.care.activity_lock.is_none()
+                && p.race.is_none()
+                && p.karate.is_none()
+                && p.vehicle.is_none()
+                && matches!(p.zone.as_str(), "garden" | "hero" | "dark" | "hub")
+                && let Some(assets) = self.native_tiny.weeds.as_ref()
+            {
+                let patch = p.care.weeds.get_or_insert_with(crate::weeds::Patch::new);
+                self.dirty |= patch.advance(dt, assets, &mut p.happiness, &mut p.hunger);
+                if let Some(t) = &mut p.care.toys {
+                    t.advance(dt);
+                    self.dirty = true;
+                }
+            }
             if p.connections == 0 && p.watch.is_none() {
                 self.players.insert(id, p);
                 continue;

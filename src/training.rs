@@ -5,9 +5,11 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tiny_garden_core::training::{Stat, TrainingError, TrainingLedger, TrainingPolicy};
+use tiny_garden_core::training::{
+    Stat, TrainingError, TrainingLedger, TrainingPolicy, ring_quote, ring_rate,
+};
 
-pub const RULES: &str = "adapted-afk-training-v1";
+pub const RULES: &str = "adapted-afk-training-v2";
 const LOCK_PREFIX: &str = "training:afk:";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -155,10 +157,12 @@ pub fn validate_player(player: &Player) -> Result<(), String> {
             .ok_or("Saved training state is missing its job")?;
         let duration = job.deadline_server_ms - job.started_server_ms;
         if !player.care.receipts.values().any(|receipt| {
-            matches!(&receipt.request.intent, Intent::TrainingStart { stat, duration_ms }
-                if *stat == job.stat && *duration_ms == duration)
-                && receipt.effects
-                    == json!({"training":{"jobId":job.job_id,"outcome":"started","costRings":0}})
+            let Intent::TrainingStart {stat,duration_ms,quoted_cost} = &receipt.request.intent else {return false};
+            if *stat != job.stat || *duration_ms != duration {return false;}
+            match quoted_cost {
+                None => receipt.effects == json!({"training":{"jobId":job.job_id,"outcome":"started","costRings":0}}),
+                Some(cost) => (1..=4).any(|rate| ring_quote(duration,rate)==Some(*cost) && receipt.effects == start_effect(job.job_id,rate,*cost))
+            }
         }) {
             return Err("Training job is missing its durable start receipt".into());
         }
@@ -220,8 +224,12 @@ fn stat_name(stat: Stat) -> &'static str {
         Stat::Stamina => "stamina",
     }
 }
+fn start_effect(job: u64, rate: u32, cost: u32) -> Value {
+    json!({"rings":-i64::from(cost),"training":{"jobId":job,"outcome":"started","costRings":cost,"ratePerMinute":rate,"tariff":"skill-band-v1"}})
+}
+const MENU_MINUTES: [u64; 4] = [1, 15, 60, 480];
 pub fn capability() -> Value {
-    json!({"enabled":true,"rulesVersion":RULES,"policy":{"tickMs":60000,"pointsPerTick":1,"maxDurationMs":28800000,"maxPoints":480,"costRings":0},
+    json!({"enabled":true,"rulesVersion":RULES,"policy":{"tickMs":60000,"pointsPerTick":1,"maxDurationMs":28800000,"maxPoints":480,"tariff":"skill-band-v1","cancelRefund":false,"menuMinutes":MENU_MINUTES},
         "stats":["swim","fly","run","power","stamina"]})
 }
 pub fn public(player: &Player, now: u64) -> Value {
@@ -261,6 +269,15 @@ pub fn public(player: &Player, now: u64) -> Value {
             None
         }
     });
+    let mut quotes = serde_json::Map::new();
+    for name in ["swim", "fly", "run", "power", "stamina"] {
+        let rate = ring_rate(player.stats[name].level);
+        quotes.insert(
+            name.into(),
+            json!(MENU_MINUTES.map(|minutes| ring_quote(minutes * 60000, rate).unwrap())),
+        );
+    }
+    result["quotes"] = Value::Object(quotes);
     result["serverNowMs"] = json!(now);
     result["job"] = json!(job);
     result["lastResult"] = json!(
@@ -295,7 +312,11 @@ pub fn apply(
 ) -> Result<Value, &'static str> {
     let mut ledger = core(player)?;
     let (last_result, effects) = match intent {
-        Intent::TrainingStart { stat, duration_ms } => {
+        Intent::TrainingStart {
+            stat,
+            duration_ms,
+            quoted_cost,
+        } => {
             if player.connections == 0
                 || !player.care.tiny_resident
                 || unsafe_activity(player)
@@ -309,13 +330,16 @@ pub fn apply(
             let id = ledger
                 .start(*stat, *duration_ms, now, TrainingPolicy::default())
                 .map_err(code)?;
+            let rate = ring_rate(player.stats[stat_name(*stat)].level);
+            let cost = ring_quote(*duration_ms, rate).ok_or("invalid-training-duration")?;
+            if *quoted_cost != Some(cost) {
+                return Err("training-price-changed");
+            }
+            player.rings = player.rings.checked_sub(cost).ok_or("insufficient-rings")?;
             player.care.activity_lock = Some(lock(id));
             player.watch = None;
             player.input = Input::default();
-            (
-                None,
-                json!({"training":{"jobId":id,"outcome":"started","costRings":0}}),
-            )
+            (None, start_effect(id, rate, cost))
         }
         Intent::TrainingCancel { job_id } | Intent::TrainingSettle { job_id } => {
             if (!automatic && player.connections == 0)

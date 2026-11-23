@@ -11,6 +11,7 @@ pub mod native_bounce;
 pub mod native_growth;
 pub mod native_hatching;
 pub mod native_memory;
+pub mod native_needs;
 pub mod native_rps;
 pub mod native_rps_finish;
 pub mod native_rps_game;
