@@ -21,7 +21,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     sync::{broadcast, watch},
@@ -80,7 +80,6 @@ impl Config {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             owner_bootstrap,
             allowed_origins: vec![],
-            metrics: Metrics::new(),
         }
     }
 }
@@ -97,6 +96,9 @@ impl AppState {
     pub fn load(config: Config) -> io::Result<Self> {
         if config.owner_bootstrap && !config.address.ip().is_loopback() {
             return Err(io::Error::other("Owner bootstrap requires loopback"));
+        }
+        if let Some(dir) = env::var_os("CHAO_NATIVE_LAND") {
+            crate::native_land::load(std::path::Path::new(&dir)).map_err(io::Error::other)?;
         }
         let profile_path = config.data_dir.join("profiles.json");
         let profiles: Vec<Value> = if profile_path.exists() {
@@ -297,7 +299,7 @@ fn origin_allowed(headers: &HeaderMap, config: &Config) -> bool {
         )
 }
 async fn origin_guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    let started = Instant::now();
+    let started = std::time::Instant::now();
     let mut response = if !origin_allowed(request.headers(), &state.config) {
         error(
             StatusCode::FORBIDDEN,
@@ -430,6 +432,7 @@ pub fn asset_filename(path: &str) -> Option<String> {
         "tree-neutral",
         "dark-chao-walker",
         "dark-walker-shot",
+        "dark-walker-rocket",
         "dark-walker-booster",
         "shadow-air-shoes-left",
         "shadow-air-shoes-right",

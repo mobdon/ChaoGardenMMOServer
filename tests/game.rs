@@ -268,6 +268,21 @@ fn ring_pickups_require_proximity_and_respawn_once() {
 }
 
 #[test]
+fn dev_realm_travel_preserves_form_and_alignment() {
+    for admin in [false, true] {
+        let (mut g, id, _) = fixture(admin);
+        let alignment = g.players[&id].alignment;
+        let form = g.players[&id].form.clone();
+        for realm in ["hero", "dark"] {
+            act(&mut g, &id, realm, json!({"admin": true}));
+            assert_eq!(g.players[&id].zone, if admin { realm } else { "hub" });
+            assert_eq!(g.players[&id].alignment, alignment);
+            assert_eq!(g.players[&id].form, form);
+        }
+    }
+}
+
+#[test]
 fn alignment_gates_and_choice_cooldown_are_authoritative() {
     let (mut g, id, _) = fixture(false);
     act(&mut g, &id, "hero", json!({}));
