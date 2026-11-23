@@ -182,6 +182,11 @@ async fn race_and_karate_keep_one_away_chao_and_publish_only_durable_results() {
     .await;
     let watched = receive_until(&mut control, |value| value["kind"] == "watch-saved").await;
     assert_eq!(watched["accepted"], true);
+    send(&mut observer, json!({"type":"action","action":"garden"})).await;
+    receive_until(&mut observer, |value| {
+        value["type"] == "snapshot" && player(value, id)["connected"] == true
+    })
+    .await;
 
     let forged = json!({"type":"action","action":"competition-start","expectedRevision":0,
         "kind":"race","matches":1,"rings":999999,"winner":id});

@@ -1,0 +1,275 @@
+{
+  "schemaVersion": 1,
+  "harnessRevision": 5,
+  "at": "2026-11-18T16:23:34.818Z",
+  "baseRevision": "282f6ab",
+  "executable": "C:\\Users\\Admin\\Documents\\ChatGPT\\mmo\\.local\\worktrees\\server-capacity\\target\\release\\chao-game-server.exe",
+  "setup": {
+    "fastOpenAtStart": 11,
+    "roomSetupFailures": 0,
+    "startupCloses": 0
+  },
+  "host": {
+    "platform": "win32",
+    "release": "10.0.19045",
+    "cpu": "Intel(R) Core(TM) Ultra 9 285K",
+    "logicalCpus": 24,
+    "ramBytes": 33157505024,
+    "node": "v26.13.0"
+  },
+  "workload": {
+    "players": 12,
+    "fastPeers": 11,
+    "slowPeers": 1,
+    "residents": 12,
+    "rooms": 4,
+    "seconds": 10,
+    "elapsedSeconds": 10.014099700000001,
+    "metricsWindowSeconds": 10.0182311,
+    "movementHz": 10,
+    "reconnectEveryMs": 2000,
+    "saveEveryMs": 1100,
+    "fixture": "Synthetic server-side profiles, flat fallback terrain; no retail assets; no race/combat/positive minigame workload"
+  },
+  "observed": {
+    "snapshots": 1096,
+    "receivedBytes": 9711197,
+    "receivedBytesPerSecond": 969752.3782392539,
+    "snapshotBytes": {
+      "count": 1096,
+      "p50": 8689,
+      "p95": 13435,
+      "p99": 13441,
+      "max": 13446
+    },
+    "snapshotAgeMs": {
+      "count": 1096,
+      "p50": 0,
+      "p95": 0,
+      "p99": 14.80224609375,
+      "max": 16.80224609375
+    },
+    "snapshotIntervalMs": {
+      "count": 1096,
+      "p50": 105.20629999999983,
+      "p95": 108.70830000000024,
+      "p99": 109.51490000000013,
+      "max": 198.9404999999988
+    },
+    "saveAckMs": {
+      "count": 9,
+      "p50": 3.6426999999994223,
+      "p95": 5.156699999999546,
+      "p99": 5.156699999999546,
+      "max": 5.156699999999546
+    },
+    "saveAcks": 9,
+    "saveRejected": 0,
+    "saveErrors": 0,
+    "reconnectFirstSnapshotMs": {
+      "count": 4,
+      "p50": 1.0224999999991269,
+      "p95": 1.5830000000005384,
+      "p99": 1.5830000000005384,
+      "max": 1.5830000000005384
+    },
+    "crossRoomLeaks": 0,
+    "missingSelf": 0,
+    "unexpectedCloses": 0,
+    "resourceBefore": {
+      "cpuSeconds": 0.046875,
+      "workingSetBytes": 9265152,
+      "peakWorkingSetBytes": 9625600
+    },
+    "resourceAfter": {
+      "cpuSeconds": 0.1875,
+      "workingSetBytes": 9891840,
+      "peakWorkingSetBytes": 9965568
+    },
+    "serverCpuCores": 0.014042700213979294,
+    "shutdownProfiles": 24,
+    "uniqueShutdownProfiles": 24,
+    "canonicalIdsPreserved": true,
+    "credentialsPreserved": true,
+    "ownerFlagsPreserved": true,
+    "residentOptInPreserved": true,
+    "persistenceReadError": null,
+    "cleanShutdown": true
+  },
+  "metricsBefore": "# HELP chao_http_requests_total Total HTTP requests served.\n# TYPE chao_http_requests_total counter\nchao_http_requests_total 12\n# HELP chao_http_errors_total HTTP responses with status at least 500.\n# TYPE chao_http_errors_total counter\nchao_http_errors_total 0\n# HELP chao_ws_connects_total WebSocket connections opened.\n# TYPE chao_ws_connects_total counter\nchao_ws_connects_total 12\n# HELP chao_reconnects_total Opened sockets for a profile previously connected in this process.\n# TYPE chao_reconnects_total counter\nchao_reconnects_total 0\n# HELP chao_admission_rejected_total Connections or new profiles rejected at configured capacity.\n# TYPE chao_admission_rejected_total counter\nchao_admission_rejected_total 0\n# HELP chao_persist_failures_total Failed dirty-profile atomic save attempts.\n# TYPE chao_persist_failures_total counter\nchao_persist_failures_total 0\n# HELP chao_event_lag_total Broadcast entries missed by lagging peers; those peers disconnect.\n# TYPE chao_event_lag_total counter\nchao_event_lag_total 0\n# HELP chao_slow_clients_total Socket sends exceeding the configured deadline.\n# TYPE chao_slow_clients_total counter\nchao_slow_clients_total 0\n# HELP chao_oversized_snapshots_total Snapshots exceeding byte bound; peer disconnected.\n# TYPE chao_oversized_snapshots_total counter\nchao_oversized_snapshots_total 0\n# HELP chao_input_rate_disconnects_total Peers exceeding 80 incoming messages per second.\n# TYPE chao_input_rate_disconnects_total counter\nchao_input_rate_disconnects_total 0\n# HELP chao_snapshot_bytes_total Snapshot UTF-8 payload bytes successfully sent; excludes WS/TLS overhead.\n# TYPE chao_snapshot_bytes_total counter\nchao_snapshot_bytes_total 3403914\n# HELP chao_snapshots_total Snapshot frames successfully sent.\n# TYPE chao_snapshots_total counter\nchao_snapshots_total 408\n# HELP chao_ws_connections Currently open WebSocket connections.\n# TYPE chao_ws_connections gauge\nchao_ws_connections 12\n# HELP chao_event_queue_depth Last observed retained broadcast event entries.\n# TYPE chao_event_queue_depth gauge\nchao_event_queue_depth 0\n# HELP chao_event_queue_high_water Maximum observed retained broadcast event entries.\n# TYPE chao_event_queue_high_water gauge\nchao_event_queue_high_water 10\n# HELP chao_residents Residents simulated in the last tick.\n# TYPE chao_residents gauge\nchao_residents 12\n# HELP chao_uptime_seconds Process uptime.\n# TYPE chao_uptime_seconds gauge\nchao_uptime_seconds 3\n# HELP chao_http_request_duration_seconds HTTP handler latency.\n# TYPE chao_http_request_duration_seconds histogram\nchao_http_request_duration_seconds_bucket{le=\"0.0001\"} 6\nchao_http_request_duration_seconds_bucket{le=\"0.0005\"} 10\nchao_http_request_duration_seconds_bucket{le=\"0.001\"} 12\nchao_http_request_duration_seconds_bucket{le=\"0.0025\"} 12\nchao_http_request_duration_seconds_bucket{le=\"0.005\"} 12\nchao_http_request_duration_seconds_bucket{le=\"0.01\"} 12\nchao_http_request_duration_seconds_bucket{le=\"0.025\"} 12\nchao_http_request_duration_seconds_bucket{le=\"0.05\"} 12\nchao_http_request_duration_seconds_bucket{le=\"0.1\"} 12\nchao_http_request_duration_seconds_bucket{le=\"0.25\"} 12\nchao_http_request_duration_seconds_bucket{le=\"0.5\"} 12\nchao_http_request_duration_seconds_bucket{le=\"1\"} 12\nchao_http_request_duration_seconds_bucket{le=\"2.5\"} 12\nchao_http_request_duration_seconds_bucket{le=\"5\"} 12\nchao_http_request_duration_seconds_bucket{le=\"10\"} 12\nchao_http_request_duration_seconds_bucket{le=\"+Inf\"} 12\nchao_http_request_duration_seconds_sum 0.00263\nchao_http_request_duration_seconds_count 12\n# HELP chao_tick_duration_seconds Simulation work including pending reward save; excludes lock wait.\n# TYPE chao_tick_duration_seconds histogram\nchao_tick_duration_seconds_bucket{le=\"0.0001\"} 64\nchao_tick_duration_seconds_bucket{le=\"0.0005\"} 68\nchao_tick_duration_seconds_bucket{le=\"0.001\"} 68\nchao_tick_duration_seconds_bucket{le=\"0.0025\"} 68\nchao_tick_duration_seconds_bucket{le=\"0.005\"} 68\nchao_tick_duration_seconds_bucket{le=\"0.01\"} 68\nchao_tick_duration_seconds_bucket{le=\"0.025\"} 68\nchao_tick_duration_seconds_bucket{le=\"0.05\"} 68\nchao_tick_duration_seconds_bucket{le=\"0.1\"} 68\nchao_tick_duration_seconds_bucket{le=\"0.25\"} 68\nchao_tick_duration_seconds_bucket{le=\"0.5\"} 68\nchao_tick_duration_seconds_bucket{le=\"1\"} 68\nchao_tick_duration_seconds_bucket{le=\"2.5\"} 68\nchao_tick_duration_seconds_bucket{le=\"5\"} 68\nchao_tick_duration_seconds_bucket{le=\"10\"} 68\nchao_tick_duration_seconds_bucket{le=\"+Inf\"} 68\nchao_tick_duration_seconds_sum 0.004107\nchao_tick_duration_seconds_count 68\n# HELP chao_tick_lock_wait_seconds Simulation wait for authoritative game mutex.\n# TYPE chao_tick_lock_wait_seconds histogram\nchao_tick_lock_wait_seconds_bucket{le=\"0.0001\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"0.0005\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"0.001\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"0.0025\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"0.005\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"0.01\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"0.025\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"0.05\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"0.1\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"0.25\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"0.5\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"1\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"2.5\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"5\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"10\"} 68\nchao_tick_lock_wait_seconds_bucket{le=\"+Inf\"} 68\nchao_tick_lock_wait_seconds_sum 0\nchao_tick_lock_wait_seconds_count 68\n# HELP chao_resident_tick_duration_seconds Time advancing resident AI per simulation tick.\n# TYPE chao_resident_tick_duration_seconds histogram\nchao_resident_tick_duration_seconds_bucket{le=\"0.0001\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"0.0005\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"0.001\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"0.0025\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"0.005\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"0.01\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"0.025\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"0.05\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"0.1\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"0.25\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"0.5\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"1\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"2.5\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"5\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"10\"} 68\nchao_resident_tick_duration_seconds_bucket{le=\"+Inf\"} 68\nchao_resident_tick_duration_seconds_sum 0.00003\nchao_resident_tick_duration_seconds_count 68\n# HELP chao_snapshot_duration_seconds Snapshot build and JSON encoding including lock wait.\n# TYPE chao_snapshot_duration_seconds histogram\nchao_snapshot_duration_seconds_bucket{le=\"0.0001\"} 0\nchao_snapshot_duration_seconds_bucket{le=\"0.0005\"} 107\nchao_snapshot_duration_seconds_bucket{le=\"0.001\"} 204\nchao_snapshot_duration_seconds_bucket{le=\"0.0025\"} 408\nchao_snapshot_duration_seconds_bucket{le=\"0.005\"} 408\nchao_snapshot_duration_seconds_bucket{le=\"0.01\"} 408\nchao_snapshot_duration_seconds_bucket{le=\"0.025\"} 408\nchao_snapshot_duration_seconds_bucket{le=\"0.05\"} 408\nchao_snapshot_duration_seconds_bucket{le=\"0.1\"} 408\nchao_snapshot_duration_seconds_bucket{le=\"0.25\"} 408\nchao_snapshot_duration_seconds_bucket{le=\"0.5\"} 408\nchao_snapshot_duration_seconds_bucket{le=\"1\"} 408\nchao_snapshot_duration_seconds_bucket{le=\"2.5\"} 408\nchao_snapshot_duration_seconds_bucket{le=\"5\"} 408\nchao_snapshot_duration_seconds_bucket{le=\"10\"} 408\nchao_snapshot_duration_seconds_bucket{le=\"+Inf\"} 408\nchao_snapshot_duration_seconds_sum 0.421847\nchao_snapshot_duration_seconds_count 408\n# HELP chao_save_duration_seconds Dirty profile export, encode, fsync and atomic replacement.\n# TYPE chao_save_duration_seconds histogram\nchao_save_duration_seconds_bucket{le=\"0.0001\"} 0\nchao_save_duration_seconds_bucket{le=\"0.0005\"} 0\nchao_save_duration_seconds_bucket{le=\"0.001\"} 0\nchao_save_duration_seconds_bucket{le=\"0.0025\"} 0\nchao_save_duration_seconds_bucket{le=\"0.005\"} 0\nchao_save_duration_seconds_bucket{le=\"0.01\"} 0\nchao_save_duration_seconds_bucket{le=\"0.025\"} 0\nchao_save_duration_seconds_bucket{le=\"0.05\"} 0\nchao_save_duration_seconds_bucket{le=\"0.1\"} 0\nchao_save_duration_seconds_bucket{le=\"0.25\"} 0\nchao_save_duration_seconds_bucket{le=\"0.5\"} 0\nchao_save_duration_seconds_bucket{le=\"1\"} 0\nchao_save_duration_seconds_bucket{le=\"2.5\"} 0\nchao_save_duration_seconds_bucket{le=\"5\"} 0\nchao_save_duration_seconds_bucket{le=\"10\"} 0\nchao_save_duration_seconds_bucket{le=\"+Inf\"} 0\nchao_save_duration_seconds_sum 0\nchao_save_duration_seconds_count 0\n# HELP chao_send_duration_seconds Socket send completion or failure latency.\n# TYPE chao_send_duration_seconds histogram\nchao_send_duration_seconds_bucket{le=\"0.0001\"} 428\nchao_send_duration_seconds_bucket{le=\"0.0005\"} 428\nchao_send_duration_seconds_bucket{le=\"0.001\"} 428\nchao_send_duration_seconds_bucket{le=\"0.0025\"} 428\nchao_send_duration_seconds_bucket{le=\"0.005\"} 428\nchao_send_duration_seconds_bucket{le=\"0.01\"} 428\nchao_send_duration_seconds_bucket{le=\"0.025\"} 428\nchao_send_duration_seconds_bucket{le=\"0.05\"} 428\nchao_send_duration_seconds_bucket{le=\"0.1\"} 428\nchao_send_duration_seconds_bucket{le=\"0.25\"} 428\nchao_send_duration_seconds_bucket{le=\"0.5\"} 428\nchao_send_duration_seconds_bucket{le=\"1\"} 428\nchao_send_duration_seconds_bucket{le=\"2.5\"} 428\nchao_send_duration_seconds_bucket{le=\"5\"} 428\nchao_send_duration_seconds_bucket{le=\"10\"} 428\nchao_send_duration_seconds_bucket{le=\"+Inf\"} 428\nchao_send_duration_seconds_sum 0.007911\nchao_send_duration_seconds_count 428\n",
+  "metricsAfter": "# HELP chao_http_requests_total Total HTTP requests served.\n# TYPE chao_http_requests_total counter\nchao_http_requests_total 17\n# HELP chao_http_errors_total HTTP responses with status at least 500.\n# TYPE chao_http_errors_total counter\nchao_http_errors_total 0\n# HELP chao_ws_connects_total WebSocket connections opened.\n# TYPE chao_ws_connects_total counter\nchao_ws_connects_total 16\n# HELP chao_reconnects_total Opened sockets for a profile previously connected in this process.\n# TYPE chao_reconnects_total counter\nchao_reconnects_total 4\n# HELP chao_admission_rejected_total Connections or new profiles rejected at configured capacity.\n# TYPE chao_admission_rejected_total counter\nchao_admission_rejected_total 0\n# HELP chao_persist_failures_total Failed dirty-profile atomic save attempts.\n# TYPE chao_persist_failures_total counter\nchao_persist_failures_total 0\n# HELP chao_event_lag_total Broadcast entries missed by lagging peers; those peers disconnect.\n# TYPE chao_event_lag_total counter\nchao_event_lag_total 0\n# HELP chao_slow_clients_total Socket sends exceeding the configured deadline.\n# TYPE chao_slow_clients_total counter\nchao_slow_clients_total 0\n# HELP chao_oversized_snapshots_total Snapshots exceeding byte bound; peer disconnected.\n# TYPE chao_oversized_snapshots_total counter\nchao_oversized_snapshots_total 0\n# HELP chao_input_rate_disconnects_total Peers exceeding 80 incoming messages per second.\n# TYPE chao_input_rate_disconnects_total counter\nchao_input_rate_disconnects_total 0\n# HELP chao_snapshot_bytes_total Snapshot UTF-8 payload bytes successfully sent; excludes WS/TLS overhead.\n# TYPE chao_snapshot_bytes_total counter\nchao_snapshot_bytes_total 13680293\n# HELP chao_snapshots_total Snapshot frames successfully sent.\n# TYPE chao_snapshots_total counter\nchao_snapshots_total 1606\n# HELP chao_ws_connections Currently open WebSocket connections.\n# TYPE chao_ws_connections gauge\nchao_ws_connections 12\n# HELP chao_event_queue_depth Last observed retained broadcast event entries.\n# TYPE chao_event_queue_depth gauge\nchao_event_queue_depth 0\n# HELP chao_event_queue_high_water Maximum observed retained broadcast event entries.\n# TYPE chao_event_queue_high_water gauge\nchao_event_queue_high_water 10\n# HELP chao_residents Residents simulated in the last tick.\n# TYPE chao_residents gauge\nchao_residents 12\n# HELP chao_uptime_seconds Process uptime.\n# TYPE chao_uptime_seconds gauge\nchao_uptime_seconds 13\n# HELP chao_http_request_duration_seconds HTTP handler latency.\n# TYPE chao_http_request_duration_seconds histogram\nchao_http_request_duration_seconds_bucket{le=\"0.0001\"} 11\nchao_http_request_duration_seconds_bucket{le=\"0.0005\"} 15\nchao_http_request_duration_seconds_bucket{le=\"0.001\"} 17\nchao_http_request_duration_seconds_bucket{le=\"0.0025\"} 17\nchao_http_request_duration_seconds_bucket{le=\"0.005\"} 17\nchao_http_request_duration_seconds_bucket{le=\"0.01\"} 17\nchao_http_request_duration_seconds_bucket{le=\"0.025\"} 17\nchao_http_request_duration_seconds_bucket{le=\"0.05\"} 17\nchao_http_request_duration_seconds_bucket{le=\"0.1\"} 17\nchao_http_request_duration_seconds_bucket{le=\"0.25\"} 17\nchao_http_request_duration_seconds_bucket{le=\"0.5\"} 17\nchao_http_request_duration_seconds_bucket{le=\"1\"} 17\nchao_http_request_duration_seconds_bucket{le=\"2.5\"} 17\nchao_http_request_duration_seconds_bucket{le=\"5\"} 17\nchao_http_request_duration_seconds_bucket{le=\"10\"} 17\nchao_http_request_duration_seconds_bucket{le=\"+Inf\"} 17\nchao_http_request_duration_seconds_sum 0.002815\nchao_http_request_duration_seconds_count 17\n# HELP chao_tick_duration_seconds Simulation work including pending reward save; excludes lock wait.\n# TYPE chao_tick_duration_seconds histogram\nchao_tick_duration_seconds_bucket{le=\"0.0001\"} 261\nchao_tick_duration_seconds_bucket{le=\"0.0005\"} 269\nchao_tick_duration_seconds_bucket{le=\"0.001\"} 269\nchao_tick_duration_seconds_bucket{le=\"0.0025\"} 269\nchao_tick_duration_seconds_bucket{le=\"0.005\"} 269\nchao_tick_duration_seconds_bucket{le=\"0.01\"} 269\nchao_tick_duration_seconds_bucket{le=\"0.025\"} 269\nchao_tick_duration_seconds_bucket{le=\"0.05\"} 269\nchao_tick_duration_seconds_bucket{le=\"0.1\"} 269\nchao_tick_duration_seconds_bucket{le=\"0.25\"} 269\nchao_tick_duration_seconds_bucket{le=\"0.5\"} 269\nchao_tick_duration_seconds_bucket{le=\"1\"} 269\nchao_tick_duration_seconds_bucket{le=\"2.5\"} 269\nchao_tick_duration_seconds_bucket{le=\"5\"} 269\nchao_tick_duration_seconds_bucket{le=\"10\"} 269\nchao_tick_duration_seconds_bucket{le=\"+Inf\"} 269\nchao_tick_duration_seconds_sum 0.01476\nchao_tick_duration_seconds_count 269\n# HELP chao_tick_lock_wait_seconds Simulation wait for authoritative game mutex.\n# TYPE chao_tick_lock_wait_seconds histogram\nchao_tick_lock_wait_seconds_bucket{le=\"0.0001\"} 241\nchao_tick_lock_wait_seconds_bucket{le=\"0.0005\"} 268\nchao_tick_lock_wait_seconds_bucket{le=\"0.001\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"0.0025\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"0.005\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"0.01\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"0.025\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"0.05\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"0.1\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"0.25\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"0.5\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"1\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"2.5\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"5\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"10\"} 269\nchao_tick_lock_wait_seconds_bucket{le=\"+Inf\"} 269\nchao_tick_lock_wait_seconds_sum 0.006596\nchao_tick_lock_wait_seconds_count 269\n# HELP chao_resident_tick_duration_seconds Time advancing resident AI per simulation tick.\n# TYPE chao_resident_tick_duration_seconds histogram\nchao_resident_tick_duration_seconds_bucket{le=\"0.0001\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"0.0005\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"0.001\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"0.0025\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"0.005\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"0.01\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"0.025\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"0.05\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"0.1\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"0.25\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"0.5\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"1\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"2.5\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"5\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"10\"} 269\nchao_resident_tick_duration_seconds_bucket{le=\"+Inf\"} 269\nchao_resident_tick_duration_seconds_sum 0.000146\nchao_resident_tick_duration_seconds_count 269\n# HELP chao_snapshot_duration_seconds Snapshot build and JSON encoding including lock wait.\n# TYPE chao_snapshot_duration_seconds histogram\nchao_snapshot_duration_seconds_bucket{le=\"0.0001\"} 0\nchao_snapshot_duration_seconds_bucket{le=\"0.0005\"} 512\nchao_snapshot_duration_seconds_bucket{le=\"0.001\"} 951\nchao_snapshot_duration_seconds_bucket{le=\"0.0025\"} 1605\nchao_snapshot_duration_seconds_bucket{le=\"0.005\"} 1606\nchao_snapshot_duration_seconds_bucket{le=\"0.01\"} 1606\nchao_snapshot_duration_seconds_bucket{le=\"0.025\"} 1606\nchao_snapshot_duration_seconds_bucket{le=\"0.05\"} 1606\nchao_snapshot_duration_seconds_bucket{le=\"0.1\"} 1606\nchao_snapshot_duration_seconds_bucket{le=\"0.25\"} 1606\nchao_snapshot_duration_seconds_bucket{le=\"0.5\"} 1606\nchao_snapshot_duration_seconds_bucket{le=\"1\"} 1606\nchao_snapshot_duration_seconds_bucket{le=\"2.5\"} 1606\nchao_snapshot_duration_seconds_bucket{le=\"5\"} 1606\nchao_snapshot_duration_seconds_bucket{le=\"10\"} 1606\nchao_snapshot_duration_seconds_bucket{le=\"+Inf\"} 1606\nchao_snapshot_duration_seconds_sum 1.433903\nchao_snapshot_duration_seconds_count 1606\n# HELP chao_save_duration_seconds Dirty profile export, encode, fsync and atomic replacement.\n# TYPE chao_save_duration_seconds histogram\nchao_save_duration_seconds_bucket{le=\"0.0001\"} 0\nchao_save_duration_seconds_bucket{le=\"0.0005\"} 0\nchao_save_duration_seconds_bucket{le=\"0.001\"} 0\nchao_save_duration_seconds_bucket{le=\"0.0025\"} 0\nchao_save_duration_seconds_bucket{le=\"0.005\"} 9\nchao_save_duration_seconds_bucket{le=\"0.01\"} 9\nchao_save_duration_seconds_bucket{le=\"0.025\"} 9\nchao_save_duration_seconds_bucket{le=\"0.05\"} 9\nchao_save_duration_seconds_bucket{le=\"0.1\"} 9\nchao_save_duration_seconds_bucket{le=\"0.25\"} 9\nchao_save_duration_seconds_bucket{le=\"0.5\"} 9\nchao_save_duration_seconds_bucket{le=\"1\"} 9\nchao_save_duration_seconds_bucket{le=\"2.5\"} 9\nchao_save_duration_seconds_bucket{le=\"5\"} 9\nchao_save_duration_seconds_bucket{le=\"10\"} 9\nchao_save_duration_seconds_bucket{le=\"+Inf\"} 9\nchao_save_duration_seconds_sum 0.028812\nchao_save_duration_seconds_count 9\n# HELP chao_send_duration_seconds Socket send completion or failure latency.\n# TYPE chao_send_duration_seconds histogram\nchao_send_duration_seconds_bucket{le=\"0.0001\"} 1651\nchao_send_duration_seconds_bucket{le=\"0.0005\"} 1651\nchao_send_duration_seconds_bucket{le=\"0.001\"} 1651\nchao_send_duration_seconds_bucket{le=\"0.0025\"} 1651\nchao_send_duration_seconds_bucket{le=\"0.005\"} 1651\nchao_send_duration_seconds_bucket{le=\"0.01\"} 1651\nchao_send_duration_seconds_bucket{le=\"0.025\"} 1651\nchao_send_duration_seconds_bucket{le=\"0.05\"} 1651\nchao_send_duration_seconds_bucket{le=\"0.1\"} 1651\nchao_send_duration_seconds_bucket{le=\"0.25\"} 1651\nchao_send_duration_seconds_bucket{le=\"0.5\"} 1651\nchao_send_duration_seconds_bucket{le=\"1\"} 1651\nchao_send_duration_seconds_bucket{le=\"2.5\"} 1651\nchao_send_duration_seconds_bucket{le=\"5\"} 1651\nchao_send_duration_seconds_bucket{le=\"10\"} 1651\nchao_send_duration_seconds_bucket{le=\"+Inf\"} 1651\nchao_send_duration_seconds_sum 0.030041\nchao_send_duration_seconds_count 1651\n",
+  "stderr": "",
+  "gates": {
+    "policyVersion": 1,
+    "passed": true,
+    "thresholds": {
+      "minimumTickHz": 19,
+      "maximumTickP95UpperMs": 50,
+      "maximumSnapshotAgeP95Ms": 250
+    },
+    "measured": {
+      "tickHz": 20.06342217439963,
+      "tickP95UpperMs": 0.1,
+      "snapshotAgeP95Ms": 0
+    },
+    "checks": [
+      {
+        "id": "explicit-metric-window",
+        "pass": true,
+        "actual": 10.0182311,
+        "expected": "finite seconds > 0; elapsedSeconds is not an interchangeable scrape window"
+      },
+      {
+        "id": "tick-count",
+        "pass": true,
+        "actual": 201,
+        "expected": "positive monotonic histogram sample delta"
+      },
+      {
+        "id": "tick-frequency",
+        "pass": true,
+        "actual": 20.06342217439963,
+        "expected": ">= 19 Hz"
+      },
+      {
+        "id": "tick-histogram-valid",
+        "pass": true,
+        "actual": true,
+        "expected": "monotonic cumulative delta buckets ending at +Inf and sample count"
+      },
+      {
+        "id": "tick-p95-upper-bound",
+        "pass": true,
+        "actual": 0.1,
+        "expected": "<= 50 ms (bucket upper bound; no interpolation)"
+      },
+      {
+        "id": "snapshot-age-samples",
+        "pass": true,
+        "actual": 1096,
+        "expected": "at least one observed sample"
+      },
+      {
+        "id": "snapshot-age-p95",
+        "pass": true,
+        "actual": 0,
+        "expected": "<= 250 ms, observed wall time minus authoritative simulation time"
+      },
+      {
+        "id": "snapshots-observed",
+        "pass": true,
+        "actual": 1096,
+        "expected": "positive snapshot count"
+      },
+      {
+        "id": "workload-profile-counts",
+        "pass": true,
+        "actual": {
+          "players": 12,
+          "residents": 12,
+          "fastPeers": 11,
+          "slowPeers": 1
+        },
+        "expected": "valid counts; fastPeers = players - slowPeers > 0"
+      },
+      {
+        "id": "room-setup",
+        "pass": true,
+        "actual": 0,
+        "expected": 0
+      },
+      {
+        "id": "fast-peers-open",
+        "pass": true,
+        "actual": 11,
+        "expected": 11
+      },
+      {
+        "id": "startup-disconnects",
+        "pass": true,
+        "actual": 0,
+        "expected": 0
+      },
+      {
+        "id": "unexpected-fast-disconnects",
+        "pass": true,
+        "actual": 0,
+        "expected": 0
+      },
+      {
+        "id": "cross-room-leaks",
+        "pass": true,
+        "actual": 0,
+        "expected": 0
+      },
+      {
+        "id": "missing-self",
+        "pass": true,
+        "actual": 0,
+        "expected": 0
+      },
+      {
+        "id": "save-errors",
+        "pass": true,
+        "actual": 0,
+        "expected": 0
+      },
+      {
+        "id": "save-acknowledgments",
+        "pass": true,
+        "actual": 9,
+        "expected": "> 0"
+      },
+      {
+        "id": "clean-shutdown",
+        "pass": true,
+        "actual": true,
+        "expected": true
+      },
+      {
+        "id": "persisted-profile-count",
+        "pass": true,
+        "actual": 24,
+        "expected": 24
+      },
+      {
+        "id": "unique-persisted-profile-count",
+        "pass": true,
+        "actual": 24,
+        "expected": 24
+      },
+      {
+        "id": "integrity-canonicalIdsPreserved",
+        "pass": true,
+        "actual": true,
+        "expected": true
+      },
+      {
+        "id": "integrity-credentialsPreserved",
+        "pass": true,
+        "actual": true,
+        "expected": true
+      },
+      {
+        "id": "integrity-ownerFlagsPreserved",
+        "pass": true,
+        "actual": true,
+        "expected": true
+      },
+      {
+        "id": "integrity-residentOptInPreserved",
+        "pass": true,
+        "actual": true,
+        "expected": true
+      },
+      {
+        "id": "persistence-readable",
+        "pass": true,
+        "actual": null,
+        "expected": null
+      }
+    ],
+    "failures": [],
+    "scope": "Synthetic movement/save/reconnect transport gate only; passing is not a representative gameplay or public-deployment capacity claim. Missing historical evidence fails closed; raw measurements are not modified."
+  }
+}

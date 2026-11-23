@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 pub const MAIN_STATS: [&str; 5] = ["swim", "fly", "run", "power", "stamina"];
@@ -349,6 +350,9 @@ pub struct Game {
     pub tiny_save_retry_at: f64,
     pub mission: Option<Mission>,
     pub rings: Vec<Ring>,
+    /// Decision-making time only; terrain/movement work remains in total tick time.
+    pub last_resident_tick: Duration,
+    pub last_tick_residents: usize,
 }
 
 pub fn hash_token(token: &str) -> String {
@@ -407,6 +411,8 @@ impl Game {
             tiny_save_retry_at: 0.,
             mission: None,
             rings: vec![],
+            last_resident_tick: Duration::ZERO,
+            last_tick_residents: 0,
         };
         for (i, (x, z)) in [(-6., 6.), (6., 6.), (-6., -6.), (6., -6.), (0., -9.)]
             .into_iter()
@@ -1348,6 +1354,8 @@ impl Game {
     }
 
     pub fn tick(&mut self, dt: f64) {
+        self.last_resident_tick = Duration::ZERO;
+        self.last_tick_residents = 0;
         if !dt.is_finite() || dt <= 0. {
             return;
         }
@@ -1374,7 +1382,12 @@ impl Game {
             if self.time - p.last_input_at > 350. || p.care.activity_lock.is_some() {
                 p.input = Input::default();
             }
-            watch::tick(self, &mut p);
+            if p.watch.is_some() {
+                let started = Instant::now();
+                watch::tick(self, &mut p);
+                self.last_resident_tick += started.elapsed();
+                self.last_tick_residents += 1;
+            }
             let water = p.zone == "garden" && dist(p.x, p.z, -8., 0.) < 5.;
             let mut speed = (1.4 + f64::from(p.stats["run"].level) * 0.006)
                 * if water {
@@ -1608,22 +1621,74 @@ impl Game {
             "success",
         );
     }
+    fn same_room(&self, viewer: &Player, other: &Player) -> bool {
+        if viewer.zone != other.zone {
+            return false;
+        }
+        match viewer.zone.as_str() {
+            // Native course variants can share scenery but have different gates.
+            "race" => {
+                viewer.race.as_ref().and_then(|r| r.course_id.as_deref())
+                    == other.race.as_ref().and_then(|r| r.course_id.as_deref())
+            }
+            // Each bout has its own server-owned opponent and clock.
+            "karate" => viewer.id == other.id,
+            _ => true,
+        }
+    }
+    /// Diagnostic identity for existing logical rooms, not a shard assignment.
+    pub fn room_id(&self, id: &str) -> Option<String> {
+        let player = self.players.get(id)?;
+        Some(match player.zone.as_str() {
+            "race" => format!(
+                "race:{}",
+                player
+                    .race
+                    .as_ref()
+                    .and_then(|r| r.course_id.as_deref())
+                    .unwrap_or("prototype")
+            ),
+            "karate" => format!("karate:{}", player.id),
+            _ => player.zone.clone(),
+        })
+    }
+    /// Keep reliable private events private and room effects within their room.
+    pub fn event_visible(&self, self_id: &str, event: &Event) -> bool {
+        if let Some(target) = &event.target {
+            return target == self_id;
+        }
+        let Some(viewer) = self.players.get(self_id) else {
+            return false;
+        };
+        let Some(actor) = event.message["playerId"]
+            .as_str()
+            .and_then(|id| self.players.get(id))
+        else {
+            return false;
+        };
+        event.message["zone"].as_str() == Some(viewer.zone.as_str())
+            && self.same_room(viewer, actor)
+    }
     pub fn snapshot(&self, self_id: &str) -> Value {
+        let viewer = self.players.get(self_id);
+        let mission_visible = viewer.is_some_and(|p| p.zone == "mission");
         let rings: Vec<_> = self
             .rings
             .iter()
             .chain(self.mission.iter().flat_map(|m| m.rings.iter()))
-            .filter(|ring| ring.available_at <= self.time)
+            .filter(|ring| {
+                ring.available_at <= self.time && viewer.is_some_and(|p| p.zone == ring.zone)
+            })
             .map(|ring| json!({"id": ring.id, "x": ring.x, "z": ring.z, "zone": ring.zone}))
             .collect();
-        let enemies: Vec<_> = self.mission.iter().flat_map(|m| m.enemies.iter()).filter(|enemy| enemy.hp > 0.)
+        let enemies: Vec<_> = self.mission.iter().filter(|_| mission_visible).flat_map(|m| m.enemies.iter()).filter(|enemy| enemy.hp > 0.)
             .map(|enemy| json!({"id": enemy.id, "x": enemy.x, "z": enemy.z, "hp": enemy.hp, "maxHp": enemy.max_hp, "zone": "mission"})).collect();
         let race = self
             .players
             .get(self_id)
             .and_then(|p| activities::public_race(self, p));
-        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.connections > 0 || p.watch.is_some() || competition::reserved(p)).map(Player::public).collect::<Vec<_>>(),
-            "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
+        json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || ((p.connections > 0 || p.watch.is_some() || competition::reserved(p)) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
+            "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().filter(|_|mission_visible).map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
             "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
             "care":crate::care::public(self,self_id),
             "competitionCatalog":self.competition_catalog.public(),

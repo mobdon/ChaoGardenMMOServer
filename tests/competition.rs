@@ -624,12 +624,34 @@ fn an_opted_in_resident_pauses_for_competition_and_resumes_without_passive_payou
         baseline + result["rings"].as_u64().unwrap() as u32
     );
     assert_eq!(public(&game, &id)["results"].as_array().unwrap().len(), 1);
+    let spectator = game
+        .create_session(&json!({"name":"Same-room spectator"}))
+        .unwrap()["player"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    game.connect(&spectator);
+    let resident_zone = game.players[&id].zone.clone();
+    game.players.get_mut(&spectator).unwrap().zone = resident_zone.clone();
     assert!(
-        game.snapshot("spectator")["players"]
+        game.snapshot(&spectator)["players"]
             .as_array()
             .unwrap()
             .iter()
             .any(|p| p["id"] == id && p["watch"]["resident"] == true)
+    );
+    game.players.get_mut(&spectator).unwrap().zone = if resident_zone == "hero" {
+        "dark"
+    } else {
+        "hero"
+    }
+    .into();
+    assert!(
+        !game.snapshot(&spectator)["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == id)
     );
 }
 
