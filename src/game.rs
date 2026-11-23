@@ -1440,7 +1440,10 @@ impl Game {
                 a.len() <= 3
                     && a.iter().all(|r| {
                         r.as_array().is_some_and(|r| {
-                            r.len() == 6 && r.iter().all(|v| v.as_f64().is_some_and(f64::is_finite))
+                            r.len() == 6
+                                && r.iter().all(|v| v.as_f64().is_some_and(f64::is_finite))
+                                // Which resident: a whole number 0..=2.
+                                && r[0].as_u64().is_some_and(|n| n <= 2)
                         })
                     })
             });
