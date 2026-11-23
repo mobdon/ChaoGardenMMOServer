@@ -1425,6 +1425,13 @@ async fn one_game_leads_an_areas_character_chao_and_the_lead_passes_on() {
     ))
     .await
     .unwrap();
+    // Not a resident number: refused too.
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    one.send(send(
+        json!({"type":"action","action":"resident-pose","poses":[[-1, 9, 0, 2, 0, 1]]}),
+    ))
+    .await
+    .unwrap();
     // The leader leaves the area: the other game leads from the last poses.
     tokio::time::sleep(std::time::Duration::from_millis(120)).await;
     one.send(send(
