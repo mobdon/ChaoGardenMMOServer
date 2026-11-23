@@ -2,12 +2,31 @@
 //!
 //! A player in the matching Chao World area joins a queue (ranked or not; a
 //! race also names its course) and lands in a group. Every member marks
-//! ready; the group starts once all have, with at least two members. The
-//! server only forms the group here: the bout or race itself and its saved
-//! result are separate work.
+//! ready; the group starts once all have, with at least two members. A Karate
+//! group's bout is then run here by the native round and its result sent to
+//! both; a ranked one lands in each player's win/loss record. A race group
+//! only starts: the native race is not ported end to end, so nothing runs it.
 use crate::competition;
 use crate::game::{Event, Game, Player};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+
+/// A player's ranked record for one event.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ranked {
+    pub wins: u32,
+    pub losses: u32,
+    pub draws: u32,
+}
+
+pub fn restore_ranked(value: &Value) -> BTreeMap<String, Ranked> {
+    let mut all: BTreeMap<String, Ranked> =
+        serde_json::from_value(value.clone()).unwrap_or_default();
+    all.retain(|event, _| event == "chao-karate" || event == "chao-race");
+    all
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
@@ -113,9 +132,118 @@ pub fn action(game: &mut Game, player: &mut Player, message: &Value) {
             group.started = group.members.len() >= 2 && group.members.iter().all(|m| m.1);
             let group = group.clone();
             announce(game, &group, Some(player));
+            if group.started && group.event == "chao-karate" {
+                bout(game, player, &group);
+            }
         }
         "queue-leave" => leave(game, &player.id),
         _ => {}
+    }
+}
+
+/// The owner Chao's karate entry: raw skill points and whether it is a child.
+fn fighter(p: &Player) -> Option<([u16; 7], bool, bool, i16)> {
+    let child = match p.life.stage {
+        crate::life::Stage::Child => true,
+        crate::life::Stage::Adult => false,
+        _ => return None,
+    };
+    let skills = crate::game::ALL_STATS.map(|s| p.stats[s].points.min(u32::from(u16::MAX)) as u16);
+    Some((skills, false, child, 0))
+}
+
+/// Runs a started Karate group's bout: one native round, first member on the
+/// left. Without the local native karate data, or with a Chao that cannot
+/// fight, the group is told and released with no result.
+fn bout(game: &mut Game, actor: &mut Player, group: &Group) {
+    let entrant = |game: &Game, id: &str| {
+        let p = if id == actor.id {
+            Some(&*actor)
+        } else {
+            game.players.get(id)
+        };
+        p.and_then(fighter)
+    };
+    let sides = (
+        entrant(game, &group.members[0].0),
+        entrant(game, &group.members[1].0),
+    );
+    let ready = (game.karate.clone(), game.native_chao.motion.clone(), sides);
+    let (Some(data), Some(motion), (Some(a), Some(b))) = ready else {
+        for (id, _) in &group.members {
+            game.notice(
+                id,
+                "The bout could not run: Chao Karate needs the native karate data and two child or adult Chao.",
+                "error",
+            );
+        }
+        finish(game, actor, group.id, None);
+        return;
+    };
+    let round = crate::karate::fight(
+        &data.rows,
+        &motion,
+        &data.arena,
+        &mut game.karate_rng,
+        [a, b],
+    );
+    let bout = json!({"winner": round.winner, "reason": round.reason, "frames": round.frames, "hp": round.hp});
+    finish(
+        game,
+        actor,
+        group.id,
+        Some((usize::try_from(round.winner).ok().filter(|w| *w < 2), bout)),
+    );
+}
+
+/// Ends a started group: `outcome` is the winner's member slot (`None` for a
+/// draw) with the match detail, or `None` when nothing was run. Every member
+/// gets the result, a ranked group's records are updated, and the group is
+/// dissolved so its members can queue again.
+pub fn finish(
+    game: &mut Game,
+    actor: &mut Player,
+    group_id: u64,
+    outcome: Option<(Option<usize>, Value)>,
+) {
+    let Some(at) = game.queues.groups.iter().position(|g| g.id == group_id) else {
+        return;
+    };
+    let group = game.queues.groups.remove(at);
+    let ids: Vec<&String> = group.members.iter().map(|m| &m.0).collect();
+    let mut records = serde_json::Map::new();
+    if let Some((winner, _)) = &outcome {
+        for (slot, id) in ids.iter().enumerate() {
+            let p = if **id == actor.id {
+                Some(&mut *actor)
+            } else {
+                game.players.get_mut(*id)
+            };
+            let Some(p) = p.filter(|_| group.ranked) else {
+                continue;
+            };
+            let record = p.ranked.entry(group.event.into()).or_default();
+            match winner {
+                Some(w) if *w == slot => record.wins += 1,
+                Some(_) => record.losses += 1,
+                None => record.draws += 1,
+            }
+            records.insert((*id).clone(), json!(record));
+        }
+        game.dirty |= group.ranked;
+    }
+    let (winner, detail) = match outcome {
+        Some((w, detail)) => (json!(w.map(|w| ids[w])), detail),
+        None => (Value::Null, Value::Null),
+    };
+    let message = json!({"type":"event","kind":"queue-result","group":group.id,"event":group.event,
+        "ranked":group.ranked,"course":group.course,"members":ids,"run":!detail.is_null(),
+        "winner":winner,"result":detail,"records":records});
+    for id in ids {
+        game.events.push(Event {
+            target: Some(id.clone()),
+            message: message.clone(),
+        });
     }
 }
 
@@ -239,7 +367,6 @@ mod tests {
         assert!(!game.queues.groups[0].started);
         game.events.clear();
         ready(&mut game, &ids[1]);
-        assert!(game.queues.groups[0].started);
         let told: Vec<_> = game
             .events
             .iter()
@@ -247,9 +374,68 @@ mod tests {
             .filter_map(|e| e.target.clone())
             .collect();
         assert_eq!(told, ids[..2]);
-        // A bout holds two: the third player gets a group of their own.
+        // The bout is over at once (here: not run, no karate data): the group
+        // is dissolved and the third player gets a group of their own.
         join_karate(&mut game, &ids[2], false);
-        assert_eq!(game.queues.groups.len(), 2);
+        assert_eq!(game.queues.groups.len(), 1);
+    }
+
+    #[test]
+    fn a_ranked_result_reaches_both_and_lands_in_their_records() {
+        let (mut game, ids) = game_with(2);
+        join_karate(&mut game, &ids[0], true);
+        join_karate(&mut game, &ids[1], true);
+        let group = game.queues.groups[0].id;
+        game.events.clear();
+        // The acting player is out of `game.players` while its action runs.
+        let mut actor = game.players.remove(&ids[1]).unwrap();
+        finish(
+            &mut game,
+            &mut actor,
+            group,
+            Some((Some(1), json!({"frames": 9}))),
+        );
+        game.players.insert(ids[1].clone(), actor);
+        let wins = |game: &Game, id: &String| game.players[id].ranked["chao-karate"];
+        assert_eq!(
+            (wins(&game, &ids[0]).wins, wins(&game, &ids[0]).losses),
+            (0, 1)
+        );
+        assert_eq!(
+            (wins(&game, &ids[1]).wins, wins(&game, &ids[1]).losses),
+            (1, 0)
+        );
+        let results: Vec<_> = game
+            .events
+            .iter()
+            .filter(|e| e.message["kind"] == "queue-result")
+            .collect();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].message["winner"], json!(ids[1]));
+        assert_eq!(results[0].message["records"][&ids[0]]["losses"], 1);
+        // The record survives a save and the group is gone: both can queue again.
+        let saved = game.players[&ids[1]].profile();
+        assert_eq!(restore_ranked(&saved["ranked"])["chao-karate"].wins, 1);
+        assert!(game.queues.groups.is_empty());
+    }
+
+    #[test]
+    fn an_unranked_result_or_a_bout_that_could_not_run_leaves_records_alone() {
+        let (mut game, ids) = game_with(2);
+        join_karate(&mut game, &ids[0], false);
+        join_karate(&mut game, &ids[1], false);
+        ready(&mut game, &ids[0]);
+        game.events.clear();
+        // No native karate data in this test game: the bout cannot run.
+        ready(&mut game, &ids[1]);
+        let result = game
+            .events
+            .iter()
+            .find(|e| e.message["kind"] == "queue-result")
+            .expect("both are told");
+        assert_eq!(result.message["run"], false);
+        assert!(game.queues.groups.is_empty());
+        assert!(ids.iter().all(|id| game.players[id].ranked.is_empty()));
     }
 
     #[test]

@@ -21,3 +21,20 @@ fn native_karate_tournament_runs_end_to_end() {
         assert!(t.rounds.iter().all(|r| r.frames > 0));
     }
 }
+
+#[test]
+#[ignore = "requires the owner's local imports (CHAO_KARATE_IMPORTS)"]
+fn native_karate_bout_between_two_players_chao_runs() {
+    let dir = PathBuf::from(std::env::var_os("CHAO_KARATE_IMPORTS").expect("CHAO_KARATE_IMPORTS"));
+    let data = karate::Data::load(&dir).unwrap().expect("karate data");
+    let motion = MotionTable::load(&dir.join("chao-motion-table.json")).unwrap();
+    let mut rng = MslRand::default();
+    let side = |points| ([points; 7], false, false, 0);
+    // The far stronger Chao wins from either side.
+    for (entrants, winner) in [([side(999), side(0)], 0), ([side(0), side(999)], 1)] {
+        let r = karate::fight(&data.rows, &motion, &data.arena, &mut rng, entrants);
+        println!("{}", serde_json::to_string(&r).unwrap());
+        assert!(r.frames > 0);
+        assert_eq!(r.winner, winner);
+    }
+}

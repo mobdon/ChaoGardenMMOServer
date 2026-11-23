@@ -109,6 +109,8 @@ pub struct Player {
     pub gear: Gear,
     pub race_records: BTreeMap<String, ActivityRecord>,
     pub karate_records: BTreeMap<String, ActivityRecord>,
+    /// Ranked queue record per event (`chao-karate`, `chao-race`).
+    pub ranked: BTreeMap<String, crate::queue::Ranked>,
     pub karate: Option<KarateBout>,
     pub activity_result: Option<Value>,
     pub tiny_records: BTreeMap<String, TinyRecord>,
@@ -216,7 +218,7 @@ impl Player {
             "rules":"adapted-prototype-evolution-v1","nativeConditions":"unknown"})
     }
     pub fn public(&self) -> Value {
-        json!({
+        let mut public = json!({
             "id": self.id, "name": self.name, "x": self.x, "y": self.y, "z": self.z,
             "groundY": self.ground_y, "jumpOffset": self.jump_offset, "facing": self.facing,
             "zone": self.zone, "alignment": self.alignment, "form": self.form, "admin": self.admin,
@@ -235,7 +237,10 @@ impl Player {
             "chaoPose": if self.connections > 0 { self.chao_pose.clone() } else { Value::Null },
             "foundGear": self.profile_extra["foundGear"].as_array().cloned().unwrap_or_default(),
             "chaoRecordVersion": if self.record_shown() { json!(self.chao_record_version) } else { Value::Null },
-        })
+        });
+        // Set apart: the object above is at the json! macro's size limit.
+        public["ranked"] = json!(self.ranked);
+        public
     }
     /// Others in the room draw this Chao from its own record: while it is
     /// connected, and while it stays behind as a Tiny Garden resident.
@@ -251,7 +256,7 @@ impl Player {
             "stats": self.stats, "rings": self.rings, "alignment": self.alignment, "form": self.form,
             "happiness": self.happiness, "ownedCosmetics": self.owned_cosmetics, "equipped": self.equipped, "vehicle": self.vehicle, "gear": self.gear,
             "energy":self.energy,"hunger":self.hunger,"care":self.care,"body":self.body,"life":self.life,"garden":self.garden,"tinyCollection":self.tiny_collection,
-            "raceRecords": self.race_records, "karateRecords": self.karate_records,
+            "raceRecords": self.race_records, "karateRecords": self.karate_records, "ranked": self.ranked,
             "tinyRecords": self.tiny_records, "nativeStats": self.native_stats,
             "chaoRecord": self.record_base64(),
             "resident":self.watch.as_ref().map(|_|json!({"enabled":true,"zone":self.zone,"x":self.x,"z":self.z})),
@@ -307,6 +312,7 @@ fn merge_profile(preserved: &mut Value, canonical: Value) {
                     "tinyRecords",
                     "raceRecords",
                     "karateRecords",
+                    "ranked",
                 ]
                 .contains(&key.as_str())
                 {
@@ -713,6 +719,7 @@ impl Game {
             },
             race_records: activities::restore_records(&data["raceRecords"]),
             karate_records: activities::restore_records(&data["karateRecords"]),
+            ranked: crate::queue::restore_ranked(&data["ranked"]),
             karate: None,
             activity_result: None,
             tiny_records: phone::restore_records(&data["tinyRecords"]),
