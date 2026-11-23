@@ -349,7 +349,7 @@ export class Game {
     }
     if (action === 'hero' || action === 'dark') {
       const allowed = action === 'hero' ? player.alignment >= 60 : player.alignment <= -60;
-      if (!allowed) return this.notice(id, `${action === 'hero' ? 'Hero' : 'Dark'} Garden needs ${action === 'hero' ? '+60' : '−60'} alignment. Make garden choices to change your alignment.`, 'error');
+      if (!allowed) return this.notice(id, `${action === 'hero' ? 'Hero' : 'Dark'} Garden needs ${action === 'hero' ? '+60' : '−60'} alignment. Hero Fruit and Dark Fruit from the Black Market change your alignment.`, 'error');
       this.teleport(player, action);
       return this.notice(id, `You entered the ${action === 'hero' ? 'Hero' : 'Dark'} Garden.`);
     }
@@ -364,13 +364,6 @@ export class Game {
     }
     if (!['hub', 'garden', 'hero', 'dark'].includes(player.zone)) return this.notice(id, 'Return to the hub or a garden for this activity.', 'error');
     if (action === 'buy') return this.buy(player, message.item);
-    if (action === 'align-good' || action === 'align-dark') {
-      if (!this.cooldown(player, 'alignment', 1500)) return this.notice(id, 'Give your last choice a moment.');
-      player.alignment = clamp(player.alignment + (action === 'align-good' ? 15 : -15), -100, 100);
-      player.happiness = Math.min(100, player.happiness + 2);
-      this.updateForm(player); this.dirty = true;
-      return this.notice(id, action === 'align-good' ? 'You helped another Chao. Hero alignment +15.' : 'You played a mischievous prank. Dark alignment +15.');
-    }
     if (action === 'feed') {
       if (!this.nearInteraction(player, 'fruit')) return this.notice(id, 'Visit the Neutral Garden fruit grove, or buy Garden Fruit from Amy in the hub.', 'info');
       if (!this.cooldown(player, 'feed', 1200)) return;

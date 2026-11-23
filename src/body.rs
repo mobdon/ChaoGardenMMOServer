@@ -195,7 +195,8 @@ impl BodyState {
         (f64::from(self.a_pos) * 100.).round()
     }
 
-    /// Existing garden choices (an MMO action, not a native event) set APos directly.
+    /// Sets APos directly: only the saved-profile sync and the owner admin form
+    /// use it. For players, Hero/Dark Fruit ([`apply_fruit`]) is the only way.
     pub fn set_alignment_percent(&mut self, percent: f64) {
         self.a_pos = clamp((percent / 100.) as f32, 1.);
     }

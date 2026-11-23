@@ -146,12 +146,11 @@ test('hero and dark gardens enforce alignment thresholds and alignment stays bou
   const { game, player } = fixture();
   act(game, player, 'hero'); assert.equal(player.zone, 'hub');
   act(game, player, 'dark'); assert.equal(player.zone, 'hub');
-  for (let i = 0; i < 4; i++) { act(game, player, 'align-good'); advance(game, 1600); }
-  assert.equal(player.alignment, 60); assert.equal(player.form, 'hero');
+  for (const action of ['align-good', 'align-dark']) { act(game, player, action); assert.equal(player.alignment, 0); }
+  player.alignment = 60;
   act(game, player, 'hero'); assert.equal(player.zone, 'hero');
   act(game, player, 'garden');
-  for (let i = 0; i < 20; i++) { act(game, player, 'align-dark'); advance(game, 1600); }
-  assert.equal(player.alignment, -100); assert.equal(player.form, 'dark');
+  player.alignment = -100;
   act(game, player, 'dark'); assert.equal(player.zone, 'dark');
 });
 
@@ -237,7 +236,6 @@ test('Chaos evolution requires earned milestones even for the perfect-stat owner
   assert.notEqual(player.form, 'chaos');
   player.missionsCompleted = 3; player.racesCompleted = 1; player.happiness = 80;
   act(game, player, 'evolve'); assert.equal(player.form, 'chaos');
-  act(game, player, 'align-dark'); assert.equal(player.form, 'chaos');
 });
 
 test('snapshots expose no session secrets and disconnect cancels movement/race', () => {

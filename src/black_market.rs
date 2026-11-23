@@ -6,8 +6,10 @@
 //! - Item info rows (buy, sell, emblems, name, description; 16 bytes each),
 //!   ChaoMain .rodata; seeds at 0x14E0 + 16 * id (id 0-6 = Strong..Square).
 //! - Restock: Kinder fn 0x2D14. It runs only on entering the shop with the
-//!   timer expired (fn 0xB50, 0xD68); the caller then resets the timer to
-//!   10800 + int(14400 f) frames. Draws use the global LCG at main.dol
+//!   timer expired (fn 0xB50, 0xD68). Natively the caller then resets the
+//!   timer to 10800 + int(14400 f) frames; here (MMO rule, mob 2026-11-23) the
+//!   stock instead rotates on the Tiny Garden shop's hourly clock
+//!   ([`crate::collection::ROTATION_MS`]). Draws use the global LCG at main.dol
 //!   0x8010DC88; each draw is f = k / 32768. Chance tests are f < C
 //!   (single-precision 0.3 / 0.7), percent tests int(100 f) < P, picks int(N f).
 //! - Build order: eggs, egg count (one draw, 1-5), Hero 70 / Dark 70 / Heart 50
@@ -37,14 +39,13 @@
 //! unported, so emblem-gated rows stay locked until a native stage awards one.
 //! The shop stands at the existing hub shop point because this world has no
 //! Kindergarten.
-use crate::garden::{FRAME_MS, Rand, SEEDS};
+use crate::collection::ROTATION_MS;
+use crate::garden::{Rand, SEEDS};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub const MARKET_RULES: &str = "native-gc-black-market-v2";
 pub const STOCK_LIMIT: usize = 32;
-const RESTOCK_BASE: u64 = 10_800;
-const RESTOCK_SPREAD: f32 = 14_400.;
 
 /// Native fruit indices used by the stock.
 const HERO: u8 = 5;
@@ -199,9 +200,9 @@ pub fn removed_when_bought(item_id: &str) -> bool {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Market {
     pub stock: Vec<String>,
-    /// Frame at or after which entering the shop rebuilds the stock. The
-    /// native timer is not saved (it counts from power-on); here it is kept
-    /// so a restart does not restock early. `None` restocks on first entry.
+    /// Unix ms at or after which entering the shop rebuilds the stock: the
+    /// next Tiny Garden shop hour. Saved so a restart does not restock early.
+    /// `None` (and any older frame-count value) restocks on the next entry.
     pub restock_at: Option<u64>,
     /// GardenID[0..2], set once when the garden is created (native: OSGetTick
     /// and chRandomU32); picks the egg colour column.
@@ -263,8 +264,8 @@ impl Market {
     pub fn valid(&self) -> bool {
         self.stock.len() <= STOCK_LIMIT && self.stock.iter().all(|i| prices(i).is_some())
     }
-    pub fn due(&self, frame: u64) -> bool {
-        self.restock_at.is_none_or(|at| frame >= at)
+    pub fn due(&self, now_ms: u64) -> bool {
+        self.restock_at.is_none_or(|at| now_ms >= at)
     }
 
     /// The egg colour column v.
@@ -274,8 +275,9 @@ impl Market {
     }
 
     /// Kinder fn 0x2D14 for `emblems` (the native emblem count), then the
-    /// timer reset. The garden id must be set first.
-    pub fn restock(&mut self, frame: u64, emblems: u32, rand: &mut dyn Rand) {
+    /// next restock at the coming Tiny Garden shop hour. The garden id must be
+    /// set first.
+    pub fn restock(&mut self, now_ms: u64, emblems: u32, rand: &mut dyn Rand) {
         let mut stock: Vec<String> = Vec::new();
         let room = |stock: &Vec<String>| stock.len() < STOCK_LIMIT;
         // Eggs.
@@ -349,7 +351,11 @@ impl Market {
             }
         }
         self.stock = stock;
-        self.restock_at = Some(frame + RESTOCK_BASE + (RESTOCK_SPREAD * draw(rand)) as u64);
+        self.restock_at = Some(
+            (now_ms / ROTATION_MS)
+                .saturating_add(1)
+                .saturating_mul(ROTATION_MS),
+        );
     }
 
     pub fn public(&self) -> Value {
@@ -361,7 +367,7 @@ impl Market {
             })
             .collect();
         json!({"rules":MARKET_RULES,"stock":stock,
-            "restockAtMs":self.restock_at.map(|f| f as f64 * FRAME_MS),
+            "restockAtMs":self.restock_at,
             "location":"adapted-hub-shop-point","themesOwned":self.themes,
             "notPorted":["maria-theme-gba-link","kindergarten-door"]})
     }
@@ -418,8 +424,11 @@ mod tests {
                 "sa2-fruit:21",
             ]
         );
-        assert_eq!(m.restock_at, Some(100 + 10_800 + 7_200));
-        assert!(!m.due(18_099) && m.due(18_100));
+        // Next Tiny Garden shop hour, whatever the draws were.
+        assert_eq!(m.restock_at, Some(ROTATION_MS));
+        assert!(!m.due(ROTATION_MS - 1) && m.due(ROTATION_MS));
+        m.restock(ROTATION_MS, 0, &mut Scripted(draws.to_vec(), 0));
+        assert_eq!(m.restock_at, Some(2 * ROTATION_MS));
         assert!(m.valid());
     }
 

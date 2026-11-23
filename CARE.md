@@ -250,7 +250,7 @@ native buy and sell prices in rings (sell 0 = cannot be sold):
 
 | Intent | Fields | Meaning |
 | --- | --- | --- |
-| `market` | – | Entering the shop: rebuilds the stock only when the restock timer has run out (10,800 + int(14,400 f) frames). |
+| `market` | – | Entering the shop: rebuilds the stock only when the hour has rolled over. MMO rule: it shares the Tiny Garden shop's hourly clock (`collection::ROTATION_MS`) instead of the native 10,800 + int(14,400 f) frame timer. |
 | `purchase` | `itemId` | Buy an item in the current stock. Seeds and ordinary fruit stay in stock; eggs, hats, mushrooms and themes are removed. A theme sets `market.themesOwned` instead of entering the inventory. |
 | `sell` | `itemId` | Sell one owned item with a non-zero native sell price (rings capped at 999,999). |
 | `place-egg` | `itemId` | Put a carried egg down in a garden. As the item manager (ChaoMain 0x18F7C) and CreateEgg (0x8F20) do, it gets AL_GeneCreate genes with Color = the egg colour (both alleles), NonTex 1, Jewel 0, Multi 1 for shiny, and is analysed at once. It goes into the life nest (MMO capacity 3). |
