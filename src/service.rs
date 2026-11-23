@@ -1000,7 +1000,7 @@ async fn chao_record_get(
     match game
         .players
         .get(&id)
-        .filter(|p| p.connections > 0 && !p.chao_record.is_empty() && game.same_room(viewer, p))
+        .filter(|p| p.record_shown() && game.same_room(viewer, p))
     {
         Some(p) => (
             [
@@ -3975,6 +3975,62 @@ mod account_tests {
         state.persist(&mut state.game.lock().unwrap()).unwrap();
         let reloaded = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
         check(call(&router(reloaded), "GET", "/api/card", &card, vec![]).await);
+    }
+
+    /// A Chao left behind as a Tiny Garden resident is drawn from its own
+    /// record, like a connected one; a Chao that is neither is not there.
+    #[tokio::test]
+    async fn a_resident_chao_record_reaches_the_others_in_its_room() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::load(Config::local(dir.path().to_owned(), false)).unwrap();
+        let app = router(state.clone());
+        let (card, _, owner_id) = new_account(&app).await;
+        let (status, made) = post(
+            &app,
+            "/api/session",
+            json!({"name": "Second", "card": card}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let viewer = made["token"].as_str().unwrap().to_owned();
+        let get = |app: Router, bearer: String, uri: String| async move {
+            let request = axum::http::Request::builder()
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = http_body_util::BodyExt::collect(response.into_body())
+                .await
+                .unwrap()
+                .to_bytes();
+            (status, bytes.to_vec())
+        };
+        // Synthetic test record: right size, a non-empty type byte, filler.
+        let mut record = vec![7u8; CHAO_RECORD_BYTES];
+        record[0x80] = 2;
+        let uri = format!("/api/chao-record/{owner_id}");
+        {
+            let mut game = state.game.lock().unwrap();
+            game.players.get_mut(&owner_id).unwrap().chao_record = record.clone();
+        }
+        let (status, _) = get(app.clone(), viewer.clone(), uri.clone()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "offline and no resident");
+        {
+            let mut game = state.game.lock().unwrap();
+            let mut p = game.players.remove(&owner_id).unwrap();
+            let home = json!({"enabled": true, "zone": p.zone, "x": p.x, "z": p.z});
+            crate::watch::restore(&game, &mut p, &home);
+            assert!(p.watch.is_some(), "the resident is in its garden");
+            let zone = p.zone.clone();
+            game.players.insert(owner_id.clone(), p);
+            let id = game.player_for_token(&viewer).unwrap().id.clone();
+            game.players.get_mut(&id).unwrap().zone = zone;
+        }
+        let (status, body) = get(app.clone(), viewer, uri).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, record);
     }
 
     #[tokio::test]
