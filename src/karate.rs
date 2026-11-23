@@ -439,9 +439,9 @@ pub fn run_round(
         (owner_skills, false, child, 0),
         (opp_skills, true, false, d.kind),
     ];
-    let mut round = fight(rows, motion_table, arena, rng, entrants);
-    round.opponent_row = row;
-    Some(round)
+    let mut result = fight(rows, motion_table, arena, rng, entrants);
+    result.opponent_row = row;
+    Some(result)
 }
 
 /// One native round between two given fighters: (skill points, computer
