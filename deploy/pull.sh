@@ -36,6 +36,8 @@ for repo in server client; do
         cp -r "$dir/deploy" "$work/release/deploy"
     else
         cp -r "$dir/dist" "$work/release/web"
+        # The staff panel is one self-contained page outside the vite build.
+        cp -r "$dir/asset-tools/crates/sa2-web/www/panel" "$work/release/web/panel"
     fi
     echo "$rev" > "$work/release/rev-$repo"
     tried+=("$repo:$rev")
