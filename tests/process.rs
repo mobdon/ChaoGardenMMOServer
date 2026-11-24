@@ -206,7 +206,7 @@ async fn real_binary_saves_pending_vehicle_progress_on_launcher_shutdown() {
     let profiles: Value =
         serde_json::from_slice(&fs::read(directory.path().join("profiles.json")).unwrap()).unwrap();
     assert_eq!(profiles[0]["vehicle"], "dark-chao-walker");
-    assert_eq!(profiles[0]["stats"]["run"]["level"], 99);
+    assert_eq!(profiles[0]["admin"], true);
     assert_eq!(
         profiles[0]["gear"],
         json!({"footwear":"shadow-air-shoes","hands":"knuckles-hammer-gloves"})

@@ -29,8 +29,8 @@ The initial policy is free, one canonical point per completed minute, up to
 eight hours / 480 points per job. The policy is frozen when a job starts.
 Durations are whole-minute multiples from 60000 through 28800000 ms. This
 policy changes points only; it never raises levels or grades or changes hidden
-stats. Points clamp to 9999. The authorized owner's perfect stats stay perfect,
-so an admin completion may award one policy point but apply zero points.
+stats. Points clamp to 9999. The admin Chao's stats are its
+stored ones and take training points like any Chao's.
 
 Use the existing authenticated `care` envelope, UUID and current care revision:
 
