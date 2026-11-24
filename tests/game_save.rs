@@ -227,6 +227,85 @@ async fn care_on_the_socket_is_refused_while_the_game_holds_the_chao() {
     .await
     .expect("a notice before the timeout");
     assert_eq!(refused["code"], "in-game");
+
+    // The one care request the game may send: it removes the item and nothing else.
+    let before = {
+        let mut game = state.game.lock().unwrap();
+        let p = game.players.values_mut().next().unwrap();
+        p.care.inventory.insert("garden-fruit".into(), 1);
+        (
+            p.care.revision,
+            p.hunger,
+            p.energy,
+            p.happiness,
+            p.stats.clone(),
+        )
+    };
+    let give = |id: &str| {
+        Message::Text(
+            json!({"type":"care","requestId":id,"expectedRevision":before.0,
+                "intent":{"kind":"game_give","itemId":"garden-fruit"}})
+            .to_string()
+            .into(),
+        )
+    };
+    let first = "11111111-1111-4111-8111-111111111111";
+    socket.send(give(first)).await.unwrap();
+    let given = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = socket.next().await {
+                let value: Value = serde_json::from_str(&text).unwrap();
+                if value["code"] == "in-game" || value["requestId"] == first {
+                    return value;
+                }
+            }
+        }
+    })
+    .await
+    .expect("a care result before the timeout");
+    assert_eq!(given["kind"], "care-result");
+    assert_eq!(given["accepted"], true, "{given}");
+    {
+        let game = state.game.lock().unwrap();
+        let p = game.players.values().next().unwrap();
+        assert!(p.care.inventory.is_empty());
+        assert_eq!(
+            (
+                p.care.revision,
+                p.hunger,
+                p.energy,
+                p.happiness,
+                p.stats.clone()
+            ),
+            (before.0 + 1, before.1, before.2, before.3, before.4)
+        );
+    }
+    // Outside the game the same request is refused and the item stays.
+    let id = {
+        let mut game = state.game.lock().unwrap();
+        game.game_save_leases.clear();
+        let id = game.players.keys().next().unwrap().clone();
+        game.players
+            .get_mut(&id)
+            .unwrap()
+            .care
+            .inventory
+            .insert("garden-fruit".into(), 1);
+        id
+    };
+    let mut game = state.game.lock().unwrap();
+    let outside = state
+        .care_action(
+            &mut game,
+            &id,
+            &json!({"type":"care","requestId":"22222222-2222-4222-8222-222222222222",
+            "expectedRevision":before.0 + 1,"intent":{"kind":"game_give","itemId":"garden-fruit"}}),
+        )
+        .unwrap();
+    assert_eq!(outside["accepted"], false);
+    assert_eq!(outside["code"], "not-in-game");
+    assert_eq!(game.players[&id].care.inventory["garden-fruit"], 1);
+    drop(game);
     serving.abort();
 }
 

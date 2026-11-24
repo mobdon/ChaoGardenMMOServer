@@ -178,6 +178,13 @@ pub enum Intent {
         #[serde(rename = "itemId")]
         item_id: String,
     },
+    /// The game hands one carried item to the Chao: only the item leaves the
+    /// inventory. The game's own code changes the Chao record it then saves.
+    #[serde(rename = "game_give")]
+    GameGive {
+        #[serde(rename = "itemId")]
+        item_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -246,6 +253,7 @@ impl HistoryEntry {
             Intent::Sell { item_id } => ("sell", Some(item_id.clone())),
             Intent::PlaceEgg { item_id } => ("place_egg", Some(item_id.clone())),
             Intent::GiveHat { item_id } => ("give_hat", Some(item_id.clone())),
+            Intent::GameGive { item_id } => ("game_give", Some(item_id.clone())),
         };
         Self {
             id: receipt.request.request_id.clone(),
@@ -358,7 +366,7 @@ fn valid_request(r: &Request) -> bool {
         && Uuid::parse_str(&r.request_id)
             .is_ok_and(|id| id.hyphenated().to_string() == r.request_id)
         && match &r.intent {
-            Intent::Consume { item_id } => valid_item(item_id),
+            Intent::Consume { item_id } | Intent::GameGive { item_id } => valid_item(item_id),
             Intent::Purchase { item_id } => {
                 valid_item(item_id) || crate::black_market::theme_index(item_id).is_some()
             }
@@ -868,6 +876,14 @@ fn apply(
             automatic,
         );
     }
+    if let Intent::GameGive { item_id } = &request.intent {
+        // Only while the game holds the card; the usual care rules do not apply in the game.
+        if !crate::game_save::leased(game, p.card(), std::time::Instant::now()) {
+            return Err("not-in-game");
+        }
+        take_quantity(p, item_id)?;
+        return Ok(json!({"inventory":{item_id:-1},"rules":"game-give-v1"}));
+    }
     if !matches!(request.intent, Intent::TinyEnter)
         && conflict(p, matches!(request.intent, Intent::Pickup { .. }))
     {
@@ -974,7 +990,8 @@ fn apply(
         }
         Intent::TrainingStart { .. }
         | Intent::TrainingCancel { .. }
-        | Intent::TrainingSettle { .. } => unreachable!("training is dispatched above"),
+        | Intent::TrainingSettle { .. }
+        | Intent::GameGive { .. } => unreachable!("dispatched above"),
         Intent::TinyEggPurchase { .. } | Intent::TinyEggHatch { .. } => {
             crate::collection::apply(game, p, &request.intent, training_now, &request.request_id)
         }
