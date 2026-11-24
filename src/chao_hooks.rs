@@ -34,13 +34,11 @@ const HEART_FRUIT_BREED: i32 = 10_000;
 const FRUIT_BITES: u8 = 4;
 
 /// Adds signed skill points with the published adapted clamp (0-9999). Used
-/// only by the pre-existing adapted `garden-fruit`. Owner perfect stats never change.
+/// only by the pre-existing adapted `garden-fruit`.
 pub fn grant_stat(p: &mut Player, stat: &str, delta: i16) -> i64 {
     let stat = p.stats.get_mut(stat).expect("seven canonical stats");
     let before = stat.points;
-    if !p.admin {
-        stat.points = (i64::from(before) + i64::from(delta)).clamp(0, 9999) as u32;
-    }
+    stat.points = (i64::from(before) + i64::from(delta)).clamp(0, 9999) as u32;
     i64::from(stat.points) - i64::from(before)
 }
 

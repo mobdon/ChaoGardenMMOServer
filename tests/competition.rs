@@ -67,6 +67,10 @@ fn fixture() -> (tempfile::TempDir, AppState, String, String) {
             .unwrap();
         let id = session["player"]["id"].as_str().unwrap().to_owned();
         let token = session["token"].as_str().unwrap().to_owned();
+        // Strong enough to place in the simulated race and karate.
+        for stat in game.players.get_mut(&id).unwrap().stats.values_mut() {
+            (stat.grade, stat.level, stat.points) = (5, 99, 9999);
+        }
         game.connect(&id);
         state.persist(&mut game).unwrap();
         (id, token)

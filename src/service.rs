@@ -970,7 +970,7 @@ async fn chao_record_put(
             // Only numbers the game itself changed replace the profile's. A record
             // that still holds the last numbers seen must not undo what the Tiny
             // Garden gave since; the game takes those from the profile instead.
-            if p.native_stats != Some(stats) && !p.admin {
+            if p.native_stats != Some(stats) {
                 stats.apply(&mut p.stats, &mut p.life.exp);
             }
             p.native_stats = Some(stats);
@@ -978,15 +978,12 @@ async fn chao_record_put(
     }
     let version = p.chao_record_version;
     // The profile's skills as [level, progress, points] in the game's order, for
-    // the game to take what the Tiny Garden gave. The owner's fixed perfect
-    // profile is never handed to a record.
-    let skills = (!p.admin).then(|| {
-        crate::game::ALL_STATS
-            .iter()
-            .zip(p.life.exp)
-            .map(|(name, exp)| json!([p.stats[*name].level, exp, p.stats[*name].points]))
-            .collect::<Vec<_>>()
-    });
+    // the game to take what the Tiny Garden gave.
+    let skills = crate::game::ALL_STATS
+        .iter()
+        .zip(p.life.exp)
+        .map(|(name, exp)| json!([p.stats[*name].level, exp, p.stats[*name].points]))
+        .collect::<Vec<_>>();
     game.dirty |= changed;
     Json(json!({"ok": true, "version": version, "skills": skills})).into_response()
 }

@@ -40,18 +40,15 @@ fn terrain(rows: &[&[Option<f64>]], min_z: f64) -> Terrain {
 }
 
 #[test]
-fn bootstrap_is_explicit_and_only_first_profile_owns_perfect_stats() {
+fn bootstrap_is_explicit_and_only_first_profile_is_admin_with_plain_stats() {
     let (mut g, id, _) = fixture(true);
     let p = &g.players[&id];
     assert!(p.admin);
-    for stat in MAIN_STATS {
-        assert_eq!(p.stats[stat].grade, 5);
-    }
+    assert_eq!((p.hp, p.max_hp), (250., 250.));
     for stat in ALL_STATS {
-        assert_eq!(p.stats[stat].level, 99);
+        let stat = &p.stats[stat];
+        assert_eq!((stat.grade, stat.level, stat.points), (1, 1, 0));
     }
-    assert_eq!(p.stats["luck"].grade, 255);
-    assert_eq!(p.stats["intelligence"].grade, 255);
     let second = g
         .create_session(&json!({"owner":true,"admin":true,"stats":{"run":{"grade":5,"level":99}}}))
         .unwrap();
@@ -59,6 +56,57 @@ fn bootstrap_is_explicit_and_only_first_profile_owns_perfect_stats() {
     assert_eq!(second["player"]["stats"]["run"]["level"], 1);
     let (regular, regular_id, _) = fixture(false);
     assert!(!regular.players[&regular_id].admin);
+}
+
+/// Synthetic record bytes (test input, never game data).
+#[test]
+fn admin_chao_saved_with_forced_stats_takes_its_record_numbers_and_others_keep_theirs() {
+    use base64::Engine;
+    let mut record = vec![0u8; 0x800];
+    record[0x80] = 5;
+    for i in 0..7 {
+        record[0x20 + i] = 7;
+        record[0x28 + i] = 5;
+        record[0x30 + i] = 99;
+        record[0x38 + 2 * i..0x3A + 2 * i].copy_from_slice(&3266u16.to_be_bytes());
+    }
+    let record = base64::engine::general_purpose::STANDARD.encode(record);
+    let forced: serde_json::Map<String, Value> = ALL_STATS
+        .into_iter()
+        .map(|name| {
+            let grade = if MAIN_STATS.contains(&name) { 5 } else { 255 };
+            (
+                name.to_owned(),
+                json!({"grade":grade,"level":99,"points":9999}),
+            )
+        })
+        .collect();
+    let profile = |id: &str, admin: bool, stats: Value| {
+        json!({"id":id,"tokenHash":hash_token(id),"name":id,"admin":admin,
+            "stats":stats,"chaoRecord":record})
+    };
+    let mut earned = forced.clone();
+    earned["run"] = json!({"grade":5,"level":99,"points":4000});
+    let g = Game::new(
+        vec![
+            profile("forced-admin", true, json!(forced)),
+            profile("earned-admin", true, json!(earned)),
+            profile("player", false, json!(forced)),
+        ],
+        BTreeMap::new(),
+        false,
+        1000.,
+    )
+    .unwrap();
+    let healed = &g.players["forced-admin"];
+    for stat in healed.stats.values() {
+        assert_eq!((stat.grade, stat.level, stat.points), (5, 99, 3266));
+    }
+    assert_eq!(healed.life.exp, [7; 7]);
+    assert_eq!((healed.hp, healed.max_hp), (250., 250.));
+    assert_eq!(g.players["earned-admin"].stats["run"].points, 4000);
+    assert_eq!(g.players["earned-admin"].stats["swim"].points, 9999);
+    assert_eq!(g.players["player"].stats["swim"].points, 9999);
 }
 
 #[test]
@@ -446,8 +494,11 @@ fn race_requires_ordered_traversal_takes_real_time_and_pays_once() {
 }
 
 #[test]
-fn normal_chaos_evolution_requires_earned_milestones_even_with_perfect_stats() {
+fn normal_chaos_evolution_requires_earned_milestones_even_with_high_stats() {
     let (mut g, id, _) = fixture(true);
+    for stat in g.players.get_mut(&id).unwrap().stats.values_mut() {
+        stat.level = 99;
+    }
     act(
         &mut g,
         &id,

@@ -208,7 +208,7 @@ impl Player {
         if let Some(stat) = self.stats.get_mut(name) {
             stat.level = (stat.level + levels).min(99);
             stat.points = (stat.points + u32::from(levels) * 25).min(9999);
-            if MAIN_STATS.contains(&name) && !self.admin {
+            if MAIN_STATS.contains(&name) {
                 stat.grade = (1 + stat.level / 20).min(5);
             }
         }
@@ -661,20 +661,10 @@ impl Game {
             .into_iter()
             .map(|name| {
                 let grade_max = if MAIN_STATS.contains(&name) { 5. } else { 255. };
-                let stat = if admin {
-                    Stat {
-                        grade: grade_max as u16,
-                        level: 99,
-                        points: 9999,
-                    }
-                } else {
-                    Stat {
-                        grade: number(&data["stats"][name]["grade"], 1., 0., grade_max).floor()
-                            as u16,
-                        level: number(&data["stats"][name]["level"], 1., 0., 99.).floor() as u16,
-                        points: number(&data["stats"][name]["points"], 0., 0., 9999.).floor()
-                            as u32,
-                    }
+                let stat = Stat {
+                    grade: number(&data["stats"][name]["grade"], 1., 0., grade_max).floor() as u16,
+                    level: number(&data["stats"][name]["level"], 1., 0., 99.).floor() as u16,
+                    points: number(&data["stats"][name]["points"], 0., 0., 9999.).floor() as u32,
                 };
                 (name.into(), stat)
             })
@@ -806,6 +796,23 @@ impl Game {
         crate::training::validate_player(&player)?;
         crate::collection::validate_player(&player)?;
         player.update_form();
+        // An admin Chao saved while its stats were forced to 99 / top grade / 9999
+        // takes the numbers of its own game record instead, once.
+        let healed = (admin
+            && player.stats.iter().all(|(name, stat)| {
+                let top = if MAIN_STATS.contains(&name.as_str()) {
+                    5
+                } else {
+                    255
+                };
+                (stat.grade, stat.level, stat.points) == (top, 99, 9999)
+            }))
+        .then(|| crate::game_save::native_stats(&player.chao_record))
+        .flatten();
+        let mut healed_exp = [0; 7];
+        if let Some(native) = healed {
+            native.apply(&mut player.stats, &mut healed_exp);
+        }
         player.life = crate::life::restore_for(
             data,
             &player.id,
@@ -813,6 +820,9 @@ impl Game {
             &player.stats,
             self.life_policy,
         )?;
+        if healed.is_some() {
+            player.life.exp = healed_exp;
+        }
         watch::restore(self, &mut player, &data["resident"]);
         if let Some(plan) = &player.competition.plan {
             let expected = competition::lease(plan);

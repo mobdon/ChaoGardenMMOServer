@@ -397,7 +397,7 @@ fn legacy_profiles_preserve_earned_state_and_owner_privilege() {
     let legacy = json!({"id":id,"tokenHash":hash_token("legacy-token"),"name":"Legacy Chao",
         "stats":stats,"rings":54321,"alignment":-75,"form":"chaos","happiness":42,
         "ownedCosmetics":["eggshell"],"equipped":"eggshell","missionsCompleted":7,"racesCompleted":4,"bestRaceMs":1234});
-    let owner = json!({"id":owner_id,"tokenHash":hash_token("legacy-owner"),"name":"Owner","admin":true,
+    let owner = json!({"id":owner_id,"tokenHash":hash_token("legacy-owner"),"name":"Owner","admin":true,"stats":stats,
         "form":"chaos","vehicle":"dark-chao-walker","gear":{"footwear":"shadow-air-shoes","hands":"knuckles-hammer-gloves"},"rings":76543});
     let source = serde_json::to_vec_pretty(&json!([legacy, owner])).unwrap();
     fs::write(dir.path().join("profiles.json"), &source).unwrap();
@@ -422,12 +422,8 @@ fn legacy_profiles_preserve_earned_state_and_owner_privilege() {
     assert_eq!(owner.vehicle.as_deref(), Some("dark-chao-walker"));
     assert_eq!(owner.gear.footwear.as_deref(), Some("shadow-air-shoes"));
     assert_eq!(owner.gear.hands.as_deref(), Some("knuckles-hammer-gloves"));
-    assert!(
-        owner
-            .stats
-            .values()
-            .all(|stat| stat.level == 99 && stat.points == 9999)
-    );
+    // The owner's stats are its stored ones, never forced.
+    assert_eq!(serde_json::to_value(&owner.stats).unwrap(), json!(stats));
     assert_eq!(fs::read(dir.path().join("profiles.json")).unwrap(), source);
     game.connect(&id);
     at_shop(&mut game, &id);

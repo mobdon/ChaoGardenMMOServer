@@ -142,11 +142,8 @@ final short, `unknown18`, is retained as raw evidence and grants no gameplay
 effect. These mappings and clamps are MMO adaptations; they do not reproduce
 an established retail consumption formula.
 
-The separately authorized owner perfect-stat privilege is preserved. Its
-skill points receive zero actual item delta, including negative native raw
-effects; raw evidence and item consumption are still recorded. The returned
-actual `effects.points` values reflect this exception. Item use never grants
-that privilege to another profile.
+The admin Chao has no stat privilege (changed November 23, 2026): its skills
+are its stored ones and items change them as for any Chao.
 
 `garden-fruit` is the adapted food item. A `purchase` costs three rings and
 requires the server-approved hub shop or garden grove interaction. The explicit

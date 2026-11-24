@@ -905,15 +905,11 @@ pub struct StatProgress {
     pub points: i32,
 }
 /// `AL_ParameterGrow` 0x21148 for one skill: Exp += amount (minimum 0), then at most one
-/// level-up (`fn_60_2131C`: points += 11 + 3*grade + 0..4, capped at 4000). Owner perfect
-/// stats never change.
+/// level-up (`fn_60_2131C`: points += 11 + 3*grade + 0..4, capped at 4000).
 pub fn grant_stat_progress(p: &mut Player, stat: &str, amount: i32) -> StatProgress {
     let Some(index) = ALL_STATS.iter().position(|s| *s == stat) else {
         return StatProgress::default();
     };
-    if p.admin {
-        return StatProgress::default();
-    }
     let life = &mut p.life;
     let entry = p.stats.get_mut(stat).expect("seven canonical stats");
     let before_exp = i32::from(life.exp[index]);
@@ -1296,11 +1292,9 @@ fn reset_clock(life: &mut LifeState) {
 pub fn reincarnate(p: &mut Player, policy: Policy) {
     let life = &mut p.life;
     life.reincarnations = life.reincarnations.saturating_add(1);
-    if !p.admin {
-        for stat in p.stats.values_mut() {
-            stat.level = 1;
-            stat.points = stat.points.min(SUCCEED_SKILL_CAP) / SUCCEED_SKILL_DIVISOR;
-        }
+    for stat in p.stats.values_mut() {
+        stat.level = 1;
+        stat.points = stat.points.min(SUCCEED_SKILL_CAP) / SUCCEED_SKILL_DIVISOR;
     }
     for i in 0..13 {
         let copy = life.rand_bool();
@@ -1358,13 +1352,11 @@ pub(crate) fn hatch(p: &mut Player, egg: Egg, policy: Policy) {
     life.events.push(LifeEvent::Hatched {
         look: egg.expressed.look,
     });
-    if !p.admin {
-        for (name, grade) in ALL_STATS.iter().zip(egg.expressed.abl) {
-            let stat = p.stats.get_mut(*name).expect("seven canonical stats");
-            stat.level = 0;
-            stat.points = 0;
-            stat.grade = u16::from(grade);
-        }
+    for (name, grade) in ALL_STATS.iter().zip(egg.expressed.abl) {
+        let stat = p.stats.get_mut(*name).expect("seven canonical stats");
+        stat.level = 0;
+        stat.points = 0;
+        stat.grade = u16::from(grade);
     }
     p.hunger = 100. - f64::from(life.emotion.state[2]) / 100.;
     p.life = life;

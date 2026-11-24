@@ -92,7 +92,7 @@ fn all_seven_signed_channels_add_native_exp_without_changing_levels_grades_or_fo
 }
 
 #[test]
-fn owner_perfect_stats_and_privileges_survive_negative_native_effects() {
+fn owner_privilege_survives_negative_native_effects() {
     let (mut game, id) = fixture(true);
     let before = game.players[&id].stats.clone();
     game.players

@@ -432,9 +432,7 @@ pub fn apply(
                     .get_mut(stat_name(award.stat))
                     .ok_or("training-state-invalid")?;
                 let before = stat.points;
-                if !player.admin {
-                    stat.points = stat.points.saturating_add(award.points).min(9999);
-                }
+                stat.points = stat.points.saturating_add(award.points).min(9999);
                 (Outcome::Settled, award.points, stat.points - before)
             };
             let result = TrainingResult {

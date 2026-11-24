@@ -73,17 +73,15 @@ fn level_up_is_one_per_call_with_native_points_and_caps() {
 }
 
 #[test]
-fn owner_perfect_stats_never_change() {
+fn owner_stats_start_plain_and_change_like_any_chao() {
     let (mut game, ids) = game_with(&["Owner"], true);
     let p = game.players.get_mut(&ids[0]).unwrap();
     assert!(p.admin);
-    let before = p.stats.clone();
-    assert_eq!(
-        grant_stat_progress(p, "power", 900),
-        StatProgress::default()
-    );
+    assert!(p.stats.values().all(|stat| stat.points == 0));
+    assert_eq!(grant_stat_progress(p, "power", 900).levels, 1);
+    assert!(p.stats["power"].points > 0);
     reincarnate(p, Policy::default());
-    assert_eq!(p.stats, before);
+    assert_eq!(p.stats["power"].level, 1);
 }
 
 #[test]
