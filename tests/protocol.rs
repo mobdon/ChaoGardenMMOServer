@@ -1398,6 +1398,56 @@ async fn chao_world_areas_are_shared_rooms() {
 }
 
 #[tokio::test]
+async fn one_game_leads_an_areas_character_chao_and_the_lead_passes_on() {
+    let server = LiveServer::start(false).await;
+    let a = session(&server.state, json!({"name":"Ana"})).await;
+    let b = session(&server.state, json!({"name":"Bo"})).await;
+    let mut one = server.socket(&a).await;
+    let mut two = server.socket(&b).await;
+    let send = |v: Value| Message::Text(v.to_string().into());
+    let go = || send(json!({"type":"action","action":"chao-world","area":"garden"}));
+    let poses = |x: f64| {
+        send(json!({"type":"action","action":"resident-pose","poses":[[0, x, 0, 2, 16384, 578]]}))
+    };
+    one.send(go()).await.unwrap();
+    snapshot_until(&mut one, |s| s["residents"]["lead"] == true).await;
+    two.send(go()).await.unwrap();
+    snapshot_until(&mut two, |s| s["residents"]["lead"] == false).await;
+    // Only the leader's poses are kept and shown to the room.
+    two.send(poses(9.)).await.unwrap();
+    one.send(poses(1.5)).await.unwrap();
+    let seen = snapshot_until(&mut two, |s| s["residents"]["poses"][0][1] == 1.5).await;
+    assert_eq!(seen["residents"]["lead"], false);
+    // Not six numbers each: refused, the old poses stay (checked after the handover).
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    one.send(send(
+        json!({"type":"action","action":"resident-pose","poses":[[0, "far"]]}),
+    ))
+    .await
+    .unwrap();
+    // Not a resident number: refused too.
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    one.send(send(
+        json!({"type":"action","action":"resident-pose","poses":[[-1, 9, 0, 2, 0, 1]]}),
+    ))
+    .await
+    .unwrap();
+    // The leader leaves the area: the other game leads from the last poses.
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    one.send(send(
+        json!({"type":"action","action":"chao-world","area":"hub"}),
+    ))
+    .await
+    .unwrap();
+    let seen = snapshot_until(&mut two, |s| s["residents"]["lead"] == true).await;
+    assert_eq!(seen["residents"]["poses"][0][1], 1.5);
+    // Bo's game leads but never sends: after 2 s of silence the lead passes
+    // to the next player there.
+    one.send(go()).await.unwrap();
+    snapshot_until(&mut one, |s| s["residents"]["lead"] == true).await;
+}
+
+#[tokio::test]
 async fn chao_pose_is_relayed_to_the_same_area_room() {
     let server = LiveServer::start(false).await;
     let a = session(&server.state, json!({"name":"Ana"})).await;

@@ -35,6 +35,20 @@ pub const CHAO_WORLD_ZONES: [&str; 9] = [
     "stadium",
     "chao-karate",
 ];
+/// The areas the lobby's character Chao (Knuckles, Amy; client sa2_boot
+/// start_stage RESIDENTS) walk in: one player's game per area runs them and
+/// the others draw what it sends.
+pub const RESIDENT_ZONES: [&str; 4] = ["hub", "garden", "hero", "dark"];
+/// A leader's game that sends nothing for this long (ms) loses the lead.
+const RESIDENT_SILENCE: f64 = 2000.;
+/// One area's character Chao: whose game runs them, when it was last heard
+/// (or given the lead), and the poses it last sent.
+#[derive(Default)]
+pub struct ResidentRoom {
+    pub leader: String,
+    heard: f64,
+    poses: Value,
+}
 /// Chao World areas that are menus or events, not rooms players walk in:
 /// no room chat or voice there (world chat still works).
 pub const MENU_ZONES: [&str; 3] = ["stadium", "chao-race", "chao-karate"];
@@ -517,6 +531,8 @@ pub struct Game {
     /// Decision-making time only; terrain/movement work remains in total tick time.
     pub last_resident_tick: Duration,
     pub last_tick_residents: usize,
+    /// The character Chao of each area in RESIDENT_ZONES (memory only).
+    pub resident_rooms: BTreeMap<&'static str, ResidentRoom>,
     /// Games holding a player's native save (in memory: a restart frees them).
     pub game_save_leases: BTreeMap<String, crate::game_save::Lease>,
 }
@@ -611,6 +627,7 @@ impl Game {
             rings: vec![],
             last_resident_tick: Duration::ZERO,
             last_tick_residents: 0,
+            resident_rooms: BTreeMap::new(),
             game_save_leases: BTreeMap::new(),
         };
         for (i, (x, z)) in [(-6., 6.), (6., 6.), (-6., -6.), (6., -6.), (0., -9.)]
@@ -1393,6 +1410,8 @@ impl Game {
             // never crowd out the player's other actions.
             && if message["action"] == "chao-pose" {
                 player.cooldown("pose", self.time, 80.)
+            } else if message["action"] == "resident-pose" {
+                player.cooldown("residents", self.time, 80.)
             } else if message["action"] == "voice" {
                 player.cooldown("voice", self.time, 40.)
             } else {
@@ -1413,6 +1432,31 @@ impl Game {
     fn action_inner(&mut self, p: &mut Player, message: &Value) {
         let action = message["action"].as_str().unwrap_or_default();
         let id = p.id.clone();
+        if action == "resident-pose" {
+            // Before the busy checks below: about 10 a second, never worth a notice.
+            // The area's character Chao as the leader's game runs them: up to
+            // 3 of [which, x, y, z, angle, motion]. Anyone else's are dropped.
+            let ok = message["poses"].as_array().is_some_and(|a| {
+                a.len() <= 3
+                    && a.iter().all(|r| {
+                        r.as_array().is_some_and(|r| {
+                            r.len() == 6
+                                && r.iter().all(|v| v.as_f64().is_some_and(f64::is_finite))
+                                // Which resident: a whole number 0..=2.
+                                && r[0].as_u64().is_some_and(|n| n <= 2)
+                        })
+                    })
+            });
+            if let Some(room) = self
+                .resident_rooms
+                .get_mut(p.zone.as_str())
+                .filter(|room| ok && room.leader == p.id)
+            {
+                room.heard = self.time;
+                room.poses = message["poses"].clone();
+            }
+            return;
+        }
         if action.starts_with("competition-") {
             competition::action(self, p, message);
             return;
@@ -2054,6 +2098,7 @@ impl Game {
         }
         let dt = dt.min(0.1);
         self.time += dt * 1000.;
+        self.resident_leaders();
         crate::queue::tick(self, dt);
         let ids: Vec<_> = self.players.keys().cloned().collect();
         for id in ids {
@@ -2567,6 +2612,51 @@ impl Game {
             message: reply,
         });
     }
+    /// Each area's character Chao are run by one connected player's game. A
+    /// leader who left, or whose game went silent, hands over to the next
+    /// player there; the last poses stay so the new leader starts from them.
+    fn resident_leaders(&mut self) {
+        for zone in RESIDENT_ZONES {
+            let here = |p: &Player| p.connections > 0 && p.zone == zone;
+            let old = self
+                .resident_rooms
+                .get(zone)
+                .map(|r| (r.leader.clone(), r.heard));
+            if old.as_ref().is_some_and(|(leader, heard)| {
+                self.time - heard < RESIDENT_SILENCE && self.players.get(leader).is_some_and(here)
+            }) {
+                continue;
+            }
+            let old = old.map(|o| o.0);
+            let there = || {
+                self.players
+                    .values()
+                    .filter(|p| here(p))
+                    .map(|p| p.id.clone())
+            };
+            // Someone else first: a silent leader only keeps the lead when alone.
+            let next = there()
+                .find(|id| Some(id) != old.as_ref())
+                .or_else(|| there().next());
+            match next {
+                Some(leader) => {
+                    let room = self.resident_rooms.entry(zone).or_default();
+                    (room.leader, room.heard) = (leader, self.time);
+                }
+                None => {
+                    self.resident_rooms.remove(zone);
+                }
+            }
+        }
+    }
+    /// What a player's game needs for its area's character Chao: whether it
+    /// runs them, and the poses to draw when it does not.
+    fn residents_public(&self, viewer: &Player) -> Value {
+        match self.resident_rooms.get(viewer.zone.as_str()) {
+            Some(room) => json!({"lead": room.leader == viewer.id, "poses": room.poses}),
+            None => Value::Null,
+        }
+    }
     pub fn same_room(&self, viewer: &Player, other: &Player) -> bool {
         if viewer.zone != other.zone {
             return false;
@@ -2635,6 +2725,7 @@ impl Game {
             .and_then(|p| activities::public_race(self, p));
         json!({"type": "snapshot", "selfId": self_id, "serverTime": self.time, "players": self.players.values().filter(|p| p.id == self_id || (!self.invisible.contains(&p.id) && (p.connections > 0 || p.watch.is_some() || competition::reserved(p)) && viewer.is_some_and(|v|self.same_room(v,p)))).map(Player::public).collect::<Vec<_>>(),
             "rings": rings, "enemies": enemies, "mission": self.mission.as_ref().filter(|_|mission_visible).map(|m| json!({"id": m.id, "completed": m.completed, "remaining": m.enemies.iter().filter(|e| e.hp > 0.).count()})),
+            "residents": viewer.map_or(Value::Null, |v| self.residents_public(v)),
             "race": race, "shop": {"catalog": SHOP_CATALOG}, "activities": self.activities.public(),
             "settings": viewer.map_or(Value::Null, |v| v.profile_extra["settings"].clone()),
             "care":crate::care::public(self,self_id),
