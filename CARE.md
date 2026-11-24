@@ -252,6 +252,7 @@ native buy and sell prices in rings (sell 0 = cannot be sold):
 | `sell` | `itemId` | Sell one owned item with a non-zero native sell price (rings capped at 999,999). |
 | `place-egg` | `itemId` | Put a carried egg down in a garden. As the item manager (ChaoMain 0x18F7C) and CreateEgg (0x8F20) do, it gets AL_GeneCreate genes with Color = the egg colour (both alleles), NonTex 1, Jewel 0, Multi 1 for shiny, and is analysed at once. It goes into the life nest (MMO capacity 3). |
 | `give-hat` | `itemId` | Put a carried hat down by the Chao. Natively a Chao puts on a loose hat only with MinimalFlag bit 16 (Skeleton Dog) set (fn_60_40DFC); otherwise it is refused and the hat stays carried. The worn hat (param +0xD5) is `care.hat` and the public player record's `hat`. |
+| `game_give` | `itemId` | The game hands one carried item to the Chao. Accepted only while the game holds the card (otherwise `not-in-game`), and it is the only care request accepted then. It removes one of the item and changes nothing else: the game's own code changes the Chao record it then saves. The game gives the item only after `accepted` is true. |
 
 **Emblems** (`src/emblems.rs`, `native-gc-emblem-count-v1`). The gates read the
 native emblem count (fn_80057EB4): 29 stages × 5 mission ranks plus Route 101
