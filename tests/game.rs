@@ -830,6 +830,20 @@ fn a_carried_egg_hatches_into_a_new_slot_on_the_same_card() {
         [2, 2],
         "a White egg hatches a white Chao"
     );
+    // An inventory egg makes an adult at once: neutral Normal (5), in the egg's colour,
+    // and the card the page reads says so before the Chao has ever played.
+    assert_eq!(child.life.stage, chao_game_server::life::Stage::Adult);
+    assert_eq!((child.body.chao_type, child.alignment), (5, 0.));
+    assert_eq!(hatched["player"]["body"]["stage"], "adult");
+    let listed = g.card_sessions(&card);
+    let slot = listed
+        .iter()
+        .find(|c| c["player"]["id"] == hatched["player"]["id"])
+        .unwrap();
+    assert_eq!(slot["player"]["body"]["stage"], "adult");
+    assert_eq!(slot["player"]["body"]["type"], 5);
+    assert_eq!(slot["player"]["body"]["look"]["color"], 2);
+    assert!(slot["record"].is_null());
     assert!(
         !g.players[&parent].care.inventory.contains_key("egg:2"),
         "the egg is used up"

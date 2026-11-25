@@ -917,12 +917,14 @@ impl Game {
             }
             None => {}
         }
-        let response = json!({"token": token, "card": card, "player": player.public()});
         self.tokens
             .insert(player.token_hash.clone(), player.id.clone());
-        self.players.insert(player.id.clone(), player);
+        self.players.insert(id.clone(), player);
+        // A hatched Chao's body is made now, so the card shows it at once (an inventory
+        // egg's Chao as `body.stage` "adult").
+        crate::life::apply_events(self, &id);
         self.dirty = true;
-        Ok(response)
+        Ok(json!({"token": token, "card": card, "player": self.players[&id].public()}))
     }
     /// The Chao on the card whose code is `card`.
     pub fn card_chao(&self, card: &str) -> Vec<&Player> {
