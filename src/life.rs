@@ -1363,7 +1363,8 @@ pub(crate) fn hatch(p: &mut Player, egg: Egg, policy: Policy) {
 }
 
 /// MMO policy: a carried Black Market egg picked from the inventory hatches straight into a
-/// new Chao on the owner's card. The egg is made exactly as [`lay_bought_egg`] makes it.
+/// new ADULT Chao on the owner's card. The egg is made exactly as [`lay_bought_egg`] makes it;
+/// the new body then takes the usual evolution decision (a fresh body is neutral Normal).
 pub fn hatch_bought_egg(
     p: &mut Player,
     egg_id: u8,
@@ -1373,6 +1374,14 @@ pub fn hatch_bought_egg(
     lay_bought_egg(p, egg_id, now)?;
     let egg = p.life.nest.pop().expect("just laid");
     hatch(p, egg, policy);
+    p.life.stage = Stage::Adult;
+    // Drained after `Hatched`, so the usual rule picks the adult type.
+    p.life
+        .events
+        .push(LifeEvent::EvolutionDecision(ChaosInputs {
+            user_like: p.life.like,
+            reincarnations: p.life.reincarnations,
+        }));
     Ok(())
 }
 
