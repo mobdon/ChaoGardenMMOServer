@@ -229,7 +229,11 @@ async fn care_on_the_socket_is_refused_while_the_game_holds_the_chao() {
     assert_eq!(refused["code"], "in-game");
     // Chat still reaches the room while the game holds the Chao.
     socket
-        .send(Message::Text(json!({"type":"action","action":"chat","channel":"world","text":"hi"}).to_string().into()))
+        .send(Message::Text(
+            json!({"type":"action","action":"chat","channel":"world","text":"hi"})
+                .to_string()
+                .into(),
+        ))
         .await
         .unwrap();
     let chat = tokio::time::timeout(Duration::from_secs(4), async {
